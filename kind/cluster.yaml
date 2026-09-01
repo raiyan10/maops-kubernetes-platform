@@ -1,0 +1,11 @@
+# MAOps Kubernetes Platform - Day 1 kind cluster.
+#
+# Single control-plane node only. Worker nodes, registry configuration,
+# ingress controllers, and alternate CNIs are explicitly out of scope
+# for Day 1 (see docs/roadmap.md).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: maops-k8s-day1
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
