@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maops-app-config
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day1
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+data:
+  APP_NAME: "maops-kubernetes-platform"
+  APP_ENVIRONMENT: "day1-kubernetes-foundation"
+  APP_MESSAGE: "Hello from the MAOps Kubernetes Platform (Day 1)"
+  APP_LOG_LEVEL: "info"
