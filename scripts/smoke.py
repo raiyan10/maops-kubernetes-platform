@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Real-cluster check #11: port-forward the Service and perform real HTTP
-checks against /, /livez, /readyz, /config.
+Normal external HTTP smoke test (Day 2): port-forward service/maops-gateway
+(NOT maops-app - the gateway is the only externally-reached workload in
+Day 2's architecture) and perform real HTTP checks against /, /livez,
+/readyz, /config, /backend.
 
 Uses a bounded, auto-cleaned-up port-forward (scripts/portforward.py) -
 never leaves a background kubectl process running.
@@ -15,16 +17,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from http_checks import check_all_endpoints
-from kube import CONTEXT, NAMESPACE, SERVICE
+from kube import CONTEXT, GATEWAY_SERVICE, NAMESPACE
 from portforward import port_forward
 
 
 def main() -> int:
-    print(f"# HTTP smoke test via port-forward to service/{SERVICE} in {NAMESPACE}")
+    print(f"# HTTP smoke test via port-forward to service/{GATEWAY_SERVICE} in {NAMESPACE}")
     try:
-        with port_forward(CONTEXT, NAMESPACE, SERVICE, 8080) as local_port:
-            print(f"port-forward established on 127.0.0.1:{local_port} -> service/{SERVICE}:8080")
-            results = check_all_endpoints(local_port)
+        with port_forward(CONTEXT, NAMESPACE, GATEWAY_SERVICE, 8080) as local_port:
+            print(f"port-forward established on 127.0.0.1:{local_port} -> service/{GATEWAY_SERVICE}:8080")
+            results = check_all_endpoints(local_port, role="gateway")
     except (TimeoutError, RuntimeError) as exc:
         print(f"FAIL: could not establish port-forward: {exc}", file=sys.stderr)
         return 1
@@ -38,7 +40,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} smoke check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: all smoke checks passed")
+    print("PASS: all smoke checks passed (gateway /backend proved real maops-app data end-to-end)")
     return 0
 
 

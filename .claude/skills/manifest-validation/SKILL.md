@@ -23,35 +23,54 @@ against the parsed objects. It requires no live cluster and no
 third-party Python package - if a change to this workflow introduces
 either dependency, that's itself a finding to report.
 
-## What "correct" means for Day 1
+## What "correct" means as of Day 2
 
 Check the exact expected values against `scripts/validate_manifests.py`'s
-constants (`EXPECTED_NAMESPACE`, `EXPECTED_IMAGE`, `EXPECTED_REPLICAS`,
-`EXPECTED_REQUESTS`, `EXPECTED_LIMITS`, etc.) rather than memorizing them
-here, since a later day may extend this file. As of Day 1 the checks
-cover:
+constants (`EXPECTED_NAMESPACE`, `GATEWAY_IMAGE`/`APP_IMAGE`,
+`EXPECTED_REPLICAS`, `EXPECTED_REQUESTS`, `EXPECTED_LIMITS`,
+`EXPECTED_BACKEND_HOST`/`EXPECTED_BACKEND_PORT`, etc.) rather than
+memorizing them here, since a later day may extend this file. As of
+Day 2 the checks cover **both workloads** (`maops-gateway`, `maops-app`)
+independently, plus cross-workload isolation:
 
-- Exactly one Namespace (`maops-platform`), one Deployment (`maops-app`,
-  replicas == 2, single container named `maops-app`), one Service
-  (`maops-app`, type ClusterIP), one ConfigMap (`maops-app-config`).
-- Image is `maops-kubernetes-platform:0.1.0` with
-  `imagePullPolicy: IfNotPresent`.
-- startupProbe present; livenessProbe hits `/livez`; readinessProbe hits
-  `/readyz`.
-- Container resources match the pinned request/limit values exactly.
+- Exactly one Namespace (`maops-platform`), two Deployments
+  (`maops-gateway`, `maops-app`, each replicas == 2, single container),
+  two Services (each ClusterIP), two ConfigMaps
+  (`maops-gateway-config`, `maops-app-config`).
+- Images are `maops-kubernetes-gateway:<VERSION>` /
+  `maops-kubernetes-app:<VERSION>` with `imagePullPolicy: IfNotPresent`,
+  and every `app.kubernetes.io/version` label (including pod template
+  labels) matches `VERSION` (see `make version-check`, which closes
+  `DAY1-REL-I1`).
+- Gateway `BACKEND_HOST` == `maops-app` exactly (never an IP literal,
+  never a hardcoded Pod/ReplicaSet-style identity), `BACKEND_PORT` ==
+  `8080`.
+- startupProbe present; livenessProbe hits `/livez` for both workloads
+  (never a backend-dependent path - that would be a circular-liveness
+  bug); readinessProbe hits `/readyz` for both.
+- Container resources match the pinned request/limit values exactly for
+  both workloads.
 - Pod/container securityContext fields (see the
   `workload-security-validation` skill for the full security-specific
   checklist - this skill only confirms they're *present and match*, not
   the security rationale).
-- `automountServiceAccountToken: false`.
-- Service selector is satisfied by the Deployment's pod template labels
-  - verify this against the *rendered* output, since label merging can
-    surprise you.
+- `automountServiceAccountToken: false` for both.
+- Each Service selector is satisfied by its *own* workload's pod
+  template labels, and - critically - is **not** satisfiable by the
+  other workload's pod labels (selector-collision check) - verify this
+  against the *rendered* output, since label merging can surprise you.
 - No `nodePort`, no `hostNetwork`, no `hostPort`.
-- ConfigMap is wired into the container via `envFrom` or `env[].valueFrom`.
-- None of the Day-1-forbidden kinds are present: Secret, Ingress,
-  PersistentVolumeClaim, StatefulSet, Role, RoleBinding, ClusterRole,
-  ClusterRoleBinding, ServiceAccount, NetworkPolicy.
+- Each ConfigMap is wired into its own container via `envFrom` or
+  `env[].valueFrom`; neither ConfigMap contains secret-like data.
+- Both Deployments reference Secret `maops-internal-auth` via a
+  read-only volume (`internal-auth`) mounted at
+  `/var/run/secrets/maops` - but the Secret *object itself* must never
+  be rendered by `k8s/base` (it's bootstrapped out-of-band, see the
+  `kind-cluster-validation` skill).
+- None of the forbidden-for-this-day kinds are present: Secret (as a
+  committed object), Ingress, PersistentVolumeClaim, StatefulSet, Role,
+  RoleBinding, ClusterRole, ClusterRoleBinding, ServiceAccount,
+  NetworkPolicy.
 
 ## When a check fails
 

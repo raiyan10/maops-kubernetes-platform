@@ -16,51 +16,71 @@ demonstrated and reviewed in isolation.
 | 6 | v0.6.0 | Helm, CI, automated kind validation |
 | 7 | v1.0.0 | Production-readiness hardening, independent reviews, final release |
 
-## Day 1 / v0.1.0 - Kubernetes foundation (this stage)
+## Day 1 / v0.1.0 - Kubernetes foundation
 
-Single control-plane kind cluster, one namespace, one ConfigMap, one
-Deployment (2 replicas) behind a ClusterIP Service, reached locally via
-`kubectl port-forward`. See `docs/architecture.md` for the full picture.
-Explicitly out of scope: worker nodes, Secrets, RBAC, NetworkPolicy,
-PVC/StatefulSet, Helm, CI, Ingress, NodePort/LoadBalancer.
+**COMPLETE / RELEASED / FROZEN.** Single control-plane kind cluster, one
+namespace, one ConfigMap, one Deployment (2 replicas) behind a ClusterIP
+Service, reached locally via `kubectl port-forward`. See
+`docs/architecture.md` for how Day 2 builds on this. Explicitly out of
+scope at the time: worker nodes, Secrets, RBAC, NetworkPolicy,
+PVC/StatefulSet, Helm, CI, Ingress, NodePort/LoadBalancer. Released as
+`v0.1.0`; historical engineering evidence lives under
+`docs/engineering-reviews/day-01-*` and is not modified by later days.
 
-## Day 2 / v0.2.0 - Multi-service architecture
+## Day 2 / v0.2.0 - Multi-service architecture, service discovery, configuration, Secrets (this stage)
 
-A second workload is introduced to exercise real service discovery
-(DNS-based, ClusterIP-to-ClusterIP), a Secret is introduced for the
-first time (with the security posture Day 1 already established), and
-configuration expands beyond a single ConfigMap.
+**IN DEVELOPMENT / current target.** Not yet released or tagged. A
+second workload (`maops-gateway`) is introduced alongside the Day 1 app
+workload (`maops-app`) to exercise real service discovery (Kubernetes
+DNS, ClusterIP-to-ClusterIP via `BACKEND_HOST=maops-app`), a runtime
+Secret (`maops-internal-auth`) is introduced for the first time -
+bootstrapped out-of-band, never committed, mounted read-only into both
+workloads - and configuration expands to two workload-specific
+ConfigMaps (`maops-gateway-config`, `maops-app-config`). Backend-
+readiness evidence moves from the legacy v1 Endpoints API to
+`discovery.k8s.io/v1` EndpointSlice. See `docs/architecture.md` for the
+full picture. Explicitly out of scope: worker-node scheduling design,
+HPA, PDB, rollout tuning, StatefulSet, PVC, custom ServiceAccount, RBAC,
+NetworkPolicy, Helm, Ingress, GitHub Actions, an observability stack,
+Terraform, Ansible, Argo CD, cloud clusters, and container registry
+publishing - see "Day 2 acceptance evidence" boundaries below and
+`docs/architecture.md` for exactly why NetworkPolicy/RBAC remain
+deferred to Day 5.
 
 ## Day 3 / v0.3.0 - Scaling, rollout, rollback, scheduling, availability
 
-Horizontal scaling behavior, rolling update strategy tuning, deliberate
-rollback exercises, basic scheduling constraints, and a
-PodDisruptionBudget to prove availability guarantees under voluntary
-disruption.
+**FUTURE - not yet implemented.** Horizontal scaling behavior, rolling
+update strategy tuning, deliberate rollback exercises, basic scheduling
+constraints, and a PodDisruptionBudget to prove availability guarantees
+under voluntary disruption.
 
 ## Day 4 / v0.4.0 - StatefulSet, PVC, persistence
 
-A StatefulSet-backed component with a PersistentVolumeClaim, proving
-data survives pod rescheduling and recovery after deliberate failure
-injection.
+**FUTURE - not yet implemented.** A StatefulSet-backed component with a
+PersistentVolumeClaim, proving data survives pod rescheduling and
+recovery after deliberate failure injection.
 
 ## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy
 
-A purpose-built ServiceAccount with least-privilege RBAC (Role/
-RoleBinding, scoped to the namespace), and NetworkPolicy objects
-restricting pod-to-pod traffic to only what's required. This is where
-`automountServiceAccountToken` moves from `false` to a deliberately
-scoped `true` for the workloads that need API access.
+**FUTURE - not yet implemented.** A purpose-built ServiceAccount with
+least-privilege RBAC (Role/RoleBinding, scoped to the namespace), and
+NetworkPolicy objects restricting pod-to-pod traffic to only what's
+required. This is where `automountServiceAccountToken` moves from
+`false` to a deliberately scoped `true` for the workloads that need API
+access, and where Day 2's deferred network-isolation gap (any Pod in
+`maops-platform` can currently reach any other) actually gets closed.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation
 
-The Kustomize base is packaged as a Helm chart (or a Helm chart is
-introduced alongside it, decision made at that stage), and GitHub
-Actions orchestrates the existing Makefile targets against an
-ephemeral kind cluster in CI - not a reimplementation of the local
-validation logic, just automation of it.
+**FUTURE - not yet implemented.** The Kustomize base is packaged as a
+Helm chart (or a Helm chart is introduced alongside it, decision made at
+that stage), and GitHub Actions orchestrates the existing Makefile
+targets against an ephemeral kind cluster in CI - not a reimplementation
+of the local validation logic, just automation of it.
 
 ## Day 7 / v1.0.0 - Production-readiness hardening
+
+**FUTURE - not yet implemented.**
 
 Independent review passes across architecture, security, and testing;
 closing gaps found; final hardening pass; first tagged `v1.0.0` release.

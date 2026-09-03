@@ -14,39 +14,54 @@ say so directly.
 ## Checklist
 
 1. **VERSION file.** Exact match to the day's target version (e.g.
-   `0.1.0` for Day 1) - `cat VERSION` and compare byte-for-byte (no
-   trailing newline surprises, no `v` prefix).
+   `0.2.0` for Day 2) - `cat VERSION` and compare byte-for-byte (no
+   trailing newline surprises, no `v` prefix). From Day 2 onward, also
+   re-run `make version-check` and confirm it independently passes -
+   don't just eyeball the file.
 2. **Git safety.** `git status` and `git log --oneline -5` should show
    the day's changes present but uncommitted, no new tags
    (`git tag --points-at HEAD`), and no evidence of a push (this is a
-   local check, but never assume - report what you actually see).
+   local check, but never assume - report what you actually see). A
+   prior day's tag (e.g. `v0.1.0`) is expected to already exist and must
+   never be moved or recreated.
 3. **Authoritative validation actually ran.** Re-run
-   `make day1-check` (or the current day's equivalent target) yourself
+   `make dayN-check` for the current day (e.g. `make day2-check`) yourself
    and capture its real output - don't accept a prior summary's claimed
    pass count without independent confirmation. Report the exact
-   pass/fail counts printed by `scripts/manifest_check.py`,
-   `scripts/cluster_check.py`, `scripts/smoke.py`, and
-   `scripts/reconcile_check.py`.
+   pass/fail counts printed by every script the sequence composes
+   (`scripts/manifest_check.py`, `scripts/version_check.py`,
+   `scripts/cluster_check.py`, `scripts/discovery_check.py`,
+   `scripts/secret_check.py`, `scripts/smoke.py`,
+   `scripts/dependency_check.py`, as applicable to the current day).
 4. **No leaked processes.** `ps aux | grep port-forward` should show
    nothing after validation completes.
 5. **Cluster left running.** Unless there's a concrete safety reason,
-   the kind cluster should still exist (`kind get clusters`) for
-   independent review to poke at directly.
+   the current day's kind cluster should still exist (`kind get clusters`)
+   for independent review to poke at directly - and any earlier day's
+   cluster that was already running must be untouched.
 6. **Documentation matches reality.** `README.md` commands actually work
-   as written; `docs/architecture.md` describes the probes/resources/
-   security fields that are actually deployed; `docs/roadmap.md` still
-   contains the intact seven-stage plan (Day 1 v0.1.0 through Day 7
-   v1.0.0) unless the user explicitly asked to change it.
+   as written and clearly distinguish the latest *released* version from
+   the current *development target*; `docs/architecture.md` describes
+   the probes/resources/security fields that are actually deployed;
+   `docs/roadmap.md` still contains the intact seven-stage plan (Day 1
+   v0.1.0 through Day 7 v1.0.0), with each day's status accurately
+   marked (released/frozen, in development, or future) - unless the
+   user explicitly asked to change it.
 7. **Scope boundaries.** Nothing from a later day leaked in early:
-   check for Secret, RBAC, NetworkPolicy, PVC/StatefulSet, Helm files,
-   CI workflow files, observability config, Terraform/Ansible/Argo CD
+   check for RBAC, NetworkPolicy, PVC/StatefulSet, Helm files, CI
+   workflow files, observability config, Terraform/Ansible/Argo CD
    files, or cloud-provisioning code that the current day doesn't call
-   for.
+   for. A *committed Secret object* is still always forbidden at any
+   day - but from Day 2 onward, a runtime-bootstrapped Secret existing
+   live in the cluster is correct, not a violation.
 8. **Claimed counts are verifiable.** Re-count agents
    (`ls .claude/agents/*.md | wc -l`), skills
    (`ls -d .claude/skills/*/ | wc -l`), and unit tests
    (`python3 -m unittest discover -s tests -v 2>&1 | tail -5`) rather
    than repeating a previously stated number.
+9. **Earlier-day evidence is untouched.** Nothing under
+   `docs/engineering-reviews/day-0N-*` for an already-released day was
+   modified by the current day's work - those are historical/frozen.
 
 ## Reporting
 

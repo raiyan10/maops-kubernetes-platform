@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Real-cluster check #14: controller reconciliation proof.
+Bonus controller-reconciliation proof, carried forward from Day 1 (not
+part of the required Day 2 real-cluster proof list, but a useful
+standalone check retained for the app workload's Deployment ->
+ReplicaSet -> Pod ownership chain).
 
 Records the two current maops-app pod UIDs, deletes exactly one pod
 (never creates a replacement manually), waits for the Deployment
 controller to reconcile back to 2 Ready replicas, proves a new pod UID
-appeared, and re-runs the HTTP smoke path to prove the Service still
-works afterward.
+appeared, and re-runs the app's HTTP checks (a scoped, test-only direct
+port-forward to service/maops-app - the normal Day 2 architecture reaches
+maops-app only through the gateway) to prove it still works afterward.
 """
 
 from __future__ import annotations
@@ -18,11 +22,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from http_checks import check_all_endpoints
+from kube import APP_LABEL_SELECTOR as LABEL_SELECTOR
+from kube import APP_SERVICE as SERVICE
 from kube import CONTEXT, NAMESPACE, get_json, run, wait_until
 from portforward import port_forward
 
-LABEL_SELECTOR = "app.kubernetes.io/name=maops-kubernetes-platform,app.kubernetes.io/instance=maops-kubernetes-platform-day1"
-SERVICE = "maops-app"
 EXPECTED_REPLICAS = 2
 
 results: list[tuple[bool, str]] = []
@@ -94,7 +98,7 @@ def main() -> int:
 
     try:
         with port_forward(CONTEXT, NAMESPACE, SERVICE, 8080) as local_port:
-            http_results = check_all_endpoints(local_port)
+            http_results = check_all_endpoints(local_port, role="app")
         for ok, msg in http_results:
             record(ok, f"post-reconciliation HTTP check: {msg}")
     except (TimeoutError, RuntimeError) as exc:

@@ -140,7 +140,9 @@ class LoaderTests(unittest.TestCase):
         [doc] = k8s_yaml.load_all(text)
         self.assertEqual(doc, {"flag": "on"})
 
-    def test_real_rendered_manifest_parses_into_four_documents(self):
+    def test_real_rendered_manifest_parses_into_seven_documents(self):
+        # Day 2: Namespace, 2 ConfigMaps, 2 Deployments, 2 Services (the
+        # runtime Secret is deliberately never rendered by k8s/base).
         base = Path(__file__).resolve().parent.parent / "k8s" / "base"
         import subprocess
 
@@ -149,7 +151,9 @@ class LoaderTests(unittest.TestCase):
         )
         docs = k8s_yaml.load_all(result.stdout)
         kinds = sorted(d.get("kind") for d in docs)
-        self.assertEqual(kinds, ["ConfigMap", "Deployment", "Namespace", "Service"])
+        self.assertEqual(
+            kinds, ["ConfigMap", "ConfigMap", "Deployment", "Deployment", "Namespace", "Service", "Service"]
+        )
 
 
 if __name__ == "__main__":
