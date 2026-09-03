@@ -6,10 +6,27 @@ import json
 import subprocess
 import time
 
-CONTEXT = "kind-maops-k8s-day1"
+CONTEXT = "kind-maops-k8s-day2"
 NAMESPACE = "maops-platform"
-DEPLOYMENT = "maops-app"
-SERVICE = "maops-app"
+
+GATEWAY_DEPLOYMENT = "maops-gateway"
+APP_DEPLOYMENT = "maops-app"
+GATEWAY_SERVICE = "maops-gateway"
+APP_SERVICE = "maops-app"
+
+GATEWAY_LABEL_SELECTOR = (
+    "app.kubernetes.io/name=maops-kubernetes-platform,"
+    "app.kubernetes.io/instance=maops-kubernetes-platform-day2,"
+    "app.kubernetes.io/component=gateway"
+)
+APP_LABEL_SELECTOR = (
+    "app.kubernetes.io/name=maops-kubernetes-platform,"
+    "app.kubernetes.io/instance=maops-kubernetes-platform-day2,"
+    "app.kubernetes.io/component=app"
+)
+
+INTERNAL_SECRET = "maops-internal-auth"
+INTERNAL_SECRET_KEY = "internal-token"
 
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:

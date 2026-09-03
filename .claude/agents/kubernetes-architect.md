@@ -25,6 +25,11 @@ When reviewing or designing manifests under `k8s/`, check:
    `Service.spec.selector`) must be minimal, stable (name + instance,
    not version), and must actually match the pod template labels - verify
    this by rendering with `kubectl kustomize k8s/base`, not by eyeballing.
+   From Day 2 onward, with multiple workloads sharing `name`/`instance`
+   labels, `component` (or an equivalent) must be part of every selector -
+   check explicitly that neither workload's Service selector could ever be
+   satisfied by another workload's pod labels (a selector collision would
+   silently load-balance traffic across the wrong workload).
 3. **Ownership chain.** Deployment -> ReplicaSet -> Pod should be the
    only chain in play this day (no StatefulSet, no bare Pods).
 4. **Service exposure.** ClusterIP only until a later day explicitly

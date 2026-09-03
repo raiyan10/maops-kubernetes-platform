@@ -1,18 +1,24 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-CLUSTER_NAME := maops-k8s-day1
+CLUSTER_NAME := maops-k8s-day2
 KCONTEXT := kind-$(CLUSTER_NAME)
 NAMESPACE := maops-platform
-IMAGE := maops-kubernetes-platform:0.1.0
 BASE := k8s/base
 
-.PHONY: help tool-check test manifest-render manifest-check image-build \
-        cluster-create cluster-delete image-load deploy rollout-check \
-        smoke controller-check day1-check
+# DAY1-REL-I1 (closed): VERSION is read once, and both image names derive
+# from it - nothing hardcodes the literal version string a second time.
+VERSION := $(shell cat VERSION)
+GATEWAY_IMAGE := maops-kubernetes-gateway:$(VERSION)
+APP_IMAGE := maops-kubernetes-app:$(VERSION)
+
+.PHONY: help tool-check test version-check manifest-render manifest-check \
+        image-build cluster-create cluster-delete namespace-apply \
+        secret-bootstrap image-load deploy rollout-check discovery-check \
+        secret-check smoke dependency-check controller-check day2-check
 
 help: ## Show this help
-	@echo "MAOps Kubernetes Platform - Day 1 - available targets:"
+	@echo "MAOps Kubernetes Platform - Day 2 - available targets:"
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-18s %s\n", $$1, $$2}'
 
 tool-check: ## Verify the required local toolchain is present and correctly resolved
@@ -37,16 +43,20 @@ tool-check: ## Verify the required local toolchain is present and correctly reso
 test: ## Run Docker-free/unit tests for repository-owned validation logic
 	python3 -m unittest discover -s tests -v
 
-manifest-render: ## Render the Day 1 Kustomize base with kubectl kustomize
+version-check: ## Cross-check VERSION against rendered image tags and version labels (closes DAY1-REL-I1)
+	python3 scripts/version_check.py $(BASE)
+
+manifest-render: ## Render the Day 2 Kustomize base with kubectl kustomize
 	kubectl kustomize $(BASE)
 
 manifest-check: ## Run repository-owned static validation against the rendered manifests
 	python3 scripts/manifest_check.py $(BASE)
 
-image-build: ## Build the workload container image
-	docker build -t $(IMAGE) -f app/Dockerfile app/
+image-build: ## Build both workload container images (gateway, app)
+	docker build -t $(GATEWAY_IMAGE) -f gateway/Dockerfile gateway/
+	docker build -t $(APP_IMAGE) -f app/Dockerfile app/
 
-cluster-create: ## Create the scoped kind cluster (idempotent)
+cluster-create: ## Create the scoped kind cluster (idempotent) - maops-k8s-day2 only
 	@if kind get clusters 2>/dev/null | grep -qx "$(CLUSTER_NAME)"; then \
 		echo "kind cluster $(CLUSTER_NAME) already exists, skipping create"; \
 	else \
@@ -54,24 +64,40 @@ cluster-create: ## Create the scoped kind cluster (idempotent)
 	fi
 	kubectl --context $(KCONTEXT) get nodes
 
-cluster-delete: ## Delete ONLY the maops-k8s-day1 kind cluster
+cluster-delete: ## Delete ONLY the maops-k8s-day2 kind cluster
 	kind delete cluster --name $(CLUSTER_NAME)
 
-image-load: ## Load the locally built image into the kind cluster
-	kind load docker-image $(IMAGE) --name $(CLUSTER_NAME)
+namespace-apply: ## Apply ONLY the project Namespace to the explicit Day 2 context (must precede secret-bootstrap)
+	kubectl --context $(KCONTEXT) apply -f $(BASE)/namespace.yaml
 
-deploy: ## Apply the Day 1 manifests to the kind cluster
+secret-bootstrap: ## Create (or preserve) the runtime maops-internal-auth Secret - never committed, never printed
+	python3 scripts/secret_bootstrap.py
+
+image-load: ## Load both locally built images into the kind cluster
+	kind load docker-image $(GATEWAY_IMAGE) --name $(CLUSTER_NAME)
+	kind load docker-image $(APP_IMAGE) --name $(CLUSTER_NAME)
+
+deploy: ## Apply the full Day 2 Kustomize base (namespace, ConfigMaps, Deployments, Services) to the kind cluster
 	kubectl --context $(KCONTEXT) apply -k $(BASE)
 
-rollout-check: ## Wait for and verify real Deployment/Service/ConfigMap/security runtime state
+rollout-check: ## Wait for and verify real Deployment/Service/EndpointSlice/ConfigMap/security runtime state for both workloads
 	python3 scripts/cluster_check.py
 
-smoke: ## Port-forward the Service and exercise /, /livez, /readyz, /config over real HTTP
+discovery-check: ## Prove real Kubernetes DNS resolution + gateway -> maops-app Service HTTP from a live gateway Pod
+	python3 scripts/discovery_check.py
+
+secret-check: ## Prove Secret wiring, authenticated/unauthenticated behavior, and non-disclosure end to end
+	python3 scripts/secret_check.py
+
+smoke: ## Port-forward service/maops-gateway and exercise /, /livez, /readyz, /config, /backend over real HTTP
 	python3 scripts/smoke.py
 
-controller-check: ## Prove Deployment controller reconciliation by deleting one pod
+dependency-check: ## Prove gateway liveness vs. dependency-aware readiness by scaling maops-app to 0 and back
+	python3 scripts/dependency_check.py
+
+controller-check: ## (Bonus, not part of day2-check) Prove Deployment controller reconciliation for maops-app
 	python3 scripts/reconcile_check.py
 
-day1-check: tool-check test manifest-check image-build cluster-create image-load deploy rollout-check smoke controller-check ## Authoritative Day 1 validation sequence
+day2-check: tool-check test version-check manifest-check image-build cluster-create namespace-apply secret-bootstrap image-load deploy rollout-check discovery-check secret-check smoke dependency-check ## Authoritative Day 2 validation sequence
 	@echo ""
-	@echo "PASS: day1-check completed the full authoritative validation sequence"
+	@echo "PASS: day2-check completed the full authoritative validation sequence"

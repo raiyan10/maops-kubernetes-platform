@@ -40,12 +40,22 @@ Container image checks:
 
 Scope checks (reject anything not yet authorized by the current day):
 
-- No Secret objects before the day that introduces them.
+- No committed Secret *object* - `kubectl kustomize k8s/base` must never
+  render a `kind: Secret`, at any day. From Day 2 onward, a runtime Secret
+  (`maops-internal-auth`) is expected to exist *live in the cluster*,
+  created out-of-band by `scripts/secret_bootstrap.py` - that's correct,
+  not a violation. Verify the bootstrap script never writes the token to a
+  process command line, never prints/logs it, and preserves (never
+  silently rotates) an existing Secret.
 - No ServiceAccount or RBAC objects (Role/RoleBinding/ClusterRole/
   ClusterRoleBinding) before the day that introduces them.
 - No NetworkPolicy before the day that introduces it.
 - ConfigMap data must contain no secret-like values (credentials, tokens,
-  keys, passwords) - flag by key name and by eyeballing values.
+  keys, passwords) - flag by key name and by eyeballing values. From Day 2
+  onward, also confirm the internal auth token never leaks through
+  `GET /config`, application logs, or any normal HTTP response body on
+  either workload, and that a Secret volume mount is read-only with a
+  restrictive (never world-readable) mode.
 
 When a live kind cluster is available, prefer proving claims with real
 `kubectl exec`/`kubectl get pod -o json` evidence (e.g. actual UID/GID the

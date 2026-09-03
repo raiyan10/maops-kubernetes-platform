@@ -78,9 +78,20 @@ def _wait_connectable(port: int, timeout: float, proc: subprocess.Popen) -> None
 
 
 @contextlib.contextmanager
-def port_forward(kube_context: str, namespace: str, service: str, remote_port: int, ready_timeout: float = 30.0):
-    """Yields a local port that forwards to service:remote_port. Cleans up on
-    exit - on normal completion, on an exception, and on SIGTERM."""
+def port_forward(
+    kube_context: str,
+    namespace: str,
+    name: str,
+    remote_port: int,
+    ready_timeout: float = 30.0,
+    resource_kind: str = "service",
+):
+    """Yields a local port that forwards to <resource_kind>/<name>:remote_port
+    (resource_kind defaults to "service"; pass "pod" to forward directly to a
+    Pod, bypassing Service endpoint/readiness filtering entirely - used by
+    dependency_check.py to reach a gateway Pod that the Service itself has
+    stopped routing to). Cleans up on exit - on normal completion, on an
+    exception, and on SIGTERM."""
     local_port = _free_port()
     cmd = [
         "kubectl",
@@ -89,7 +100,7 @@ def port_forward(kube_context: str, namespace: str, service: str, remote_port: i
         "-n",
         namespace,
         "port-forward",
-        f"service/{service}",
+        f"{resource_kind}/{name}",
         f"{local_port}:{remote_port}",
     ]
     proc = subprocess.Popen(

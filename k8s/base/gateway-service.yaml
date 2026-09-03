@@ -1,20 +1,21 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: maops-app
+  name: maops-gateway
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day1
-    app.kubernetes.io/version: "0.1.0"
-    app.kubernetes.io/component: app
+    app.kubernetes.io/instance: maops-kubernetes-platform-day2
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/component: gateway
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day1
+    app.kubernetes.io/instance: maops-kubernetes-platform-day2
+    app.kubernetes.io/component: gateway
   ports:
     - name: http
       port: 8080
