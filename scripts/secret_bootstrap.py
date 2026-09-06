@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Runtime Secret bootstrap for the Day 2 internal auth token.
+Runtime Secret bootstrap for the Day 3 internal auth token.
 
 The committed Kustomize base deliberately contains NO Secret object -
 `maops-internal-auth` is created out-of-band by this script, against
@@ -8,7 +8,7 @@ the explicit context/namespace below, and is never committed with a
 usable token in it.
 
 Behavior:
-  1. Uses explicit context kind-maops-k8s-day2 and namespace maops-platform
+  1. Uses explicit context kind-maops-k8s-day3 and namespace maops-platform
      for every kubectl call.
   2. If the Secret does not exist: generates a cryptographically-strong
      random token (`secrets.token_urlsafe`), writes it to a private
@@ -39,6 +39,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from kube import CONTEXT, INTERNAL_SECRET, INTERNAL_SECRET_KEY, NAMESPACE, run
 
 
@@ -123,6 +124,12 @@ def main() -> int:
     print(f"# Secret bootstrap: {INTERNAL_SECRET} in namespace {NAMESPACE} (context {CONTEXT})")
 
     try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
+
+    try:
         existing = get_existing_secret()
     except RuntimeError as exc:
         print(f"FAIL: {exc}", file=sys.stderr)
@@ -142,9 +149,10 @@ def main() -> int:
     token = generate_token()
     try:
         create_secret(token)
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        print(f"FAIL: kubectl create secret failed: {stderr if stderr else exc}", file=sys.stderr)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        stderr = getattr(exc, "stderr", None) or ""
+        stderr = stderr.strip() if isinstance(stderr, str) else str(stderr)
+        print(f"FAIL: kubectl create secret failed/timed out: {stderr if stderr else exc}", file=sys.stderr)
         return 1
     print(f"Secret {INTERNAL_SECRET!r} created.")
 

@@ -26,6 +26,9 @@ class RestorationGuaranteeTests(unittest.TestCase):
     def setUp(self):
         dependency_check.results = []
         dependency_check.restoration_results = []
+        patcher = mock.patch.object(dependency_check.kube, "verify_context")
+        self.addCleanup(patcher.stop)
+        patcher.start()
 
     def test_restoration_invoked_when_experiment_raises(self):
         with mock.patch.object(dependency_check, "check_starting_state", return_value=[{"metadata": {"name": "gw-1"}}]):
@@ -73,6 +76,103 @@ class RestorationGuaranteeTests(unittest.TestCase):
                         exit_code = dependency_check.main()
 
         self.assertEqual(exit_code, 0)
+
+
+class WrongContextFailsClosedTests(unittest.TestCase):
+    """DAY3: every live script must refuse to run against an unverified
+    cluster rather than silently proceeding."""
+
+    def setUp(self):
+        dependency_check.results = []
+        dependency_check.restoration_results = []
+
+    def test_verify_context_failure_short_circuits_before_any_scaling(self):
+        with mock.patch.object(dependency_check.kube, "verify_context", side_effect=RuntimeError("wrong cluster")):
+            with mock.patch.object(dependency_check, "check_starting_state") as mock_start:
+                exit_code = dependency_check.main()
+        self.assertEqual(exit_code, 1)
+        mock_start.assert_not_called()
+
+
+class RestoreAppDirectTests(unittest.TestCase):
+    """DAY3-TEST-H1: directly unit-tests the REAL
+    dependency_check.restore_app function (never replaced by a mock) -
+    only its lower-level collaborators are mocked."""
+
+    def setUp(self):
+        dependency_check.results = []
+        dependency_check.restoration_results = []
+
+    def test_scale_command_called_process_error_returns_false(self):
+        exc = subprocess.CalledProcessError(1, ["kubectl", "scale"], stderr="deployment not found")
+        with mock.patch.object(dependency_check, "scale_app", side_effect=exc):
+            ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        self.assertTrue(any(not r_ok and "could not scale maops-app back to" in msg for r_ok, msg in dependency_check.restoration_results))
+
+    def test_scale_command_timeout_expired_returns_false(self):
+        exc = subprocess.TimeoutExpired(cmd=["kubectl", "scale"], timeout=30)
+        with mock.patch.object(dependency_check, "scale_app", side_effect=exc):
+            ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        self.assertTrue(any(not r_ok and "could not scale maops-app back to" in msg for r_ok, msg in dependency_check.restoration_results))
+
+    def test_app_convergence_timeout_returns_false(self):
+        with mock.patch.object(dependency_check, "scale_app"):
+            with mock.patch.object(dependency_check, "_wait_ready", side_effect=TimeoutError("maops-app never ready")):
+                ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        self.assertTrue(any(not r_ok and "maops-app did not recover" in msg for r_ok, msg in dependency_check.restoration_results))
+
+    def test_gateway_convergence_timeout_after_app_recovers_returns_false(self):
+        calls = {"n": 0}
+
+        def fake_wait_ready(name, timeout):
+            calls["n"] += 1
+            if name == "maops-gateway":
+                raise TimeoutError("maops-gateway never recovered")
+
+        with mock.patch.object(dependency_check, "scale_app"):
+            with mock.patch.object(dependency_check, "_wait_ready", side_effect=fake_wait_ready):
+                ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        self.assertTrue(any(not r_ok and "maops-gateway did not recover" in msg for r_ok, msg in dependency_check.restoration_results))
+
+    def test_post_recovery_http_check_failure_returns_false(self):
+        with mock.patch.object(dependency_check, "scale_app"):
+            with mock.patch.object(dependency_check, "_wait_ready"):
+                with mock.patch.object(dependency_check, "port_forward", side_effect=RuntimeError("port-forward failed")):
+                    ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        self.assertTrue(any(not r_ok and "post-recovery Service HTTP check failed" in msg for r_ok, msg in dependency_check.restoration_results))
+
+    def test_full_success_path_returns_true(self):
+        class _FakePortForward:
+            def __call__(self, *_a, **_kw):
+                return self
+
+            def __enter__(self):
+                return 8080
+
+            def __exit__(self, *_exc):
+                return False
+
+        with mock.patch.object(dependency_check, "scale_app"):
+            with mock.patch.object(dependency_check, "_wait_ready"):
+                with mock.patch.object(dependency_check, "port_forward", _FakePortForward()):
+                    with mock.patch.object(dependency_check, "check_endpoint", return_value=(True, "200 OK")):
+                        ok = dependency_check.restore_app()
+        self.assertTrue(ok)
+        self.assertTrue(all(r_ok for r_ok, _msg in dependency_check.restoration_results))
+
+    def test_failure_return_is_not_overwritten_by_a_later_success_record(self):
+        with mock.patch.object(dependency_check, "scale_app"):
+            with mock.patch.object(dependency_check, "_wait_ready", side_effect=TimeoutError("maops-app never ready")):
+                with mock.patch.object(dependency_check, "port_forward") as mock_pf:
+                    ok = dependency_check.restore_app()
+        self.assertFalse(ok)
+        mock_pf.assert_not_called()
+        self.assertFalse(any(r_ok for r_ok, _msg in dependency_check.restoration_results))
 
 
 class AppEndpointsDrainedTests(unittest.TestCase):

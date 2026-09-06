@@ -10,7 +10,7 @@ demonstrated and reviewed in isolation.
 |---|---|---|
 | 1 | v0.1.0 | Kubernetes foundation |
 | 2 | v0.2.0 | Multi-service architecture, service discovery, configuration, Secrets |
-| 3 | v0.3.0 | Scaling, rollout, rollback, scheduling, availability (PDB) |
+| 3 | v0.3.0 | Scaling, scheduling, rolling updates, rollback, availability (PDB) |
 | 4 | v0.4.0 | StatefulSet, PVC, persistence/recovery |
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
 | 6 | v0.6.0 | Helm, CI, automated kind validation |
@@ -27,32 +27,57 @@ PVC/StatefulSet, Helm, CI, Ingress, NodePort/LoadBalancer. Released as
 `v0.1.0`; historical engineering evidence lives under
 `docs/engineering-reviews/day-01-*` and is not modified by later days.
 
-## Day 2 / v0.2.0 - Multi-service architecture, service discovery, configuration, Secrets (this stage)
+## Day 2 / v0.2.0 - Multi-service architecture, service discovery, configuration, Secrets
 
-**IN DEVELOPMENT / current target.** Not yet released or tagged. A
-second workload (`maops-gateway`) is introduced alongside the Day 1 app
-workload (`maops-app`) to exercise real service discovery (Kubernetes
-DNS, ClusterIP-to-ClusterIP via `BACKEND_HOST=maops-app`), a runtime
-Secret (`maops-internal-auth`) is introduced for the first time -
-bootstrapped out-of-band, never committed, mounted read-only into both
-workloads - and configuration expands to two workload-specific
-ConfigMaps (`maops-gateway-config`, `maops-app-config`). Backend-
-readiness evidence moves from the legacy v1 Endpoints API to
-`discovery.k8s.io/v1` EndpointSlice. See `docs/architecture.md` for the
-full picture. Explicitly out of scope: worker-node scheduling design,
-HPA, PDB, rollout tuning, StatefulSet, PVC, custom ServiceAccount, RBAC,
-NetworkPolicy, Helm, Ingress, GitHub Actions, an observability stack,
-Terraform, Ansible, Argo CD, cloud clusters, and container registry
-publishing - see "Day 2 acceptance evidence" boundaries below and
-`docs/architecture.md` for exactly why NetworkPolicy/RBAC remain
-deferred to Day 5.
+**COMPLETE / RELEASED / FROZEN.** A second workload (`maops-gateway`)
+was introduced alongside the Day 1 app workload (`maops-app`) to
+exercise real service discovery (Kubernetes DNS, ClusterIP-to-ClusterIP
+via `BACKEND_HOST=maops-app`), a runtime Secret
+(`maops-internal-auth`) was introduced for the first time - bootstrapped
+out-of-band, never committed, mounted read-only into both workloads -
+and configuration expanded to two workload-specific ConfigMaps
+(`maops-gateway-config`, `maops-app-config`). Backend-readiness evidence
+moved from the legacy v1 Endpoints API to `discovery.k8s.io/v1`
+EndpointSlice. Released as `v0.2.0`; historical engineering evidence
+lives under `docs/engineering-reviews/day-02-*` and is not modified by
+later days. Day 3 builds directly on this architecture, unchanged - see
+`docs/architecture.md`.
 
-## Day 3 / v0.3.0 - Scaling, rollout, rollback, scheduling, availability
+## Day 3 / v0.3.0 - Scaling, scheduling, rolling updates, rollback, availability (this stage)
 
-**FUTURE - not yet implemented.** Horizontal scaling behavior, rolling
-update strategy tuning, deliberate rollback exercises, basic scheduling
-constraints, and a PodDisruptionBudget to prove availability guarantees
-under voluntary disruption.
+**IN DEVELOPMENT / current target.** Not yet released or tagged. Builds
+directly on Day 2's two-workload architecture, unchanged, and adds:
+
+- A multi-node kind cluster (1 control-plane + 2 workers) - the first
+  topology in this project with real worker nodes to schedule onto.
+- Both Deployments scaled to 3 replicas, with an explicit
+  `RollingUpdate` strategy (`maxUnavailable: 1`, `maxSurge: 1`,
+  `minReadySeconds: 5`, `progressDeadlineSeconds: 120`,
+  `revisionHistoryLimit: 5`) - pinned rather than left to Kubernetes
+  defaults.
+- Worker-only scheduling: required node affinity excluding the
+  control-plane node, plus per-workload `topologySpreadConstraints`
+  (`maxSkew: 1`, `topologyKey: kubernetes.io/hostname`,
+  `whenUnsatisfiable: DoNotSchedule`) - never hard pod anti-affinity,
+  which would make 3 replicas over 2 workers mathematically
+  unschedulable.
+- A `PodDisruptionBudget` per workload (`minAvailable: 2`), proving
+  voluntary-disruption protection via the real Eviction API - not
+  `kubectl delete pod`.
+- Real scaling (3 -> 4 -> 3), a real rolling update (triggered by a
+  temporary, uniquely-marked Pod-template annotation - never a fake
+  image tag) and a real `kubectl rollout undo` rollback, and real PDB/
+  Eviction-API behavior, all proven live against the cluster with
+  guaranteed restoration.
+
+Explicitly out of scope for Day 3: HorizontalPodAutoscaler (scaling here
+is deliberate/manual, not automatic), StatefulSet, PVC, ServiceAccount,
+RBAC, NetworkPolicy, Ingress, Gateway API, service mesh, advanced
+deployment strategies beyond RollingUpdate (Recreate/Blue-Green/Canary -
+Day 7), Helm, GitHub Actions, an observability stack, Terraform,
+Ansible, Argo CD, and cloud clusters. See `docs/architecture.md` for the
+full picture and the rationale behind each scheduling/availability
+decision.
 
 ## Day 4 / v0.4.0 - StatefulSet, PVC, persistence
 
@@ -76,14 +101,20 @@ access, and where Day 2's deferred network-isolation gap (any Pod in
 Helm chart (or a Helm chart is introduced alongside it, decision made at
 that stage), and GitHub Actions orchestrates the existing Makefile
 targets against an ephemeral kind cluster in CI - not a reimplementation
-of the local validation logic, just automation of it.
+of the local validation logic, just automation of it. Ingress and
+Gateway API are both introduced and compared against each other for
+external access, superseding Day 1-3's `kubectl port-forward`-only
+model.
 
 ## Day 7 / v1.0.0 - Production-readiness hardening
 
-**FUTURE - not yet implemented.**
-
-Independent review passes across architecture, security, and testing;
-closing gaps found; final hardening pass; first tagged `v1.0.0` release.
+**FUTURE - not yet implemented.** Service mesh; advanced deployment
+strategy demonstrations (Recreate, Blue/Green, Canary) compared against
+Day 3's RollingUpdate; independent review passes across architecture,
+security, and testing; closing gaps found; final hardening pass; final
+tagged `v1.0.0` release. Argo Rollouts is explicitly never introduced in
+this project - the advanced-strategy demonstrations use native
+Kubernetes primitives only.
 
 ## Explicitly out of scope for this project
 

@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from cluster_check import exec_in_pod, get_pods
 from http_checks import check_endpoint
 from kube import CONTEXT, GATEWAY_LABEL_SELECTOR, GATEWAY_SERVICE, NAMESPACE
@@ -83,6 +84,11 @@ def check_real_service_http() -> None:
 
 def main() -> int:
     print("# Real service discovery / DNS proof")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
     check_dns_resolution()
     check_real_service_http()
 

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
 Bonus controller-reconciliation proof, carried forward from Day 1 (not
-part of the required Day 2 real-cluster proof list, but a useful
+part of the required Day 3 real-cluster proof list, but a useful
 standalone check retained for the app workload's Deployment ->
 ReplicaSet -> Pod ownership chain).
 
-Records the two current maops-app pod UIDs, deletes exactly one pod
+Records the three current maops-app pod UIDs, deletes exactly one pod
 (never creates a replacement manually), waits for the Deployment
-controller to reconcile back to 2 Ready replicas, proves a new pod UID
+controller to reconcile back to 3 Ready replicas, proves a new pod UID
 appeared, and re-runs the app's HTTP checks (a scoped, test-only direct
-port-forward to service/maops-app - the normal Day 2 architecture reaches
+port-forward to service/maops-app - the normal architecture reaches
 maops-app only through the gateway) to prove it still works afterward.
 """
 
@@ -21,13 +21,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from http_checks import check_all_endpoints
 from kube import APP_LABEL_SELECTOR as LABEL_SELECTOR
 from kube import APP_SERVICE as SERVICE
 from kube import CONTEXT, NAMESPACE, get_json, run, wait_until
 from portforward import port_forward
 
-EXPECTED_REPLICAS = 2
+EXPECTED_REPLICAS = 3
 
 results: list[tuple[bool, str]] = []
 
@@ -48,6 +49,11 @@ def pod_uids(pods: list[dict]) -> set[str]:
 
 def main() -> int:
     print("# Controller reconciliation proof")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
 
     before_pods = get_pods()
     record(len(before_pods) == EXPECTED_REPLICAS, f"observed {len(before_pods)} pods before deletion (expected {EXPECTED_REPLICAS})")
@@ -63,8 +69,9 @@ def main() -> int:
     print(f"deleting exactly one pod: {victim}")
     try:
         run("-n", NAMESPACE, "delete", "pod", victim, "--wait=false")
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        stderr = getattr(exc, "stderr", None) or ""
+        stderr = stderr.strip() if isinstance(stderr, str) else str(stderr)
         record(False, f"failed to delete pod {victim}: {stderr if stderr else exc}")
         return _finish()
 
@@ -83,8 +90,8 @@ def main() -> int:
         return pods if all_ready else None
 
     try:
-        after_pods = wait_until(predicate, timeout=120, interval=3, description="Deployment reconciled back to 2 Ready replicas")
-        record(True, "Deployment reconciled back to 2/2 Ready replicas after pod deletion")
+        after_pods = wait_until(predicate, timeout=120, interval=3, description=f"Deployment reconciled back to {EXPECTED_REPLICAS} Ready replicas")
+        record(True, f"Deployment reconciled back to {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready replicas after pod deletion")
     except TimeoutError as exc:
         record(False, str(exc))
         return _finish()

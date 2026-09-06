@@ -1,6 +1,8 @@
 """
 Docker-free unit tests for the repository-owned static validation logic
-in scripts/validate_manifests.py (Day 2: gateway + app workloads).
+in scripts/validate_manifests.py (Day 3: gateway + app workloads, now
+with 3 replicas, RollingUpdate tuning, worker-only scheduling,
+topologySpreadConstraints, and a PodDisruptionBudget per workload).
 
 Fixtures are constructed directly as Python dict/list structures (not
 parsed from YAML text) so these tests exercise validation rules only,
@@ -21,13 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from validate_manifests import run_checks
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
+INSTANCE = "maops-kubernetes-platform-day3"
 
 
 def _labels(component: str | None) -> dict:
     labels = {
         "app.kubernetes.io/name": "maops-kubernetes-platform",
-        "app.kubernetes.io/instance": "maops-kubernetes-platform-day2",
+        "app.kubernetes.io/instance": INSTANCE,
         "app.kubernetes.io/version": VERSION,
         "app.kubernetes.io/part-of": "maops-kubernetes-platform",
         "app.kubernetes.io/managed-by": "kustomize",
@@ -40,7 +43,7 @@ def _labels(component: str | None) -> dict:
 def _selector(component: str) -> dict:
     return {
         "app.kubernetes.io/name": "maops-kubernetes-platform",
-        "app.kubernetes.io/instance": "maops-kubernetes-platform-day2",
+        "app.kubernetes.io/instance": INSTANCE,
         "app.kubernetes.io/component": component,
     }
 
@@ -53,6 +56,35 @@ def _security_context() -> dict:
         "fsGroup": 10001,
         "seccompProfile": {"type": "RuntimeDefault"},
     }
+
+
+def _node_affinity() -> dict:
+    return {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {"key": "node-role.kubernetes.io/control-plane", "operator": "DoesNotExist"}
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _topology_spread(component: str) -> list[dict]:
+    return [
+        {
+            "maxSkew": 1,
+            "topologyKey": "kubernetes.io/hostname",
+            "whenUnsatisfiable": "DoNotSchedule",
+            "nodeAffinityPolicy": "Honor",
+            "nodeTaintsPolicy": "Honor",
+            "labelSelector": {"matchLabels": _selector(component)},
+        }
+    ]
 
 
 def _container(name: str, image: str, configmap: str) -> dict:
@@ -85,13 +117,19 @@ def _deployment(name: str, component: str, image: str, configmap: str) -> dict:
         "kind": "Deployment",
         "metadata": {"name": name, "namespace": "maops-platform", "labels": _labels(component)},
         "spec": {
-            "replicas": 2,
+            "replicas": 3,
+            "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 1}},
+            "minReadySeconds": 5,
+            "progressDeadlineSeconds": 120,
+            "revisionHistoryLimit": 5,
             "selector": {"matchLabels": _selector(component)},
             "template": {
                 "metadata": {"labels": pod_labels},
                 "spec": {
                     "automountServiceAccountToken": False,
                     "securityContext": _security_context(),
+                    "affinity": _node_affinity(),
+                    "topologySpreadConstraints": _topology_spread(component),
                     "containers": [_container(name, image, configmap)],
                     "volumes": [
                         {
@@ -118,6 +156,15 @@ def _service(name: str, component: str) -> dict:
     }
 
 
+def _pdb(name: str, component: str) -> dict:
+    return {
+        "apiVersion": "policy/v1",
+        "kind": "PodDisruptionBudget",
+        "metadata": {"name": name, "namespace": "maops-platform", "labels": _labels(component)},
+        "spec": {"minAvailable": 2, "selector": {"matchLabels": _selector(component)}},
+    }
+
+
 def _base_docs() -> list[dict]:
     namespace = {
         "apiVersion": "v1",
@@ -133,8 +180,8 @@ def _base_docs() -> list[dict]:
             "BACKEND_PORT": "8080",
             "BACKEND_TIMEOUT_SECONDS": "3",
             "APP_NAME": "maops-kubernetes-gateway",
-            "APP_ENVIRONMENT": "day2-service-discovery",
-            "APP_MESSAGE": "Hello from the MAOps Kubernetes Gateway (Day 2)",
+            "APP_ENVIRONMENT": "day3-scaling-rollouts-availability",
+            "APP_MESSAGE": "Hello from the MAOps Kubernetes Gateway (Day 3)",
             "APP_LOG_LEVEL": "info",
         },
     }
@@ -144,15 +191,17 @@ def _base_docs() -> list[dict]:
         "metadata": {"name": "maops-app-config", "namespace": "maops-platform", "labels": _labels("app")},
         "data": {
             "APP_NAME": "maops-kubernetes-app",
-            "APP_ENVIRONMENT": "day2-service-discovery",
-            "APP_MESSAGE": "Hello from the MAOps Kubernetes App (Day 2)",
+            "APP_ENVIRONMENT": "day3-scaling-rollouts-availability",
+            "APP_MESSAGE": "Hello from the MAOps Kubernetes App (Day 3)",
             "APP_LOG_LEVEL": "info",
         },
     }
-    gateway_deployment = _deployment("maops-gateway", "gateway", "maops-kubernetes-gateway:0.2.0", "maops-gateway-config")
-    app_deployment = _deployment("maops-app", "app", "maops-kubernetes-app:0.2.0", "maops-app-config")
+    gateway_deployment = _deployment("maops-gateway", "gateway", "maops-kubernetes-gateway:0.3.0", "maops-gateway-config")
+    app_deployment = _deployment("maops-app", "app", "maops-kubernetes-app:0.3.0", "maops-app-config")
     gateway_service = _service("maops-gateway", "gateway")
     app_service = _service("maops-app", "app")
+    gateway_pdb = _pdb("maops-gateway-pdb", "gateway")
+    app_pdb = _pdb("maops-app-pdb", "app")
     return [
         namespace,
         gateway_configmap,
@@ -161,6 +210,8 @@ def _base_docs() -> list[dict]:
         app_deployment,
         gateway_service,
         app_service,
+        gateway_pdb,
+        app_pdb,
     ]
 
 
@@ -187,7 +238,7 @@ class BaselineTests(unittest.TestCase):
         findings = run_checks(_base_docs())
         failed = _failed_names(findings)
         self.assertEqual(failed, set(), f"unexpected failures: {failed}")
-        self.assertGreaterEqual(len(findings), 90)
+        self.assertGreaterEqual(len(findings), 130)
 
 
 class ObjectCountTests(unittest.TestCase):
@@ -216,10 +267,250 @@ class ReplicaTests(unittest.TestCase):
 
     def test_app_replicas_changed_fails(self):
         docs = copy.deepcopy(_base_docs())
-        _find(docs, "Deployment", "maops-app")["spec"]["replicas"] = 3
+        _find(docs, "Deployment", "maops-app")["spec"]["replicas"] = 4
         failed = _failed_names(run_checks(docs))
         self.assertIn("app.deployment.replicas", failed)
         self.assertNotIn("gateway.deployment.replicas", failed)
+
+
+class RolloutStrategyTests(unittest.TestCase):
+    """DAY3: explicit RollingUpdate tuning must be pinned, not left to
+    Kubernetes defaults."""
+
+    def test_strategy_type_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["strategy"]["type"] = "Recreate"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.strategy_type", failed)
+
+    def test_max_unavailable_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["strategy"]["rollingUpdate"]["maxUnavailable"] = 2
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.max_unavailable", failed)
+
+    def test_max_surge_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["strategy"]["rollingUpdate"]["maxSurge"] = 0
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.max_surge", failed)
+
+    def test_min_ready_seconds_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["minReadySeconds"] = 0
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.min_ready_seconds", failed)
+
+    def test_progress_deadline_seconds_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["progressDeadlineSeconds"] = 600
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.progress_deadline_seconds", failed)
+
+    def test_revision_history_limit_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "Deployment", dep_name)["spec"]["revisionHistoryLimit"] = 10
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.deployment.revision_history_limit", failed)
+
+
+class SchedulingTests(unittest.TestCase):
+    """DAY3: worker-only required node affinity + per-workload
+    topologySpreadConstraints."""
+
+    def test_node_affinity_removed_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                del _pod_spec_of(_find(docs, "Deployment", dep_name))["affinity"]
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.control_plane_excluded", failed)
+
+    def test_node_affinity_changed_to_allow_control_plane_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                expr = _pod_spec_of(_find(docs, "Deployment", dep_name))["affinity"]["nodeAffinity"][
+                    "requiredDuringSchedulingIgnoredDuringExecution"
+                ]["nodeSelectorTerms"][0]["matchExpressions"][0]
+                expr["operator"] = "Exists"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.control_plane_excluded", failed)
+
+    def test_topology_spread_removed_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"] = []
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.topology_spread_present", failed)
+
+    def test_max_skew_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0]["maxSkew"] = 2
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.max_skew", failed)
+
+    def test_topology_key_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0][
+                    "topologyKey"
+                ] = "topology.kubernetes.io/zone"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.topology_key", failed)
+
+    def test_when_unsatisfiable_wrong_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0][
+                    "whenUnsatisfiable"
+                ] = "ScheduleAnyway"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.when_unsatisfiable", failed)
+
+    def test_node_affinity_policy_removed_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                del _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0]["nodeAffinityPolicy"]
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.node_affinity_policy", failed)
+
+    def test_node_affinity_policy_weakened_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0][
+                    "nodeAffinityPolicy"
+                ] = "Ignore"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.node_affinity_policy", failed)
+
+    def test_node_taints_policy_removed_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                del _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0]["nodeTaintsPolicy"]
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.node_taints_policy", failed)
+
+    def test_node_taints_policy_weakened_fails_both_workloads(self):
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0][
+                    "nodeTaintsPolicy"
+                ] = "Ignore"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.node_taints_policy", failed)
+
+    def test_topology_selector_cross_wired_fails_both_workloads(self):
+        other = {"gateway": "app", "app": "gateway"}
+        for component, dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _pod_spec_of(_find(docs, "Deployment", dep_name))["topologySpreadConstraints"][0]["labelSelector"][
+                    "matchLabels"
+                ] = _selector(other[component])
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.scheduling.topology_selector_scoped_to_own_component", failed)
+
+
+class PdbTests(unittest.TestCase):
+    """DAY3: PodDisruptionBudget presence/shape/selector isolation."""
+
+    def test_gateway_pdb_missing_fails(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "PodDisruptionBudget" and d["metadata"]["name"] == "maops-gateway-pdb")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("gateway.pdb.named_correctly", failed)
+        self.assertIn("gateway.pdb.exists", failed)
+        self.assertIn("pdb.count", failed)
+
+    def test_app_pdb_missing_fails(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "PodDisruptionBudget" and d["metadata"]["name"] == "maops-app-pdb")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("app.pdb.named_correctly", failed)
+        self.assertIn("app.pdb.exists", failed)
+        self.assertIn("pdb.count", failed)
+
+    def test_pdb_wrong_api_version_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "PodDisruptionBudget", pdb_names[component])["apiVersion"] = "policy/v1beta1"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.api_version", failed)
+
+    def test_pdb_wrong_min_available_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "PodDisruptionBudget", pdb_names[component])["spec"]["minAvailable"] = 1
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.min_available", failed)
+
+    def test_pdb_wrong_namespace_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "PodDisruptionBudget", pdb_names[component])["metadata"]["namespace"] = "default"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.namespace_matches", failed)
+
+    def test_pdb_wrong_selector_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "PodDisruptionBudget", pdb_names[component])["spec"]["selector"]["matchLabels"][
+                    "app.kubernetes.io/instance"
+                ] = "wrong-instance"
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.selector_matches_pod_labels", failed)
+
+    def test_pdb_cross_workload_selector_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        other = {"gateway": "app", "app": "gateway"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                _find(docs, "PodDisruptionBudget", pdb_names[component])["spec"]["selector"]["matchLabels"] = _selector(
+                    other[component]
+                )
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.no_cross_workload_selector", failed)
+
+    def test_pdb_uses_max_unavailable_instead_fails_both_workloads(self):
+        pdb_names = {"gateway": "maops-gateway-pdb", "app": "maops-app-pdb"}
+        for component, _dep_name in _WORKLOADS:
+            with self.subTest(component=component):
+                docs = copy.deepcopy(_base_docs())
+                pdb = _find(docs, "PodDisruptionBudget", pdb_names[component])
+                del pdb["spec"]["minAvailable"]
+                pdb["spec"]["maxUnavailable"] = 1
+                failed = _failed_names(run_checks(docs))
+                self.assertIn(f"{component}.pdb.min_available", failed)
+                self.assertIn(f"{component}.pdb.no_max_unavailable", failed)
 
 
 class SelectorIsolationTests(unittest.TestCase):
@@ -743,7 +1034,7 @@ class VersionDriftTests(unittest.TestCase):
     def test_gateway_pod_template_version_label_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
         dep = _find(docs, "Deployment", "maops-gateway")
-        dep["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/version"] = "0.3.0"
+        dep["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/version"] = "0.2.0"
         failed = _failed_names(run_checks(docs))
         self.assertIn("gateway.pod_template.version_label", failed)
 

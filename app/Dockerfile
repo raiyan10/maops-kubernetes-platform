@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# MAOps Kubernetes Platform - Day 2 "app" workload container.
+# MAOps Kubernetes Platform - "app" workload container (unchanged
+# since Day 2; Day 3 adds scaling/rollout/scheduling/PDB at the
+# Kubernetes manifest layer only).
 #
 # Requirements:
 #   - deterministic/pinned base image (digest-pinned distroless, no package manager)

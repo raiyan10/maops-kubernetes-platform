@@ -12,26 +12,36 @@ unit tests (`kubernetes-test-engineer`).
 
 Your working context:
 
-- Cluster name: as of Day 2, `maops-k8s-day2` (the name changes per day per
-  `docs/roadmap.md` when a later day re-creates it - never assume a
-  hardcoded name without checking the current day's Makefile/`kind/cluster.yaml`).
-  kubeconfig context is `kind-<cluster-name>`. Day 2 tooling must never touch
-  a still-running earlier-day cluster (e.g. `maops-k8s-day1`) - leave it alone.
+- Cluster name: as of Day 3, `maops-k8s-day3`, 1 control-plane + 2 worker
+  nodes (the name/topology changes per day per `docs/roadmap.md` when a
+  later day re-creates it - never assume a hardcoded name/topology without
+  checking the current day's Makefile/`kind/cluster.yaml`). kubeconfig
+  context is `kind-<cluster-name>`. Day 3 tooling must never touch a
+  still-running earlier-day cluster (`maops-k8s-day1`, `maops-k8s-day2`) -
+  leave both alone. Every live script calls `kube.verify_context()` first
+  and fails closed if the live cluster's node identity doesn't actually
+  match the expected cluster - never bypass or weaken that guard.
 - Pinned node image is declared in `kind/cluster.yaml` - never substitute
   `latest` or a different tag/digest when recreating the cluster.
-- As of Day 2 there are two workloads (`maops-gateway`, `maops-app`), each
-  with its own Deployment/Service/ConfigMap - real-cluster evidence must
-  cover both, not just one. Authoritative backend-readiness evidence uses
-  `discovery.k8s.io/v1` EndpointSlice (`scripts/endpointslice.py`), not the
-  legacy `v1 Endpoints` API.
+- As of Day 3 there are two workloads (`maops-gateway`, `maops-app`), each
+  with its own Deployment (3 replicas, worker-only scheduling, topology
+  spread)/Service/ConfigMap/PodDisruptionBudget - real-cluster evidence
+  must cover both, not just one. Authoritative backend-readiness evidence
+  uses `discovery.k8s.io/v1` EndpointSlice (`scripts/endpointslice.py`),
+  not the legacy `v1 Endpoints` API.
 - The authoritative local commands are Makefile targets
-  (`make cluster-create`, `make namespace-apply`, `make secret-bootstrap`,
-  `make image-load`, `make deploy`, `make rollout-check`,
-  `make discovery-check`, `make secret-check`, `make smoke`,
-  `make dependency-check`, `make controller-check`, `make dayN-check`)
-  backed by `scripts/kube.py`, `scripts/cluster_check.py`,
+  (`make cluster-create`, `make context-check`, `make namespace-apply`,
+  `make secret-bootstrap`, `make image-load`, `make deploy`,
+  `make rollout-check`, `make scheduling-check`, `make discovery-check`,
+  `make secret-check`, `make smoke`, `make dependency-check`,
+  `make scaling-check`, `make rolling-update-check`, `make pdb-check`,
+  `make final-state-check`, `make controller-check`, `make dayN-check`)
+  backed by `scripts/kube.py`, `scripts/context_check.py`,
+  `scripts/cluster_check.py`, `scripts/scheduling_check.py`,
   `scripts/discovery_check.py`, `scripts/secret_check.py`, `scripts/smoke.py`,
-  `scripts/dependency_check.py`, `scripts/reconcile_check.py`, and
+  `scripts/dependency_check.py`, `scripts/scaling_check.py`,
+  `scripts/rollout_check.py`, `scripts/pdb_check.py`,
+  `scripts/final_state_check.py`, `scripts/reconcile_check.py`, and
   `scripts/portforward.py`. Prefer running/extending these over ad hoc
   kubectl invocations, so the Makefile stays the single source of truth
   that later CI will orchestrate.
@@ -56,10 +66,19 @@ Operating rules:
   create a replacement manually, and must show a genuinely new pod UID
   post-reconciliation alongside the untouched survivor's UID - don't
   accept a "looks fine" without comparing UID sets.
-- A dependency-failure experiment (scaling `maops-app` to 0) must always
-  restore it to its expected replica count in a guaranteed path, even if
-  the experiment itself fails - a restoration failure is a distinct,
-  prominent finding, never hidden behind the original result.
+- A dependency-failure experiment (scaling `maops-app` to 0), a scaling
+  experiment (3 -> 4), a rolling-update experiment (temporary Pod-template
+  annotation), and a PDB/Eviction experiment (3 -> 2) must all always
+  restore the workload to its expected replica count / template / PDB
+  state in a guaranteed path, even if the experiment itself fails - a
+  restoration failure is a distinct, prominent finding, never hidden
+  behind the original result. When comparing Pod sets before/after a
+  mutation (rollout, rollback, scale), poll until the live Pod count
+  actually settles to the expected number before snapshotting - a
+  Deployment reporting `readyReplicas` at target and `rollout status`
+  succeeding both race slightly ahead of old Pods' termination actually
+  completing, so an immediate one-shot Pod list can transiently
+  over-count.
 - Report exact command output and counts (replica counts, endpoint
   counts, HTTP status codes) rather than paraphrasing "it worked."
 

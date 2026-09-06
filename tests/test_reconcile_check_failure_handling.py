@@ -7,7 +7,9 @@ Docker/Kubernetes-free unit tests for scripts/reconcile_check.py:
 - DAY1-INT-I1: victim-pod selection must be a deterministic function of
   metadata.name, not incidental API list ordering.
 
-Monkeypatches get_pods/run so these tests never touch a real cluster.
+Monkeypatches get_pods/run/kube.verify_context so these tests never
+touch a real cluster. Fixtures use 3 pods (the Day 3 baseline replica
+count), not Day 1/2's 2.
 """
 
 from __future__ import annotations
@@ -23,12 +25,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import reconcile_check
 
 
-class DeletePodFailureHandlingTests(unittest.TestCase):
+class _NoVerifyContextMixin:
     def setUp(self):
+        super().setUp()
         reconcile_check.results = []
+        patcher = mock.patch.object(reconcile_check.kube, "verify_context")
+        self.addCleanup(patcher.stop)
+        patcher.start()
 
+
+class DeletePodFailureHandlingTests(_NoVerifyContextMixin, unittest.TestCase):
     def test_delete_failure_is_recorded_cleanly_not_raised(self):
         pods = [
+            {"metadata": {"name": "maops-app-ccc", "uid": "uid-c"}},
             {"metadata": {"name": "maops-app-bbb", "uid": "uid-b"}},
             {"metadata": {"name": "maops-app-aaa", "uid": "uid-a"}},
         ]
@@ -45,10 +54,7 @@ class DeletePodFailureHandlingTests(unittest.TestCase):
         self.assertIn("not found", messages)
 
 
-class DeterministicVictimSelectionTests(unittest.TestCase):
-    def setUp(self):
-        reconcile_check.results = []
-
+class DeterministicVictimSelectionTests(_NoVerifyContextMixin, unittest.TestCase):
     def test_victim_is_the_pod_that_sorts_first_by_name(self):
         # Pods are returned out of name order; the deleted pod must be
         # whichever sorts first by metadata.name, not whichever the
@@ -56,6 +62,7 @@ class DeterministicVictimSelectionTests(unittest.TestCase):
         # longer depends on incidental list ordering.
         pods = [
             {"metadata": {"name": "maops-app-zzz", "uid": "uid-z"}},
+            {"metadata": {"name": "maops-app-mmm", "uid": "uid-m"}},
             {"metadata": {"name": "maops-app-aaa", "uid": "uid-a"}},
         ]
         deleted = {}
@@ -73,6 +80,7 @@ class DeterministicVictimSelectionTests(unittest.TestCase):
 
     def test_victim_selection_stable_regardless_of_input_order(self):
         pods_order_a = [
+            {"metadata": {"name": "maops-app-3", "uid": "uid-3"}},
             {"metadata": {"name": "maops-app-2", "uid": "uid-2"}},
             {"metadata": {"name": "maops-app-1", "uid": "uid-1"}},
         ]
@@ -92,6 +100,21 @@ class DeterministicVictimSelectionTests(unittest.TestCase):
             return captured.get("victim")
 
         self.assertEqual(victim_for(pods_order_a), victim_for(pods_order_b))
+
+
+class WrongContextFailsClosedTests(unittest.TestCase):
+    """DAY3: every live script must refuse to run against an unverified
+    cluster rather than silently proceeding."""
+
+    def setUp(self):
+        reconcile_check.results = []
+
+    def test_verify_context_failure_short_circuits_before_any_mutation(self):
+        with mock.patch.object(reconcile_check.kube, "verify_context", side_effect=RuntimeError("wrong cluster")):
+            with mock.patch.object(reconcile_check, "get_pods") as mock_get_pods:
+                exit_code = reconcile_check.main()
+        self.assertEqual(exit_code, 1)
+        mock_get_pods.assert_not_called()
 
 
 if __name__ == "__main__":

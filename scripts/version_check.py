@@ -31,9 +31,9 @@ import k8s_yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "VERSION"
 
-# Day 2's pinned target - VERSION itself must have actually been bumped,
+# Day 3's pinned target - VERSION itself must have actually been bumped,
 # not just left agreeing with whatever it already said.
-EXPECTED_TARGET_VERSION = "0.2.0"
+EXPECTED_TARGET_VERSION = "0.3.0"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -90,7 +90,7 @@ def run_version_checks(version: str, docs: list[dict]) -> list[Finding]:
     findings.append(
         Finding(
             ok=version == EXPECTED_TARGET_VERSION,
-            name="version.file_matches_day2_target",
+            name="version.file_matches_day3_target",
             detail=f"expected VERSION == {EXPECTED_TARGET_VERSION!r}, found {version!r}",
         )
     )
@@ -124,11 +124,14 @@ def run_version_checks(version: str, docs: list[dict]) -> list[Finding]:
 
     findings.append(
         Finding(
-            ok=len(_collect_version_labels(docs)) >= 4,
+            ok=len(_collect_version_labels(docs)) >= 5,
             name="version.labels_present",
             detail=(
-                "expected at least 4 app.kubernetes.io/version label locations "
-                f"(2 Deployments x metadata + pod template), found {len(_collect_version_labels(docs))}"
+                "expected at least 5 app.kubernetes.io/version label locations "
+                "(Namespace + 2 Deployments x metadata, plus 2 Deployment pod template labels - "
+                "the real k8s/base render additionally carries labels on both ConfigMaps, both "
+                "Services, and both PodDisruptionBudgets, well above this floor), "
+                f"found {len(_collect_version_labels(docs))}"
             ),
         )
     )
@@ -142,6 +145,7 @@ def render(base_dir: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     return result.stdout
 

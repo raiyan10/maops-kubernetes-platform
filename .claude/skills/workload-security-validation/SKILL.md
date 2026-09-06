@@ -17,7 +17,7 @@ day those are introduced).
 Render with `kubectl kustomize k8s/base` and confirm, at minimum, for
 **both** `maops-gateway` and `maops-app`:
 
-| Field | Expected (as of Day 2) |
+| Field | Expected (as of Day 3, unchanged since Day 2) |
 |---|---|
 | `spec.template.spec.securityContext.runAsNonRoot` | `true` |
 | `spec.template.spec.securityContext.runAsUser` | `10001` |
@@ -61,21 +61,21 @@ distroless image has no shell, so use `kubectl exec` with the Python
 interpreter directly rather than `/bin/sh`:
 
 ```bash
-POD=$(kubectl --context kind-maops-k8s-day2 -n maops-platform get pods \
+POD=$(kubectl --context kind-maops-k8s-day3 -n maops-platform get pods \
   -l app.kubernetes.io/name=maops-kubernetes-platform,app.kubernetes.io/component=gateway \
   -o jsonpath='{.items[0].metadata.name}')
 
 # Real UID/GID the process runs as
-kubectl --context kind-maops-k8s-day2 -n maops-platform exec "$POD" -- \
+kubectl --context kind-maops-k8s-day3 -n maops-platform exec "$POD" -- \
   /usr/bin/python3.11 -c "import os; print(os.getuid(), os.getgid())"
 
 # Live pod spec's security fields as the API server actually recorded them
-kubectl --context kind-maops-k8s-day2 -n maops-platform get pod "$POD" -o json \
+kubectl --context kind-maops-k8s-day3 -n maops-platform get pod "$POD" -o json \
   | python3 -c "import json,sys; p=json.load(sys.stdin); c=p['spec']['containers'][0]; \
       print(c['securityContext']); print(p['spec']['securityContext'])"
 
 # Prove the Secret file is actually readable WITHOUT ever printing its value
-kubectl --context kind-maops-k8s-day2 -n maops-platform exec "$POD" -- \
+kubectl --context kind-maops-k8s-day3 -n maops-platform exec "$POD" -- \
   /usr/bin/python3.11 -c "import sys; sys.stdout.write(str(len(open('/var/run/secrets/maops/internal-token','rb').read())))"
 ```
 
@@ -89,11 +89,15 @@ ad hoc commands, and only fall back to manual `kubectl exec` when
 debugging a failure they report. Never write a manual command that echoes
 the decoded Secret value to the terminal.
 
-## Scope boundaries (as of Day 2)
+## Scope boundaries (as of Day 3)
 
 A runtime-bootstrapped Secret (`maops-internal-auth`) is expected to
 exist live in the cluster from Day 2 onward - that's correct, not a
 violation, as long as it's never a *committed* Secret object in
 `k8s/base`. No ServiceAccount, RBAC object, or NetworkPolicy should
-exist yet - those belong to Day 5 per `docs/roadmap.md`. Flag any of
-those appearing early as a scope violation, not just a style note.
+exist yet - those belong to Day 5 per `docs/roadmap.md`. A
+PodDisruptionBudget per workload (`minAvailable: 2`) is new and correct
+as of Day 3 - it is an availability control, not a security control, and
+does not change any securityContext expectation above. Flag any RBAC/
+NetworkPolicy/ServiceAccount appearing early as a scope violation, not
+just a style note.

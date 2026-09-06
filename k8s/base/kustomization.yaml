@@ -9,3 +9,5 @@ resources:
   - app-deployment.yaml
   - gateway-service.yaml
   - app-service.yaml
+  - gateway-pdb.yaml
+  - app-pdb.yaml

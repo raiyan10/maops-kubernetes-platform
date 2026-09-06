@@ -5,24 +5,47 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day2
-    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day3
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/component: gateway
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
 spec:
-  replicas: 2
+  replicas: 3
+  # RollingUpdate tuning (DAY3): explicit rather than relying on
+  # Kubernetes' own defaults (which happen to match maxUnavailable=1/
+  # maxSurge=1 today, but that's a default, not a contract - Day 3 pins
+  # it so a future Kubernetes version changing its defaults can never
+  # silently change this project's rollout behavior).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  # A Pod must stay Ready for 5s before it counts toward availability -
+  # guards against a flapping/crash-looping replacement being counted
+  # as "successfully rolled out" the instant its readinessProbe first
+  # passes.
+  minReadySeconds: 5
+  # Bounds how long the rollout controller waits for progress before
+  # marking the Deployment's Progressing condition False - a stuck
+  # rollout (e.g. a bad image that never becomes Ready) is reported as a
+  # real failure within 2 minutes rather than hanging indefinitely.
+  progressDeadlineSeconds: 120
+  # Keep the last 5 ReplicaSets so `kubectl rollout undo` has real
+  # revision history to roll back to.
+  revisionHistoryLimit: 5
   selector:
     matchLabels:
       app.kubernetes.io/name: maops-kubernetes-platform
-      app.kubernetes.io/instance: maops-kubernetes-platform-day2
+      app.kubernetes.io/instance: maops-kubernetes-platform-day3
       app.kubernetes.io/component: gateway
   template:
     metadata:
       labels:
         app.kubernetes.io/name: maops-kubernetes-platform
-        app.kubernetes.io/instance: maops-kubernetes-platform-day2
-        app.kubernetes.io/version: "0.2.0"
+        app.kubernetes.io/instance: maops-kubernetes-platform-day3
+        app.kubernetes.io/version: "0.3.0"
         app.kubernetes.io/component: gateway
         app.kubernetes.io/part-of: maops-kubernetes-platform
         app.kubernetes.io/managed-by: kustomize
@@ -35,9 +58,44 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # Scheduling (DAY3): workloads must never land on the
+      # control-plane node. The default kind control-plane taint alone
+      # is not relied on - this required node affinity is a second,
+      # independent guarantee that holds even if the taint were ever
+      # removed.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      # Spread gateway replicas across worker nodes (never counting app
+      # Pods - the labelSelector below is scoped to this workload's own
+      # component only). With 3 replicas across 2 workers, maxSkew: 1
+      # allows the only two distributions that are actually possible
+      # (2/1 or 1/2) while still rejecting a 3/0 pile-up. Hard pod
+      # anti-affinity is deliberately NOT used here - it would demand a
+      # perfectly even split, which is mathematically impossible for 3
+      # replicas over 2 nodes and would leave one replica permanently
+      # unschedulable.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          # Explicit rather than relying on the Kubernetes-version default
+          # (DAY3-ARCH-L1): a future default change must never silently
+          # alter which nodes/taints this constraint honors.
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: maops-kubernetes-platform
+              app.kubernetes.io/instance: maops-kubernetes-platform-day3
+              app.kubernetes.io/component: gateway
       containers:
         - name: maops-gateway
-          image: maops-kubernetes-gateway:0.2.0
+          image: maops-kubernetes-gateway:0.3.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Real kind-cluster validation for Day 2 (checks 1-10, 12-20 of the
+Real kind-cluster validation for Day 3 (checks 1-10, 12-20 of the
 required real-cluster proof list; discovery/DNS lives in
 discovery_check.py, Secret/auth behavior in secret_check.py, normal HTTP
-smoke in smoke.py, and dependency-failure behavior in dependency_check.py
-since each needs its own bounded lifecycle).
+smoke in smoke.py, dependency-failure behavior in dependency_check.py,
+scheduling/topology in scheduling_check.py, scaling in scaling_check.py,
+rolling update/rollback in rollout_check.py, and PDB/Eviction behavior
+in pdb_check.py, since each needs its own bounded lifecycle).
 
 Talks to the actual live cluster via `kubectl ... -o json` - this is
 runtime evidence, not manifest re-reading. Authoritative backend-
@@ -20,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from endpointslice import count_ready_endpoints
 from kube import (
     APP_DEPLOYMENT,
@@ -37,7 +40,8 @@ from kube import (
 )
 
 EXPECTED_K8S_VERSION = "v1.36.1"
-EXPECTED_REPLICAS = 2
+EXPECTED_REPLICAS = 3
+EXPECTED_NODE_COUNT = 3
 
 WORKLOADS = [
     ("gateway", GATEWAY_DEPLOYMENT, GATEWAY_SERVICE, GATEWAY_LABEL_SELECTOR, "maops-gateway-config"),
@@ -60,7 +64,11 @@ def check_cluster_ready():
         for n in nodes
         if any(c.get("type") == "Ready" and c.get("status") == "True" for c in n.get("status", {}).get("conditions", []))
     ]
-    record(len(nodes) >= 1 and len(ready_nodes) == len(nodes), f"cluster has {len(nodes)} node(s), {len(ready_nodes)} Ready")
+    record(
+        len(nodes) == EXPECTED_NODE_COUNT and len(ready_nodes) == len(nodes),
+        f"cluster has {len(nodes)} node(s) (expected {EXPECTED_NODE_COUNT}: 1 control-plane + 2 workers), "
+        f"{len(ready_nodes)} Ready",
+    )
 
 
 def check_server_version():
@@ -139,9 +147,17 @@ def exec_in_pod(pod_name: str, *cmd: str) -> str:
     return result.stdout.strip()
 
 
-def _stderr_detail(exc: subprocess.CalledProcessError) -> str:
-    stderr = (exc.stderr or "").strip()
-    return stderr if stderr else str(exc)
+def _stderr_detail(exc: subprocess.CalledProcessError | subprocess.TimeoutExpired) -> str:
+    """Shared failure-detail formatter for both a non-zero kubectl exit
+    (CalledProcessError) and a bounded-subprocess timeout (TimeoutExpired,
+    DAY3-INT-H2) - callers across this project catch both alongside each
+    other and need one consistent detail string for either."""
+    stderr = getattr(exc, "stderr", None)
+    if stderr:
+        stderr = stderr.strip() if isinstance(stderr, str) else stderr.decode(errors="replace").strip()
+        if stderr:
+            return stderr
+    return str(exc)
 
 
 def check_configmap_consumption(component: str, configmap: str, pods: list[dict]):
@@ -230,7 +246,12 @@ def check_secret_volume_mount(component: str, pods: list[dict]):
 
 
 def main() -> int:
-    print(f"# Real Day 2 cluster validation against context {CONTEXT}")
+    print(f"# Real Day 3 cluster validation against context {CONTEXT}")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
     check_cluster_ready()
     check_server_version()
     check_namespace()

@@ -5,13 +5,13 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day2
-    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day3
+    app.kubernetes.io/version: "0.3.0"
     app.kubernetes.io/component: app
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
 data:
   APP_NAME: "maops-kubernetes-app"
-  APP_ENVIRONMENT: "day2-service-discovery"
-  APP_MESSAGE: "Hello from the MAOps Kubernetes App (Day 2)"
+  APP_ENVIRONMENT: "day3-scaling-rollouts-availability"
+  APP_MESSAGE: "Hello from the MAOps Kubernetes App (Day 3)"
   APP_LOG_LEVEL: "info"
