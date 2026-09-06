@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+import threading
 import unittest
 from pathlib import Path
 
@@ -99,6 +100,44 @@ class SigtermConversionTests(unittest.TestCase):
             with portforward._convert_sigterm_to_exception():
                 os.kill(os.getpid(), signal.SIGTERM)
         self.assertEqual(signal.getsignal(signal.SIGTERM), original)
+
+
+class BackgroundThreadSafetyTests(unittest.TestCase):
+    """DAY3 regression (found live during the DAY3-ARCH-M1/DAY3-INT-M1
+    in-flight rollout sampler remediation): `signal.signal()` raises
+    ValueError when called from any thread other than the main thread of
+    the main interpreter. Before this fix, using `port_forward()` (which
+    wraps its body in `_convert_sigterm_to_exception()`) from a
+    background thread raised that ValueError on every call, BEFORE the
+    already-spawned kubectl child process could ever be terminated -
+    leaking it every single time. Confirmed live: 61 leaked
+    `kubectl port-forward` processes and 0/N successful samples across an
+    actual rolling update before this fix; 0 leaked processes and normal
+    success afterward."""
+
+    def test_context_manager_does_not_raise_from_a_background_thread(self):
+        outcome = {}
+
+        def worker():
+            try:
+                with portforward._convert_sigterm_to_exception():
+                    pass
+                outcome["ok"] = True
+            except Exception as exc:  # noqa: BLE001 - captured for the assertion below
+                outcome["ok"] = False
+                outcome["exc"] = exc
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=5)
+        self.assertTrue(outcome.get("ok"), f"must not raise off the main thread, got {outcome.get('exc')!r}")
+
+    def test_main_thread_sigterm_handling_is_unaffected_by_the_thread_guard(self):
+        # The background-thread no-op path must never accidentally become
+        # the path taken on the main thread itself.
+        with self.assertRaises(portforward.PortForwardSignalInterrupt):
+            with portforward._convert_sigterm_to_exception():
+                os.kill(os.getpid(), signal.SIGTERM)
 
 
 if __name__ == "__main__":

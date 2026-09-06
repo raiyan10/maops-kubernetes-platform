@@ -27,6 +27,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import secret_bootstrap
 
+# DAY3: secret_bootstrap.main() now calls kube.verify_context() first (the
+# fail-closed wrong-cluster guard) - patched module-wide here since every
+# test in this file calls main() against a fake `run`/`get_existing_secret`,
+# never a real cluster. The context-verification mechanism itself is
+# covered by its own dedicated test class below.
+_verify_context_patcher = mock.patch.object(secret_bootstrap.kube, "verify_context")
+
+
+def setUpModule():
+    _verify_context_patcher.start()
+
+
+def tearDownModule():
+    _verify_context_patcher.stop()
+
 
 def _secret_json(value: str | None, key: str = "internal-token") -> dict:
     data = {}
@@ -265,6 +280,19 @@ class TempFileModeTests(unittest.TestCase):
                 secret_bootstrap.create_secret("some-token-value-not-printed-below")
 
         self.assertEqual(captured_mode.get("st_mode"), 0o600)
+
+
+class WrongContextFailsClosedTests(unittest.TestCase):
+    """DAY3: secret_bootstrap must never attempt to read/create a Secret
+    against an unverified cluster - verify_context() failing must short-
+    circuit before get_existing_secret() is ever called."""
+
+    def test_verify_context_failure_short_circuits_before_secret_lookup(self):
+        with mock.patch.object(secret_bootstrap.kube, "verify_context", side_effect=RuntimeError("wrong cluster")):
+            with mock.patch.object(secret_bootstrap, "get_existing_secret") as mock_get:
+                exit_code = secret_bootstrap.main()
+        self.assertEqual(exit_code, 1)
+        mock_get.assert_not_called()
 
 
 if __name__ == "__main__":

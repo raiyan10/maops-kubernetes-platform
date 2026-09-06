@@ -1,17 +1,19 @@
 """
-Repository-owned static validation for the Day 2 Kubernetes manifests.
+Repository-owned static validation for the Day 3 Kubernetes manifests.
 
 Operates on already-parsed Kubernetes objects (plain dict/list/scalar
 Python structures - one entry per rendered document), not raw YAML
 text, so the validation rules stay decoupled from parsing mechanics
 and are directly unit-testable against constructed fixtures.
 
-Day 2 introduces a second workload (gateway) alongside the Day 1 app
-workload, real service discovery (gateway -> app via the Kubernetes
-Service DNS name), two workload-specific ConfigMaps, and a runtime
-Secret consumed by both workloads as a read-only volume. The Secret
-object itself is never rendered by k8s/base (see scope.no_forbidden_resources)
-- it's created out-of-band by scripts/secret_bootstrap.py.
+Day 3 keeps Day 2's two-workload architecture (gateway/app, service
+discovery, ConfigMaps, runtime Secret) and adds: 3 replicas per
+workload, an explicit RollingUpdate strategy (maxUnavailable/maxSurge/
+minReadySeconds/progressDeadlineSeconds/revisionHistoryLimit),
+worker-only required node affinity, per-workload topologySpreadConstraints,
+and a PodDisruptionBudget per workload. The Secret object itself is
+still never rendered by k8s/base (see scope.no_forbidden_resources) -
+it's created out-of-band by scripts/secret_bootstrap.py.
 """
 
 from __future__ import annotations
@@ -21,7 +23,8 @@ import re
 from dataclasses import dataclass
 
 EXPECTED_NAMESPACE = "maops-platform"
-EXPECTED_VERSION = "0.2.0"
+EXPECTED_VERSION = "0.3.0"
+EXPECTED_INSTANCE = "maops-kubernetes-platform-day3"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -29,14 +32,39 @@ GATEWAY_SERVICE = "maops-gateway"
 APP_SERVICE = "maops-app"
 GATEWAY_CONFIGMAP = "maops-gateway-config"
 APP_CONFIGMAP = "maops-app-config"
+GATEWAY_PDB = "maops-gateway-pdb"
+APP_PDB = "maops-app-pdb"
 GATEWAY_CONTAINER = "maops-gateway"
 APP_CONTAINER = "maops-app"
 GATEWAY_IMAGE = f"maops-kubernetes-gateway:{EXPECTED_VERSION}"
 APP_IMAGE = f"maops-kubernetes-app:{EXPECTED_VERSION}"
 
-EXPECTED_REPLICAS = 2
+EXPECTED_REPLICAS = 3
 EXPECTED_REQUESTS = {"cpu": "50m", "memory": "32Mi"}
 EXPECTED_LIMITS = {"cpu": "250m", "memory": "128Mi"}
+
+# DAY3: RollingUpdate/availability tuning - pinned explicitly rather than
+# relying on Kubernetes' current defaults (see k8s/base/*-deployment.yaml
+# for the full rationale).
+EXPECTED_STRATEGY_TYPE = "RollingUpdate"
+EXPECTED_MAX_UNAVAILABLE = 1
+EXPECTED_MAX_SURGE = 1
+EXPECTED_MIN_READY_SECONDS = 5
+EXPECTED_PROGRESS_DEADLINE_SECONDS = 120
+EXPECTED_REVISION_HISTORY_LIMIT = 5
+
+# DAY3: scheduling.
+CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
+EXPECTED_TOPOLOGY_KEY = "kubernetes.io/hostname"
+EXPECTED_MAX_SKEW = 1
+EXPECTED_WHEN_UNSATISFIABLE = "DoNotSchedule"
+# DAY3-ARCH-L1: pinned explicitly rather than relying on the
+# Kubernetes-version default for either policy.
+EXPECTED_NODE_AFFINITY_POLICY = "Honor"
+EXPECTED_NODE_TAINTS_POLICY = "Honor"
+
+# DAY3: PodDisruptionBudget.
+EXPECTED_PDB_MIN_AVAILABLE = 2
 
 SECRET_NAME = "maops-internal-auth"
 SECRET_VOLUME_NAME = "internal-auth"
@@ -57,6 +85,7 @@ FORBIDDEN_KINDS = {
     "ClusterRoleBinding",
     "ServiceAccount",
     "NetworkPolicy",
+    "HorizontalPodAutoscaler",
 }
 
 # Heuristic for a Deployment-managed pod's generated name, e.g.
@@ -122,6 +151,24 @@ def _find_mount(mounts: list[dict], name: str) -> dict:
     return next((m for m in (mounts or []) if isinstance(m, dict) and m.get("name") == name), {})
 
 
+def _node_affinity_terms(pod_spec: dict) -> list[dict]:
+    return (
+        (pod_spec.get("affinity") or {})
+        .get("nodeAffinity", {})
+        .get("requiredDuringSchedulingIgnoredDuringExecution", {})
+        .get("nodeSelectorTerms")
+        or []
+    )
+
+
+def _has_control_plane_exclusion(pod_spec: dict) -> bool:
+    for term in _node_affinity_terms(pod_spec):
+        for expr in term.get("matchExpressions") or []:
+            if expr.get("key") == CONTROL_PLANE_LABEL and expr.get("operator") == "DoesNotExist":
+                return True
+    return False
+
+
 def _check_workload_security_and_probes(
     c: _Checker,
     component: str,
@@ -130,10 +177,11 @@ def _check_workload_security_and_probes(
     expected_image: str,
     expected_configmap: str,
 ) -> tuple[dict, dict, dict]:
-    """Checks shared by both workloads: namespace, replicas, image,
-    probes, resources, pod/container security baseline, ConfigMap wiring,
-    Secret volume/mount wiring. Returns (pod_spec, pod_labels, container)
-    for the caller's workload-specific checks (selectors, backend wiring)."""
+    """Checks shared by both workloads: namespace, replicas, rollout
+    strategy, scheduling, image, probes, resources, pod/container
+    security baseline, ConfigMap wiring, Secret volume/mount wiring.
+    Returns (pod_spec, pod_labels, container) for the caller's
+    workload-specific checks (selectors, backend wiring, PDB)."""
 
     c.check(
         deployment.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
@@ -157,6 +205,43 @@ def _check_workload_security_and_probes(
         f"expected replicas == {EXPECTED_REPLICAS}, found {dep_spec.get('replicas')!r}",
     )
 
+    # DAY3: RollingUpdate strategy tuning.
+    strategy = dep_spec.get("strategy") or {}
+    c.check(
+        strategy.get("type") == EXPECTED_STRATEGY_TYPE,
+        f"{component}.deployment.strategy_type",
+        f"expected strategy.type == {EXPECTED_STRATEGY_TYPE!r}, found {strategy.get('type')!r}",
+    )
+    rolling_update = strategy.get("rollingUpdate") or {}
+    c.check(
+        rolling_update.get("maxUnavailable") == EXPECTED_MAX_UNAVAILABLE,
+        f"{component}.deployment.max_unavailable",
+        f"expected strategy.rollingUpdate.maxUnavailable == {EXPECTED_MAX_UNAVAILABLE}, found "
+        f"{rolling_update.get('maxUnavailable')!r}",
+    )
+    c.check(
+        rolling_update.get("maxSurge") == EXPECTED_MAX_SURGE,
+        f"{component}.deployment.max_surge",
+        f"expected strategy.rollingUpdate.maxSurge == {EXPECTED_MAX_SURGE}, found {rolling_update.get('maxSurge')!r}",
+    )
+    c.check(
+        dep_spec.get("minReadySeconds") == EXPECTED_MIN_READY_SECONDS,
+        f"{component}.deployment.min_ready_seconds",
+        f"expected minReadySeconds == {EXPECTED_MIN_READY_SECONDS}, found {dep_spec.get('minReadySeconds')!r}",
+    )
+    c.check(
+        dep_spec.get("progressDeadlineSeconds") == EXPECTED_PROGRESS_DEADLINE_SECONDS,
+        f"{component}.deployment.progress_deadline_seconds",
+        f"expected progressDeadlineSeconds == {EXPECTED_PROGRESS_DEADLINE_SECONDS}, found "
+        f"{dep_spec.get('progressDeadlineSeconds')!r}",
+    )
+    c.check(
+        dep_spec.get("revisionHistoryLimit") == EXPECTED_REVISION_HISTORY_LIMIT,
+        f"{component}.deployment.revision_history_limit",
+        f"expected revisionHistoryLimit == {EXPECTED_REVISION_HISTORY_LIMIT}, found "
+        f"{dep_spec.get('revisionHistoryLimit')!r}",
+    )
+
     pod_spec = dep_spec.get("template", {}).get("spec", {})
     pod_labels = dep_spec.get("template", {}).get("metadata", {}).get("labels", {}) or {}
     c.check(
@@ -164,6 +249,62 @@ def _check_workload_security_and_probes(
         f"{component}.pod_template.version_label",
         f"expected pod template app.kubernetes.io/version == {EXPECTED_VERSION!r}, found "
         f"{pod_labels.get('app.kubernetes.io/version')!r}",
+    )
+
+    # DAY3: worker-only required node affinity - must not depend solely
+    # on the default kind control-plane taint.
+    c.check(
+        _has_control_plane_exclusion(pod_spec),
+        f"{component}.scheduling.control_plane_excluded",
+        f"expected a required nodeAffinity term excluding {CONTROL_PLANE_LABEL!r} (operator DoesNotExist), "
+        f"found nodeSelectorTerms={_node_affinity_terms(pod_spec)!r}",
+    )
+
+    # DAY3: topologySpreadConstraints - exactly one, scoped to this
+    # workload's own component only (never counting the other workload's
+    # Pods).
+    spread_constraints = pod_spec.get("topologySpreadConstraints") or []
+    c.check(
+        len(spread_constraints) >= 1,
+        f"{component}.scheduling.topology_spread_present",
+        f"expected at least one topologySpreadConstraints entry, found {len(spread_constraints)}",
+    )
+    spread = spread_constraints[0] if spread_constraints else {}
+    c.check(
+        spread.get("maxSkew") == EXPECTED_MAX_SKEW,
+        f"{component}.scheduling.max_skew",
+        f"expected topologySpreadConstraints[0].maxSkew == {EXPECTED_MAX_SKEW}, found {spread.get('maxSkew')!r}",
+    )
+    c.check(
+        spread.get("topologyKey") == EXPECTED_TOPOLOGY_KEY,
+        f"{component}.scheduling.topology_key",
+        f"expected topologySpreadConstraints[0].topologyKey == {EXPECTED_TOPOLOGY_KEY!r}, found "
+        f"{spread.get('topologyKey')!r}",
+    )
+    c.check(
+        spread.get("whenUnsatisfiable") == EXPECTED_WHEN_UNSATISFIABLE,
+        f"{component}.scheduling.when_unsatisfiable",
+        f"expected topologySpreadConstraints[0].whenUnsatisfiable == {EXPECTED_WHEN_UNSATISFIABLE!r}, found "
+        f"{spread.get('whenUnsatisfiable')!r}",
+    )
+    c.check(
+        spread.get("nodeAffinityPolicy") == EXPECTED_NODE_AFFINITY_POLICY,
+        f"{component}.scheduling.node_affinity_policy",
+        f"expected topologySpreadConstraints[0].nodeAffinityPolicy == {EXPECTED_NODE_AFFINITY_POLICY!r}, found "
+        f"{spread.get('nodeAffinityPolicy')!r}",
+    )
+    c.check(
+        spread.get("nodeTaintsPolicy") == EXPECTED_NODE_TAINTS_POLICY,
+        f"{component}.scheduling.node_taints_policy",
+        f"expected topologySpreadConstraints[0].nodeTaintsPolicy == {EXPECTED_NODE_TAINTS_POLICY!r}, found "
+        f"{spread.get('nodeTaintsPolicy')!r}",
+    )
+    spread_selector = (spread.get("labelSelector") or {}).get("matchLabels") or {}
+    c.check(
+        bool(spread_selector) and spread_selector.get("app.kubernetes.io/component") == component,
+        f"{component}.scheduling.topology_selector_scoped_to_own_component",
+        f"expected topologySpreadConstraints[0].labelSelector.matchLabels.app.kubernetes.io/component == "
+        f"{component!r}, found {spread_selector!r}",
     )
 
     containers = pod_spec.get("containers") or []
@@ -325,7 +466,7 @@ def _check_workload_security_and_probes(
         f"envFrom={env_from!r} env={env!r}",
     )
 
-    # Secret volume/mount wiring (DAY2)
+    # Secret volume/mount wiring
     secret_volume = _find_volume(volumes, SECRET_VOLUME_NAME)
     secret_spec = secret_volume.get("secret") or {}
     c.check(
@@ -364,6 +505,51 @@ def _check_workload_security_and_probes(
     )
 
     return pod_spec, pod_labels, container
+
+
+def _check_pdb(c: _Checker, component: str, pdb: dict | None, pod_labels: dict, other_pod_labels: dict) -> dict:
+    c.check(
+        pdb is not None,
+        f"{component}.pdb.exists",
+        f"expected a PodDisruptionBudget for {component!r} to exist, found none",
+    )
+    pdb = pdb or {}
+    c.check(
+        pdb.get("apiVersion") == "policy/v1",
+        f"{component}.pdb.api_version",
+        f"expected PodDisruptionBudget apiVersion == 'policy/v1', found {pdb.get('apiVersion')!r}",
+    )
+    c.check(
+        pdb.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+        f"{component}.pdb.namespace_matches",
+        f"expected PodDisruptionBudget metadata.namespace == {EXPECTED_NAMESPACE!r}, found "
+        f"{pdb.get('metadata', {}).get('namespace')!r}",
+    )
+    pdb_spec = pdb.get("spec") or {}
+    c.check(
+        pdb_spec.get("minAvailable") == EXPECTED_PDB_MIN_AVAILABLE,
+        f"{component}.pdb.min_available",
+        f"expected PodDisruptionBudget spec.minAvailable == {EXPECTED_PDB_MIN_AVAILABLE}, found "
+        f"{pdb_spec.get('minAvailable')!r}",
+    )
+    c.check(
+        "maxUnavailable" not in pdb_spec,
+        f"{component}.pdb.no_max_unavailable",
+        f"expected PodDisruptionBudget to use minAvailable, not maxUnavailable, found spec={pdb_spec!r}",
+    )
+    selector = (pdb_spec.get("selector") or {}).get("matchLabels") or {}
+    c.check(
+        bool(selector) and all(pod_labels.get(k) == v for k, v in selector.items()),
+        f"{component}.pdb.selector_matches_pod_labels",
+        f"expected PodDisruptionBudget selector {selector} to be satisfied by pod labels {pod_labels}",
+    )
+    c.check(
+        not (bool(selector) and all(other_pod_labels.get(k) == v for k, v in selector.items())),
+        f"{component}.pdb.no_cross_workload_selector",
+        f"PodDisruptionBudget selector {selector} for {component!r} must NOT be satisfied by the other "
+        f"workload's pod labels {other_pod_labels}",
+    )
+    return pdb_spec
 
 
 def run_checks(docs: list[dict]) -> list[Finding]:
@@ -534,7 +720,32 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         f"app Service selector {app_selector} must NOT be satisfied by gateway pod labels {gw_pod_labels}",
     )
 
-    # Forbidden Day 2 resources (includes: Secret must never be committed)
+    # PodDisruptionBudgets (DAY3)
+    pdbs = c.by_kind("PodDisruptionBudget")
+    c.check(
+        len(pdbs) == 2,
+        "pdb.count",
+        f"expected exactly two PodDisruptionBudgets, found {len(pdbs)}",
+    )
+    pdb_names = [p.get("metadata", {}).get("name") for p in pdbs]
+    gateway_pdb = next((p for p in pdbs if p.get("metadata", {}).get("name") == GATEWAY_PDB), None)
+    app_pdb = next((p for p in pdbs if p.get("metadata", {}).get("name") == APP_PDB), None)
+    c.check(
+        gateway_pdb is not None,
+        "gateway.pdb.named_correctly",
+        f"expected PodDisruptionBudget {GATEWAY_PDB!r} to exist, found {pdb_names}",
+    )
+    c.check(
+        app_pdb is not None,
+        "app.pdb.named_correctly",
+        f"expected PodDisruptionBudget {APP_PDB!r} to exist, found {pdb_names}",
+    )
+    _check_pdb(c, "gateway", gateway_pdb, gw_pod_labels, app_pod_labels)
+    _check_pdb(c, "app", app_pdb, app_pod_labels, gw_pod_labels)
+
+    # Forbidden Day 3 resources (includes: Secret must never be committed;
+    # HPA/StatefulSet/PVC/RBAC/NetworkPolicy/Ingress remain deferred to
+    # later days per docs/roadmap.md)
     present_kinds = {d.get("kind") for d in docs}
     forbidden_present = present_kinds & FORBIDDEN_KINDS
     c.check(

@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from cluster_check import get_pods
 from http_checks import check_all_endpoints, raw_get
 from kube import (
@@ -220,6 +221,11 @@ def check_repo_files_do_not_contain_token(token: bytes | None) -> None:
 
 def main() -> int:
     print("# Real Secret behavior / non-disclosure validation")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
 
     if not check_secret_shape():
         print()

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-MAOps Kubernetes Platform - Day 2 "app" workload.
+MAOps Kubernetes Platform - "app" workload (introduced Day 2, unchanged
+application code as of Day 3 - Day 3's scaling/rollout/scheduling/PDB
+work is entirely a Kubernetes-manifest and cluster-tooling concern).
 
 A deliberately tiny HTTP server, Python standard library only, used
 solely to prove real Kubernetes behavior (Deployment, Service,
@@ -69,7 +71,7 @@ def _token_is_valid(provided: str | None) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "maops-kubernetes-app/0.2.0"
+    server_version = "maops-kubernetes-app/0.3.0"
 
     def _write_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")

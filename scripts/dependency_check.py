@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Real dependency-failure behavior proof (Day 2).
+Real dependency-failure behavior proof (carried forward from Day 2,
+updated for the Day 3 3-replica baseline).
 
 Proves gateway liveness is genuinely independent of dependency-aware
 readiness by scaling ONLY maops-app to 0 replicas (never touching
@@ -16,7 +17,7 @@ routing to a not-Ready gateway Pod):
     app dependency became unavailable (only liveness failures restart a
     container; the readinessProbe failing does not)
 
-maops-app is ALWAYS restored to exactly 2 replicas in a guaranteed
+maops-app is ALWAYS restored to exactly 3 replicas in a guaranteed
 `finally` path, whether the experiment above succeeded or not. If
 restoration itself fails, that is reported prominently and separately
 from the original experiment's result - never silently swallowed.
@@ -30,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from cluster_check import _stderr_detail, get_pods
 from endpointslice import count_ready_endpoints
 from http_checks import check_endpoint, check_safe_unavailable_body, raw_get
@@ -46,7 +48,7 @@ from kube import (
 )
 from portforward import port_forward
 
-EXPECTED_REPLICAS = 2
+EXPECTED_REPLICAS = 3
 
 results: list[tuple[bool, str]] = []
 restoration_results: list[tuple[bool, str]] = []
@@ -72,7 +74,7 @@ def _deployment_ready(name: str) -> dict | None:
 
 
 def _wait_ready(name: str, timeout: float) -> None:
-    wait_until(lambda: _deployment_ready(name), timeout=timeout, interval=3, description=f"deployment/{name} 2/2 Ready")
+    wait_until(lambda: _deployment_ready(name), timeout=timeout, interval=3, description=f"deployment/{name} {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready")
 
 
 def get_restart_counts(pods: list[dict]) -> dict[str, int]:
@@ -86,12 +88,12 @@ def get_restart_counts(pods: list[dict]) -> dict[str, int]:
 def check_starting_state() -> list[dict]:
     try:
         _wait_ready("maops-gateway", timeout=60)
-        record(True, "starting state: gateway 2/2 Ready")
+        record(True, f"starting state: gateway {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready")
     except TimeoutError as exc:
         record(False, f"starting state: {exc}")
     try:
         _wait_ready("maops-app", timeout=60)
-        record(True, "starting state: app 2/2 Ready")
+        record(True, f"starting state: app {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready")
     except TimeoutError as exc:
         record(False, f"starting state: {exc}")
     return get_pods(GATEWAY_LABEL_SELECTOR)
@@ -108,7 +110,7 @@ def restore_app() -> bool:
     never hidden behind the original experiment's outcome."""
     try:
         scale_app(EXPECTED_REPLICAS)
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         record_restoration(False, f"could not scale maops-app back to {EXPECTED_REPLICAS} replicas: {_stderr_detail(exc)}")
         return False
 
@@ -203,14 +205,33 @@ def run_experiment(gateway_pods: list[dict]) -> None:
         return
 
     after_restarts = get_restart_counts(get_pods(GATEWAY_LABEL_SELECTOR))
-    record(
-        before_restarts == after_restarts,
-        f"gateway container restart counts unchanged solely due to app outage: before={before_restarts} after={after_restarts}",
-    )
+    if before_restarts == after_restarts:
+        record(
+            True,
+            f"gateway restart counts remained unchanged during the dependency outage observation window: "
+            f"before={before_restarts} after={after_restarts}",
+        )
+    else:
+        # DAY3-INT-L3: a restart count change during this window is a real
+        # isolation/health assertion failure, but this script only ever
+        # observes correlation (restart during the outage window), never
+        # causation (the outage BEING the restart's cause) - it never
+        # inspects the container's actual exit/restart reason.
+        record(
+            False,
+            "gateway restart counts changed during the dependency outage observation window "
+            f"(isolation/health assertion failed; causation not established): "
+            f"before={before_restarts} after={after_restarts}",
+        )
 
 
 def main() -> int:
     print("# Real dependency-failure behavior proof (gateway liveness vs. dependency-aware readiness)")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
 
     gateway_pods = check_starting_state()
 
@@ -219,8 +240,8 @@ def main() -> int:
         scale_app(0)
         scaled_down = True
         run_experiment(gateway_pods)
-    except subprocess.CalledProcessError as exc:
-        record(False, f"scaling maops-app to 0 failed: {_stderr_detail(exc)}")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        record(False, f"scaling maops-app to 0 failed/timed out: {_stderr_detail(exc)}")
     except Exception as exc:  # noqa: BLE001 - a controlled failure record, never a swallowed one; restoration below still always runs
         record(False, f"dependency-failure experiment raised an unexpected error: {exc}")
     finally:
@@ -235,13 +256,13 @@ def main() -> int:
     print(f"{len(all_results) - len(failures)}/{len(all_results)} dependency-failure checks passed")
     if restoration_failures:
         print()
-        print("!!! RESTORATION FAILURE - maops-app may not be back at 2/2 Ready - independent action required !!!", file=sys.stderr)
+        print(f"!!! RESTORATION FAILURE - maops-app may not be back at {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready - independent action required !!!", file=sys.stderr)
         for msg in restoration_failures:
             print(f"RESTORATION FAILURE: {msg}", file=sys.stderr)
     if failures:
         print(f"FAIL: {len(failures)} dependency-failure check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: dependency-failure behavior proven and maops-app restored to 2/2 Ready")
+    print(f"PASS: dependency-failure behavior proven and maops-app restored to {EXPECTED_REPLICAS}/{EXPECTED_REPLICAS} Ready")
     return 0
 
 

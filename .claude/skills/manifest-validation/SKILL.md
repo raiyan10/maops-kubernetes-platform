@@ -23,25 +23,46 @@ against the parsed objects. It requires no live cluster and no
 third-party Python package - if a change to this workflow introduces
 either dependency, that's itself a finding to report.
 
-## What "correct" means as of Day 2
+## What "correct" means as of Day 3
 
 Check the exact expected values against `scripts/validate_manifests.py`'s
 constants (`EXPECTED_NAMESPACE`, `GATEWAY_IMAGE`/`APP_IMAGE`,
 `EXPECTED_REPLICAS`, `EXPECTED_REQUESTS`, `EXPECTED_LIMITS`,
-`EXPECTED_BACKEND_HOST`/`EXPECTED_BACKEND_PORT`, etc.) rather than
-memorizing them here, since a later day may extend this file. As of
-Day 2 the checks cover **both workloads** (`maops-gateway`, `maops-app`)
-independently, plus cross-workload isolation:
+`EXPECTED_BACKEND_HOST`/`EXPECTED_BACKEND_PORT`,
+`EXPECTED_STRATEGY_TYPE`/`EXPECTED_MAX_UNAVAILABLE`/`EXPECTED_MAX_SURGE`/
+`EXPECTED_MIN_READY_SECONDS`/`EXPECTED_PROGRESS_DEADLINE_SECONDS`/
+`EXPECTED_REVISION_HISTORY_LIMIT`, `EXPECTED_MAX_SKEW`/
+`EXPECTED_TOPOLOGY_KEY`/`EXPECTED_WHEN_UNSATISFIABLE`,
+`EXPECTED_PDB_MIN_AVAILABLE`, etc.) rather than memorizing them here,
+since a later day may extend this file. As of Day 3 the checks cover
+**both workloads** (`maops-gateway`, `maops-app`) independently, plus
+cross-workload isolation:
 
 - Exactly one Namespace (`maops-platform`), two Deployments
-  (`maops-gateway`, `maops-app`, each replicas == 2, single container),
+  (`maops-gateway`, `maops-app`, each replicas == 3, single container),
   two Services (each ClusterIP), two ConfigMaps
-  (`maops-gateway-config`, `maops-app-config`).
+  (`maops-gateway-config`, `maops-app-config`), two
+  PodDisruptionBudgets (`maops-gateway-pdb`, `maops-app-pdb`) - 9
+  rendered objects total.
 - Images are `maops-kubernetes-gateway:<VERSION>` /
   `maops-kubernetes-app:<VERSION>` with `imagePullPolicy: IfNotPresent`,
   and every `app.kubernetes.io/version` label (including pod template
   labels) matches `VERSION` (see `make version-check`, which closes
   `DAY1-REL-I1`).
+- **RollingUpdate tuning**: `strategy.type == RollingUpdate`,
+  `maxUnavailable == 1`, `maxSurge == 1`, `minReadySeconds == 5`,
+  `progressDeadlineSeconds == 120`, `revisionHistoryLimit == 5` on both
+  Deployments - pinned explicitly, not left to Kubernetes defaults.
+- **Scheduling**: a required `nodeAffinity` term excluding
+  `node-role.kubernetes.io/control-plane` (operator `DoesNotExist`) on
+  both Deployments, plus exactly one `topologySpreadConstraints` entry
+  each (`maxSkew: 1`, `topologyKey: kubernetes.io/hostname`,
+  `whenUnsatisfiable: DoNotSchedule`) whose `labelSelector` is scoped to
+  that workload's own `component` only - gateway's spread must never be
+  satisfiable by app Pod labels, and vice versa.
+- **PodDisruptionBudget**: `apiVersion: policy/v1`, `minAvailable: 2`
+  (never `maxUnavailable`), correct namespace, selector satisfied by its
+  own workload's pod labels and NOT by the other workload's.
 - Gateway `BACKEND_HOST` == `maops-app` exactly (never an IP literal,
   never a hardcoded Pod/ReplicaSet-style identity), `BACKEND_PORT` ==
   `8080`.
@@ -70,7 +91,7 @@ independently, plus cross-workload isolation:
 - None of the forbidden-for-this-day kinds are present: Secret (as a
   committed object), Ingress, PersistentVolumeClaim, StatefulSet, Role,
   RoleBinding, ClusterRole, ClusterRoleBinding, ServiceAccount,
-  NetworkPolicy.
+  NetworkPolicy, HorizontalPodAutoscaler.
 
 ## When a check fails
 

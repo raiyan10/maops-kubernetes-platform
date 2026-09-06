@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 #
-# MAOps Kubernetes Platform - Day 2 "gateway" workload container.
+# MAOps Kubernetes Platform - "gateway" workload container (unchanged
+# since Day 2; Day 3 adds scaling/rollout/scheduling/PDB at the
+# Kubernetes manifest layer only).
 #
 # Requirements:
 #   - deterministic/pinned base image (digest-pinned distroless, no package manager)

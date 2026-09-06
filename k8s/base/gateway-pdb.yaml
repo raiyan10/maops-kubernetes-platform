@@ -1,0 +1,22 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: maops-gateway-pdb
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day3
+    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # minAvailable (not maxUnavailable): with 3 replicas, this guarantees
+  # at least 2 gateway Pods survive any *voluntary* disruption (e.g. a
+  # node drain) - disruptionsAllowed is 1 in the normal 3/3 state.
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maops-kubernetes-platform
+      app.kubernetes.io/instance: maops-kubernetes-platform-day3
+      app.kubernetes.io/component: gateway

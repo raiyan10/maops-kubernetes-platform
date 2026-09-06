@@ -25,6 +25,7 @@ def render(base_dir: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     return result.stdout
 

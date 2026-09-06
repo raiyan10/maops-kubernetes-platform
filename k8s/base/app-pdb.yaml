@@ -1,7 +1,7 @@
-apiVersion: v1
-kind: Service
+apiVersion: policy/v1
+kind: PodDisruptionBudget
 metadata:
-  name: maops-app
+  name: maops-app-pdb
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
@@ -11,13 +11,9 @@ metadata:
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
 spec:
-  type: ClusterIP
+  minAvailable: 2
   selector:
-    app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day3
-    app.kubernetes.io/component: app
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
-      protocol: TCP
+    matchLabels:
+      app.kubernetes.io/name: maops-kubernetes-platform
+      app.kubernetes.io/instance: maops-kubernetes-platform-day3
+      app.kubernetes.io/component: app

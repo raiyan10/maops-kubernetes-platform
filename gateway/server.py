@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-MAOps Kubernetes Platform - Day 2 "gateway" workload.
+MAOps Kubernetes Platform - "gateway" workload (introduced Day 2,
+unchanged application code as of Day 3 - Day 3's scaling/rollout/
+scheduling/PDB work is entirely a Kubernetes-manifest and cluster-
+tooling concern).
 
 A deliberately tiny HTTP server, Python standard library only, that
 proves real Kubernetes service discovery: it reaches the "app"
@@ -104,7 +107,7 @@ def _backend_request(path: str, headers: dict | None = None):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "maops-kubernetes-gateway/0.2.0"
+    server_version = "maops-kubernetes-gateway/0.3.0"
 
     def _write_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")

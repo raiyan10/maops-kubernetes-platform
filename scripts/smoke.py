@@ -16,6 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
 from http_checks import check_all_endpoints
 from kube import CONTEXT, GATEWAY_SERVICE, NAMESPACE
 from portforward import port_forward
@@ -23,6 +24,11 @@ from portforward import port_forward
 
 def main() -> int:
     print(f"# HTTP smoke test via port-forward to service/{GATEWAY_SERVICE} in {NAMESPACE}")
+    try:
+        kube.verify_context()
+    except RuntimeError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
     try:
         with port_forward(CONTEXT, NAMESPACE, GATEWAY_SERVICE, 8080) as local_port:
             print(f"port-forward established on 127.0.0.1:{local_port} -> service/{GATEWAY_SERVICE}:8080")

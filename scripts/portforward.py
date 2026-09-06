@@ -26,6 +26,7 @@ import os
 import signal
 import socket
 import subprocess
+import threading
 import time
 
 
@@ -45,7 +46,24 @@ def _convert_sigterm_to_exception():
     so an enclosing try/finally can still run. Always restores whatever
     SIGTERM disposition was previously installed - never left globally
     changed once this context exits. Leaves every other signal (SIGINT
-    included) completely untouched."""
+    included) completely untouched.
+
+    Thread safety (found during DAY3 remediation while adding the
+    in-flight rollout sampler, which calls port_forward() from a
+    background thread): `signal.signal()` raises `ValueError` when called
+    from anything other than the main thread of the main interpreter -
+    CPython only ever delivers process signals to the main thread in the
+    first place, so a background thread installing its own handler is
+    both impossible and unnecessary. Off the main thread this is a no-op
+    (the enclosing try/finally in `port_forward()` below still guarantees
+    `_terminate(proc)` runs on that thread regardless - only the
+    SIGTERM-while-a-port-forward-is-open safety net is specific to the
+    main thread). Before this guard, calling `port_forward()` from a
+    background thread raised ValueError before the process was ever
+    terminated, leaking the `kubectl port-forward` child on every call."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
 
     def _handler(signum, _frame):
         raise PortForwardSignalInterrupt(signum)

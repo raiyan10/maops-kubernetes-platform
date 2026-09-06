@@ -33,7 +33,7 @@ def _deployment(name: str, image: str, version_label: str) -> dict:
     }
 
 
-def _base_docs(version: str = "0.2.0") -> list[dict]:
+def _base_docs(version: str = "0.3.0") -> list[dict]:
     namespace = {
         "apiVersion": "v1",
         "kind": "Namespace",
@@ -54,7 +54,7 @@ def _failed_names(findings):
 
 class BaselineTests(unittest.TestCase):
     def test_baseline_passes_every_check(self):
-        findings = run_version_checks("0.2.0", _base_docs())
+        findings = run_version_checks("0.3.0", _base_docs())
         failed = _failed_names(findings)
         self.assertEqual(failed, set(), f"unexpected failures: {failed}")
         self.assertGreaterEqual(len(findings), 5)
@@ -62,30 +62,30 @@ class BaselineTests(unittest.TestCase):
 
 class VersionFileDriftTests(unittest.TestCase):
     def test_version_file_not_bumped_fails(self):
-        # VERSION file itself still says 0.1.0, but the manifests were
+        # VERSION file itself still says 0.2.0, but the manifests were
         # (hypothetically) already bumped - the target-version guard must
-        # catch that VERSION itself wasn't actually bumped for Day 2.
-        findings = run_version_checks("0.1.0", _base_docs(version="0.1.0"))
+        # catch that VERSION itself wasn't actually bumped for Day 3.
+        findings = run_version_checks("0.2.0", _base_docs(version="0.2.0"))
         failed = _failed_names(findings)
-        self.assertIn("version.file_matches_day2_target", failed)
+        self.assertIn("version.file_matches_day3_target", failed)
 
 
 class ImageTagDriftTests(unittest.TestCase):
     def test_gateway_image_tag_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
         _find(docs, "maops-gateway")["spec"]["template"]["spec"]["containers"][0]["image"] = "maops-kubernetes-gateway:0.1.0"
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertIn("version.maops-gateway.image_tag_matches_version", failed)
 
     def test_app_image_tag_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
         _find(docs, "maops-app")["spec"]["template"]["spec"]["containers"][0]["image"] = "maops-kubernetes-app:latest"
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertIn("version.maops-app.image_tag_matches_version", failed)
 
     def test_missing_deployment_fails_image_check(self):
         docs = [d for d in copy.deepcopy(_base_docs()) if d.get("metadata", {}).get("name") != "maops-app"]
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertIn("version.maops-app.image_tag_matches_version", failed)
 
 
@@ -93,19 +93,19 @@ class LabelDriftTests(unittest.TestCase):
     def test_deployment_metadata_label_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
         _find(docs, "maops-gateway")["metadata"]["labels"]["app.kubernetes.io/version"] = "0.1.0"
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertTrue(any(name.startswith("version.label_matches[Deployment/maops-gateway.metadata") for name in failed))
 
     def test_pod_template_label_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
-        _find(docs, "maops-app")["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/version"] = "0.3.0"
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        _find(docs, "maops-app")["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/version"] = "0.2.0"
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertTrue(any("spec.template.metadata.labels" in name for name in failed))
 
     def test_namespace_label_drift_fails(self):
         docs = copy.deepcopy(_base_docs())
         _find(docs, "maops-platform")["metadata"]["labels"]["app.kubernetes.io/version"] = "0.1.0"
-        failed = _failed_names(run_version_checks("0.2.0", docs))
+        failed = _failed_names(run_version_checks("0.3.0", docs))
         self.assertTrue(any("Namespace/maops-platform" in name for name in failed))
 
 
