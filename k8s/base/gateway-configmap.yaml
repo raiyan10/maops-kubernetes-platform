@@ -5,8 +5,8 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day3
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
     app.kubernetes.io/component: gateway
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
@@ -16,8 +16,16 @@ data:
   # Pod IP, Pod name, or hardcoded ClusterIP.
   BACKEND_HOST: "maops-app"
   BACKEND_PORT: "8080"
-  BACKEND_TIMEOUT_SECONDS: "3"
+  # DAY4-ARCH-M1: the real chain is gateway -> app -> state, three hops
+  # deep, not the two-hop chain this value was originally sized for.
+  # app's own /internal/state and /readyz handlers can themselves take
+  # up to STATE_TIMEOUT_SECONDS (3s, app-configmap.yaml) to respond -
+  # this client-side socket connect+read timeout (per call, not a
+  # total wall-clock deadline over any retries) must comfortably exceed
+  # that, mirroring the same 2s margin app's own STATE_TIMEOUT_SECONDS
+  # keeps under its readinessProbe.
+  BACKEND_TIMEOUT_SECONDS: "5"
   APP_NAME: "maops-kubernetes-gateway"
-  APP_ENVIRONMENT: "day3-scaling-rollouts-availability"
-  APP_MESSAGE: "Hello from the MAOps Kubernetes Gateway (Day 3)"
+  APP_ENVIRONMENT: "day4-stateful-persistence"
+  APP_MESSAGE: "Hello from the MAOps Kubernetes Gateway (Day 4)"
   APP_LOG_LEVEL: "info"

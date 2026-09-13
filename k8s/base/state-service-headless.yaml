@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: maops-state-headless
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/component: state
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # Governing Service required by StatefulSet.spec.serviceName - gives
+  # maops-state-0 a stable per-Pod DNS identity. Not used for normal
+  # client traffic (that goes through the maops-state ClusterIP Service
+  # instead); this exists purely to satisfy the StatefulSet contract.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/component: state
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

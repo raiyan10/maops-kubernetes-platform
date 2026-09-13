@@ -1,8 +1,9 @@
 """
 Docker-free unit tests for the repository-owned static validation logic
-in scripts/validate_manifests.py (Day 3: gateway + app workloads, now
-with 3 replicas, RollingUpdate tuning, worker-only scheduling,
-topologySpreadConstraints, and a PodDisruptionBudget per workload).
+in scripts/validate_manifests.py (Day 4: adds the maops-state
+StatefulSet - single-replica, PVC-backed persistence via
+volumeClaimTemplates - alongside the unchanged Day 3 gateway/app
+Deployments, their Services, and their PodDisruptionBudgets).
 
 Fixtures are constructed directly as Python dict/list structures (not
 parsed from YAML text) so these tests exercise validation rules only,
@@ -23,8 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from validate_manifests import run_checks
 
-VERSION = "0.3.0"
-INSTANCE = "maops-kubernetes-platform-day3"
+VERSION = "0.4.0"
+INSTANCE = "maops-kubernetes-platform-day4"
 
 
 def _labels(component: str | None) -> dict:
@@ -87,7 +88,7 @@ def _topology_spread(component: str) -> list[dict]:
     ]
 
 
-def _container(name: str, image: str, configmap: str) -> dict:
+def _container(name: str, image: str, configmap: str, readiness_timeout_seconds: int = 5) -> dict:
     return {
         "name": name,
         "image": image,
@@ -106,12 +107,17 @@ def _container(name: str, image: str, configmap: str) -> dict:
         "volumeMounts": [{"name": "internal-auth", "mountPath": "/var/run/secrets/maops", "readOnly": True}],
         "startupProbe": {"httpGet": {"path": "/livez", "port": "http"}},
         "livenessProbe": {"httpGet": {"path": "/livez", "port": "http"}},
-        "readinessProbe": {"httpGet": {"path": "/readyz", "port": "http"}},
+        "readinessProbe": {"httpGet": {"path": "/readyz", "port": "http"}, "timeoutSeconds": readiness_timeout_seconds},
     }
 
 
 def _deployment(name: str, component: str, image: str, configmap: str) -> dict:
     pod_labels = _labels(component)
+    # DAY4-ARCH-M1 (batch 2): gateway's readinessProbe stays 2s above its
+    # own BACKEND_TIMEOUT_SECONDS (7 > 5); app's stays 2s above
+    # STATE_TIMEOUT_SECONDS (5 > 3) - see docs/architecture.md's
+    # "Timeout hierarchy" section.
+    readiness_timeout_seconds = 7 if component == "gateway" else 5
     return {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -130,7 +136,7 @@ def _deployment(name: str, component: str, image: str, configmap: str) -> dict:
                     "securityContext": _security_context(),
                     "affinity": _node_affinity(),
                     "topologySpreadConstraints": _topology_spread(component),
-                    "containers": [_container(name, image, configmap)],
+                    "containers": [_container(name, image, configmap, readiness_timeout_seconds)],
                     "volumes": [
                         {
                             "name": "internal-auth",
@@ -165,6 +171,72 @@ def _pdb(name: str, component: str) -> dict:
     }
 
 
+def _state_container() -> dict:
+    return {
+        "name": "maops-state",
+        "image": f"maops-kubernetes-state:{VERSION}",
+        "imagePullPolicy": "IfNotPresent",
+        "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
+        "envFrom": [{"configMapRef": {"name": "maops-state-config"}}],
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "capabilities": {"drop": ["ALL"]},
+        },
+        "resources": {
+            "requests": {"cpu": "50m", "memory": "32Mi"},
+            "limits": {"cpu": "250m", "memory": "128Mi"},
+        },
+        "volumeMounts": [
+            {"name": "state-auth", "mountPath": "/var/run/secrets/maops-state", "readOnly": True},
+            {"name": "data", "mountPath": "/data"},
+        ],
+        "startupProbe": {"httpGet": {"path": "/livez", "port": "http"}},
+        "livenessProbe": {"httpGet": {"path": "/livez", "port": "http"}},
+        "readinessProbe": {"httpGet": {"path": "/readyz", "port": "http"}},
+    }
+
+
+def _state_statefulset() -> dict:
+    pod_labels = _labels("state")
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {"name": "maops-state", "namespace": "maops-platform", "labels": _labels("state")},
+        "spec": {
+            "replicas": 1,
+            "serviceName": "maops-state-headless",
+            "selector": {"matchLabels": _selector("state")},
+            "template": {
+                "metadata": {"labels": pod_labels},
+                "spec": {
+                    "automountServiceAccountToken": False,
+                    "securityContext": _security_context(),
+                    "affinity": _node_affinity(),
+                    "containers": [_state_container()],
+                    "volumes": [
+                        {
+                            "name": "state-auth",
+                            "secret": {"secretName": "maops-state-auth", "defaultMode": 288},
+                        }
+                    ],
+                },
+            },
+            "persistentVolumeClaimRetentionPolicy": {"whenDeleted": "Retain", "whenScaled": "Retain"},
+            "volumeClaimTemplates": [
+                {
+                    "metadata": {"name": "data", "labels": _labels("state")},
+                    "spec": {
+                        "accessModes": ["ReadWriteOnce"],
+                        "volumeMode": "Filesystem",
+                        "resources": {"requests": {"storage": "256Mi"}},
+                    },
+                }
+            ],
+        },
+    }
+
+
 def _base_docs() -> list[dict]:
     namespace = {
         "apiVersion": "v1",
@@ -178,7 +250,7 @@ def _base_docs() -> list[dict]:
         "data": {
             "BACKEND_HOST": "maops-app",
             "BACKEND_PORT": "8080",
-            "BACKEND_TIMEOUT_SECONDS": "3",
+            "BACKEND_TIMEOUT_SECONDS": "5",
             "APP_NAME": "maops-kubernetes-gateway",
             "APP_ENVIRONMENT": "day3-scaling-rollouts-availability",
             "APP_MESSAGE": "Hello from the MAOps Kubernetes Gateway (Day 3)",
@@ -194,22 +266,56 @@ def _base_docs() -> list[dict]:
             "APP_ENVIRONMENT": "day3-scaling-rollouts-availability",
             "APP_MESSAGE": "Hello from the MAOps Kubernetes App (Day 3)",
             "APP_LOG_LEVEL": "info",
+            "STATE_HOST": "maops-state",
+            "STATE_PORT": "8080",
+            "STATE_TIMEOUT_SECONDS": "3",
         },
     }
-    gateway_deployment = _deployment("maops-gateway", "gateway", "maops-kubernetes-gateway:0.3.0", "maops-gateway-config")
-    app_deployment = _deployment("maops-app", "app", "maops-kubernetes-app:0.3.0", "maops-app-config")
+    gateway_deployment = _deployment("maops-gateway", "gateway", f"maops-kubernetes-gateway:{VERSION}", "maops-gateway-config")
+    app_deployment = _deployment("maops-app", "app", f"maops-kubernetes-app:{VERSION}", "maops-app-config")
     gateway_service = _service("maops-gateway", "gateway")
     app_service = _service("maops-app", "app")
     gateway_pdb = _pdb("maops-gateway-pdb", "gateway")
     app_pdb = _pdb("maops-app-pdb", "app")
+
+    state_configmap = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "maops-state-config", "namespace": "maops-platform", "labels": _labels("state")},
+        "data": {
+            "APP_NAME": "maops-kubernetes-state",
+            "APP_ENVIRONMENT": "day4-stateful-persistence",
+            "APP_MESSAGE": "Hello from the MAOps Kubernetes State service (Day 4)",
+            "APP_LOG_LEVEL": "info",
+            "STATE_FILE_PATH": "/data/state.json",
+            "STATE_MAX_BODY_BYTES": "4096",
+        },
+    }
+    state_statefulset = _state_statefulset()
+    state_service = _service("maops-state", "state")
+    state_headless_service = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": "maops-state-headless", "namespace": "maops-platform", "labels": _labels("state")},
+        "spec": {
+            "clusterIP": "None",
+            "selector": _selector("state"),
+            "ports": [{"name": "http", "port": 8080, "targetPort": "http", "protocol": "TCP"}],
+        },
+    }
+
     return [
         namespace,
         gateway_configmap,
         app_configmap,
+        state_configmap,
         gateway_deployment,
         app_deployment,
+        state_statefulset,
         gateway_service,
         app_service,
+        state_service,
+        state_headless_service,
         gateway_pdb,
         app_pdb,
     ]
@@ -238,7 +344,7 @@ class BaselineTests(unittest.TestCase):
         findings = run_checks(_base_docs())
         failed = _failed_names(findings)
         self.assertEqual(failed, set(), f"unexpected failures: {failed}")
-        self.assertGreaterEqual(len(findings), 130)
+        self.assertGreaterEqual(len(findings), 190)
 
 
 class ObjectCountTests(unittest.TestCase):
@@ -513,6 +619,117 @@ class PdbTests(unittest.TestCase):
                 self.assertIn(f"{component}.pdb.no_max_unavailable", failed)
 
 
+class StateStatefulSetTests(unittest.TestCase):
+    """DAY4: maops-state StatefulSet - replicas, scheduling, and
+    PVC-backed storage shape (volumeClaimTemplates, retention policy)."""
+
+    def test_state_replicas_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["replicas"] = 2
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.replicas", failed)
+
+    def test_state_topology_spread_wrongly_present_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _pod_spec_of(_find(docs, "StatefulSet", "maops-state"))["topologySpreadConstraints"] = _topology_spread("state")
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.scheduling.no_topology_spread", failed)
+
+    def test_state_volume_claim_template_missing_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"] = []
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.volume_claim_template_exists", failed)
+
+    def test_state_volume_claim_template_wrong_name_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["metadata"]["name"] = "storage"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.volume_claim_template_exists", failed)
+
+    def test_state_storage_class_name_wrongly_present_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["spec"][
+            "storageClassName"
+        ] = "standard"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.default_storage_class", failed)
+
+    def test_state_retention_when_deleted_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["persistentVolumeClaimRetentionPolicy"][
+            "whenDeleted"
+        ] = "Delete"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.retention_when_deleted", failed)
+
+    def test_state_retention_when_scaled_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["persistentVolumeClaimRetentionPolicy"][
+            "whenScaled"
+        ] = "Delete"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.retention_when_scaled", failed)
+
+    def test_state_claim_storage_capacity_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["spec"]["resources"]["requests"][
+            "storage"
+        ] = "512Mi"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.requested_capacity", failed)
+
+    def test_state_claim_access_mode_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["spec"]["accessModes"] = [
+            "ReadWriteMany"
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.access_mode", failed)
+
+    def test_state_data_mount_missing_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        container = _container_of(_find(docs, "StatefulSet", "maops-state"))
+        container["volumeMounts"] = [m for m in container["volumeMounts"] if m["name"] != "data"]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.data_mount_path", failed)
+
+    def test_state_service_name_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "StatefulSet", "maops-state")["spec"]["serviceName"] = "maops-state"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.service_name", failed)
+
+    def test_state_secret_volume_wrong_name_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _pod_spec_of(_find(docs, "StatefulSet", "maops-state"))["volumes"][0]["secret"]["secretName"] = "wrong-secret"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.secret.volume_present", failed)
+
+
+class StateServiceTests(unittest.TestCase):
+    """DAY4: the two maops-state Services - a normal ClusterIP Service
+    and the StatefulSet-governing headless Service."""
+
+    def test_state_headless_cluster_ip_not_none_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state-headless")["spec"]["clusterIP"] = "10.96.10.10"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.headless_service.cluster_ip_none", failed)
+
+    def test_state_service_selecting_app_labels_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state")["spec"]["selector"] = _selector("app")
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("service.no_selector_collision_state_selects_app", failed)
+
+    def test_state_service_selecting_gateway_labels_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state")["spec"]["selector"] = _selector("gateway")
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("service.no_selector_collision_state_selects_gateway", failed)
+
+
 class SelectorIsolationTests(unittest.TestCase):
     def test_gateway_service_selecting_app_labels_fails(self):
         docs = copy.deepcopy(_base_docs())
@@ -637,18 +854,33 @@ class ForbiddenResourceTests(unittest.TestCase):
         failed = _failed_names(run_checks(docs))
         self.assertIn("scope.no_forbidden_resources", failed)
 
-    def test_forbidden_statefulset_present_fails(self):
+    def test_forbidden_standalone_state_pvc_present_fails(self):
+        # DAY4: StatefulSet itself is now sanctioned (it's how maops-state
+        # gets its PVC-backed /data volume), but a *standalone* committed
+        # PersistentVolumeClaim shadowing that same claim (e.g. someone
+        # accidentally committing what volumeClaimTemplates should
+        # generate at runtime instead) must still fail - only
+        # StatefulSet.spec.volumeClaimTemplates is a sanctioned storage
+        # path.
         docs = copy.deepcopy(_base_docs())
         docs.append(
             {
-                "apiVersion": "apps/v1",
-                "kind": "StatefulSet",
-                "metadata": {"name": "maops-data", "namespace": "maops-platform"},
-                "spec": {},
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "metadata": {"name": "maops-state-data", "namespace": "maops-platform"},
+                "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "256Mi"}}},
             }
         )
         failed = _failed_names(run_checks(docs))
         self.assertIn("scope.no_forbidden_resources", failed)
+
+    def test_statefulset_alone_is_not_forbidden(self):
+        # DAY4: the baseline fixture's StatefulSet must NOT trip
+        # scope.no_forbidden_resources - only Secret/Ingress/PVC/RBAC
+        # kinds/ServiceAccount/NetworkPolicy/HPA remain forbidden as of
+        # Day 4.
+        failed = _failed_names(run_checks(copy.deepcopy(_base_docs())))
+        self.assertNotIn("scope.no_forbidden_resources", failed)
 
 
 class ForbiddenRbacKindTests(unittest.TestCase):
@@ -1090,6 +1322,291 @@ class ContainerShapeTests(unittest.TestCase):
         _container_of(_find(docs, "Deployment", "maops-gateway"))["envFrom"] = []
         failed = _failed_names(run_checks(docs))
         self.assertIn("gateway.configmap.wired_to_container", failed)
+
+
+def _state_sts(docs):
+    return _find(docs, "StatefulSet", "maops-state")
+
+
+def _state_pod_spec(docs):
+    return _state_sts(docs)["spec"]["template"]["spec"]
+
+
+def _state_container_of(docs):
+    return _state_pod_spec(docs)["containers"][0]
+
+
+class StateSecurityContextMutationTests(unittest.TestCase):
+    """DAY4-TEST-M4: every one of the 40 previously-untested `state.*`
+    checks (52 total, only 12 previously named-asserted), security
+    fields first. Each test asserts the SPECIFIC check name fails -
+    not merely that some check fails - per the batch 2 briefing's
+    "merely finding its name in a test file is not coverage proof"
+    requirement."""
+
+    def test_pod_run_as_non_root_false_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["securityContext"]["runAsNonRoot"] = False
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.pod_run_as_non_root", failed)
+
+    def test_pod_run_as_user_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["securityContext"]["runAsUser"] = 0
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.pod_run_as_user", failed)
+
+    def test_pod_run_as_group_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["securityContext"]["runAsGroup"] = 0
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.pod_run_as_group", failed)
+
+    def test_pod_fs_group_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["securityContext"]["fsGroup"] = 0
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.pod_fs_group", failed)
+
+    def test_seccomp_profile_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["securityContext"]["seccompProfile"] = {"type": "Unconfined"}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.seccomp_profile", failed)
+
+    def test_allow_privilege_escalation_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["securityContext"]["allowPrivilegeEscalation"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.allow_privilege_escalation", failed)
+
+    def test_read_only_root_filesystem_false_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["securityContext"]["readOnlyRootFilesystem"] = False
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.read_only_root_filesystem", failed)
+
+    def test_capabilities_not_drop_all_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["securityContext"]["capabilities"] = {"drop": ["NET_RAW"]}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.capabilities_drop_all", failed)
+
+    def test_automount_service_account_token_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["automountServiceAccountToken"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.automount_service_account_token", failed)
+
+    def test_host_network_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["hostNetwork"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.no_host_network", failed)
+
+    def test_host_pid_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["hostPID"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.no_host_pid", failed)
+
+    def test_host_ipc_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["hostIPC"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.no_host_ipc", failed)
+
+    def test_privileged_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["securityContext"]["privileged"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.not_privileged", failed)
+
+    def test_host_path_volume_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_pod_spec(docs)["volumes"].append({"name": "evil", "hostPath": {"path": "/etc"}})
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.no_host_path_volumes", failed)
+
+
+class StateStatefulSetShapeMutationTests(unittest.TestCase):
+    def test_statefulset_missing_fails_exists(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "StatefulSet")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.exists", failed)
+
+    def test_namespace_mismatch_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_sts(docs)["metadata"]["namespace"] = "wrong-namespace"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.namespace_matches", failed)
+
+    def test_version_label_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_sts(docs)["metadata"]["labels"]["app.kubernetes.io/version"] = "9.9.9"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.version_label", failed)
+
+    def test_pod_template_version_label_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_sts(docs)["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/version"] = "9.9.9"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.pod_template.version_label", failed)
+
+    def test_pod_template_component_label_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_sts(docs)["spec"]["template"]["metadata"]["labels"]["app.kubernetes.io/component"] = "wrong"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.pod_template.component_label", failed)
+
+    def test_second_container_fails_single_container(self):
+        docs = copy.deepcopy(_base_docs())
+        containers = _state_pod_spec(docs)["containers"]
+        containers.append(copy.deepcopy(containers[0]))
+        containers[1]["name"] = "sidecar"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.single_container", failed)
+
+    def test_container_name_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["name"] = "wrong-name"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.container_name", failed)
+
+    def test_image_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["image"] = "wrong-image:latest"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.image", failed)
+
+    def test_image_pull_policy_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["imagePullPolicy"] = "Always"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.statefulset.image_pull_policy", failed)
+
+    def test_node_affinity_removed_fails_control_plane_excluded(self):
+        docs = copy.deepcopy(_base_docs())
+        del _state_pod_spec(docs)["affinity"]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.scheduling.control_plane_excluded", failed)
+
+    def test_node_affinity_changed_to_allow_control_plane_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        expr = _state_pod_spec(docs)["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"]["nodeSelectorTerms"][0]["matchExpressions"][0]
+        expr["operator"] = "Exists"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.scheduling.control_plane_excluded", failed)
+
+
+class StateProbesResourcesConfigmapMutationTests(unittest.TestCase):
+    def test_startup_probe_missing_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        del _state_container_of(docs)["startupProbe"]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.probes.startup_present", failed)
+
+    def test_liveness_probe_path_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["livenessProbe"]["httpGet"]["path"] = "/wrong"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.probes.liveness_path", failed)
+
+    def test_readiness_probe_path_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["readinessProbe"]["httpGet"]["path"] = "/wrong"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.probes.readiness_path", failed)
+
+    def test_resource_requests_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["resources"]["requests"] = {"cpu": "1", "memory": "1Gi"}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.resources.requests", failed)
+
+    def test_resource_limits_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["resources"]["limits"] = {"cpu": "1", "memory": "1Gi"}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.resources.limits", failed)
+
+    def test_configmap_wiring_removed_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_container_of(docs)["envFrom"] = []
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.configmap.wired_to_container", failed)
+
+    def test_configmap_object_missing_fails_exists(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "ConfigMap" and d["metadata"]["name"] == "maops-state-config")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.configmap.exists", failed)
+
+
+class StateSecretMutationTests(unittest.TestCase):
+    def test_secret_mount_path_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        mounts = _state_container_of(docs)["volumeMounts"]
+        next(m for m in mounts if m["name"] == "state-auth")["mountPath"] = "/wrong/path"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.secret.mount_path", failed)
+
+    def test_secret_mount_not_read_only_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        mounts = _state_container_of(docs)["volumeMounts"]
+        next(m for m in mounts if m["name"] == "state-auth")["readOnly"] = False
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.secret.mount_read_only", failed)
+
+
+class StateStorageMutationTests(unittest.TestCase):
+    def test_data_mount_writable_violated_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        mounts = _state_container_of(docs)["volumeMounts"]
+        next(m for m in mounts if m["name"] == "data")["readOnly"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.data_mount_writable", failed)
+
+    def test_volume_mode_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _state_sts(docs)["spec"]["volumeClaimTemplates"][0]["spec"]["volumeMode"] = "Block"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.storage.volume_mode", failed)
+
+
+class StateServiceMutationTests(unittest.TestCase):
+    def test_state_service_missing_fails_exists(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "Service" and d["metadata"]["name"] == "maops-state")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.service.exists", failed)
+
+    def test_state_service_type_wrong_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state")["spec"]["type"] = "NodePort"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.service.type_cluster_ip", failed)
+
+    def test_state_service_selector_mismatch_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state")["spec"]["selector"] = {"app.kubernetes.io/component": "wrong"}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.service.selector_matches_pod_labels", failed)
+
+    def test_state_headless_service_missing_fails_exists(self):
+        docs = [d for d in copy.deepcopy(_base_docs()) if not (d.get("kind") == "Service" and d["metadata"]["name"] == "maops-state-headless")]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.headless_service.exists", failed)
+
+    def test_state_headless_service_cluster_ip_not_none_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state-headless")["spec"]["clusterIP"] = "10.96.0.5"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.headless_service.cluster_ip_none", failed)
+
+    def test_state_headless_service_selector_mismatch_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Service", "maops-state-headless")["spec"]["selector"] = {"app.kubernetes.io/component": "wrong"}
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.headless_service.selector_matches_pod_labels", failed)
 
 
 if __name__ == "__main__":

@@ -1,15 +1,15 @@
-# MAOps Kubernetes Platform - Day 3 kind cluster.
+# MAOps Kubernetes Platform - Day 4 kind cluster.
 #
-# 1 control-plane + 2 worker nodes - the first multi-node topology in
-# this project. Day 3 needs real worker nodes to prove topology-aware
-# scheduling (topologySpreadConstraints across kubernetes.io/hostname)
-# and control-plane exclusion (required node affinity), neither of
-# which is meaningfully provable on a single-node cluster. This is a
-# separate, independently-created cluster from Day 1's maops-k8s-day1
-# and Day 2's maops-k8s-day2 - Day 3 tooling never touches either.
+# 1 control-plane + 2 worker nodes - unchanged topology from Day 3
+# (still needed for worker-only scheduling/topology spread on
+# gateway/app; the new single-replica maops-state StatefulSet also
+# schedules only onto a worker). Same pinned kindest/node digest as
+# Days 1-3. This is a separate, independently-created cluster from Day
+# 1's maops-k8s-day1, Day 2's maops-k8s-day2, and Day 3's
+# maops-k8s-day3 - Day 4 tooling never touches any of them.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-name: maops-k8s-day3
+name: maops-k8s-day4
 nodes:
   - role: control-plane
     image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

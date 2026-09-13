@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import final_state_check
 import kube
+import suite_baseline
 
 
 class _FakeClock:
@@ -247,6 +248,167 @@ class OtherDayClustersStillExistTests(unittest.TestCase):
         with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
             final_state_check.check_other_day_clusters_still_exist()
         self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+
+class _FakePortForward:
+    def __call__(self, *_args, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return 54321
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class SuiteStateBaselineFinalGateTests(unittest.TestCase):
+    """DAY4 batch 2 (§C): the final gate independently GETs /state and
+    compares against a run-specific baseline supplied ONLY via the
+    environment - never auto-discovered, never satisfied by recapturing
+    the current value here. Missing/malformed/mismatched-run/
+    mismatched-storage must all fail closed."""
+
+    def setUp(self):
+        final_state_check.results = []
+
+    def _pvc_pv_run_side_effect(self, pvc_uid="pvc-uid-1", pv_uid="pv-uid-1", namespace_uid="ns-uid-1"):
+        def fake_run(*args, **_kwargs):
+            if "namespace" in args and "get" in args:
+                return subprocess.CompletedProcess(
+                    args=["kubectl"], returncode=0,
+                    stdout='{"metadata": {"uid": "%s"}}' % namespace_uid,
+                    stderr="",
+                )
+            if "pvc" in args and "get" in args:
+                return subprocess.CompletedProcess(
+                    args=["kubectl"], returncode=0,
+                    stdout='{"metadata": {"uid": "%s"}, "spec": {"volumeName": "vol-1"}}' % pvc_uid,
+                    stderr="",
+                )
+            if "pv" in args and "get" in args:
+                return subprocess.CompletedProcess(
+                    args=["kubectl"], returncode=0,
+                    stdout='{"metadata": {"uid": "%s"}}' % pv_uid,
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected kube.run call: {args}")
+
+        return fake_run
+
+    def test_missing_run_id_or_path_fails_closed_without_touching_the_cluster(self):
+        with mock.patch.object(suite_baseline, "env_configured", return_value=(None, None)):
+            with mock.patch.object(final_state_check, "kube") as mock_kube:
+                final_state_check.check_suite_state_baseline_restored()
+        mock_kube.run.assert_not_called()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        messages = " ".join(msg for _, msg in final_state_check.results)
+        self.assertIn("not supplied to this invocation", messages)
+
+    def test_run_id_without_path_also_fails_closed(self):
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", None)):
+            with mock.patch.object(final_state_check, "kube") as mock_kube:
+                final_state_check.check_suite_state_baseline_restored()
+        mock_kube.run.assert_not_called()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+    def test_malformed_or_mismatched_baseline_fails_closed(self):
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/does-not-matter.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(
+                    suite_baseline,
+                    "load_and_validate",
+                    side_effect=suite_baseline.SuiteBaselineError("suite baseline run_id 'other-run' does not match"),
+                ):
+                    with mock.patch.object(final_state_check, "port_forward") as mock_pf:
+                        final_state_check.check_suite_state_baseline_restored()
+        mock_pf.assert_not_called()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        messages = " ".join(msg for _, msg in final_state_check.results)
+        self.assertIn("does not match", messages)
+
+    def test_valid_baseline_and_matching_get_passes(self):
+        baseline = {"run_id": "run-123", "value": "the-real-value"}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", return_value=_FakePortForward()):
+                        with mock.patch.object(final_state_check, "raw_get", return_value=(200, '{"value": "the-real-value"}')):
+                            final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(all(ok for ok, _msg in final_state_check.results))
+
+    def test_valid_baseline_but_mismatched_get_fails(self):
+        baseline = {"run_id": "run-123", "value": "the-real-value"}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", return_value=_FakePortForward()):
+                        with mock.patch.object(final_state_check, "raw_get", return_value=(200, '{"value": "something-else"}')):
+                            final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+    def test_get_transport_failure_fails_closed(self):
+        baseline = {"run_id": "run-123", "value": "the-real-value"}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", side_effect=TimeoutError("no connection")):
+                        final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+    def test_http_200_with_empty_body_does_not_falsely_match_null_baseline(self):
+        """DAY4 batch 2b (Part C): the exact schema-validation gap this
+        batch closes - HTTP 200 + `{}` (missing the required 'value'
+        key) must never be accepted as matching a baseline whose
+        captured value happens to be null."""
+        baseline = {"run_id": "run-123", "value": None}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", return_value=_FakePortForward()):
+                        with mock.patch.object(final_state_check, "raw_get", return_value=(200, "{}")):
+                            final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+    def test_valid_null_baseline_and_matching_null_get_still_passes(self):
+        """Preserve the valid-null success path: a genuine
+        `{"value": null}` readback matching a genuine null baseline
+        must still pass - only a MISSING key must fail."""
+        baseline = {"run_id": "run-123", "value": None}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", return_value=_FakePortForward()):
+                        with mock.patch.object(final_state_check, "raw_get", return_value=(200, '{"value": null}')):
+                            final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(all(ok for ok, _msg in final_state_check.results))
+
+    def test_invalid_value_type_fails_visibly(self):
+        baseline = {"run_id": "run-123", "value": "the-real-value"}
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/baseline.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect()):
+                with mock.patch.object(suite_baseline, "load_and_validate", return_value=baseline):
+                    with mock.patch.object(final_state_check, "port_forward", return_value=_FakePortForward()):
+                        with mock.patch.object(final_state_check, "raw_get", return_value=(200, '{"value": 999}')):
+                            final_state_check.check_suite_state_baseline_restored()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+
+    def test_namespace_recreation_with_different_uid_fails_closed(self):
+        """DAY4 batch 2b (Part C): a namespace deleted and recreated
+        with the SAME name but a DIFFERENT UID must be caught -
+        exercised here at the real `load_and_validate` boundary rather
+        than mocking it away, so the real namespace-UID plumbing
+        introduced this batch is actually proven."""
+        with mock.patch.object(suite_baseline, "env_configured", return_value=("run-123", "/tmp/does-not-matter.json")):
+            with mock.patch.object(final_state_check.kube, "run", side_effect=self._pvc_pv_run_side_effect(namespace_uid="ns-uid-RECREATED")):
+                with mock.patch.object(
+                    suite_baseline,
+                    "load_and_validate",
+                    side_effect=suite_baseline.SuiteBaselineError("suite baseline namespace UID 'ns-uid-1' does not match the current namespace UID 'ns-uid-RECREATED'"),
+                ):
+                    with mock.patch.object(final_state_check, "port_forward") as mock_pf:
+                        final_state_check.check_suite_state_baseline_restored()
+        mock_pf.assert_not_called()
+        self.assertTrue(any(not ok and "namespace UID" in msg for ok, msg in final_state_check.results))
 
 
 if __name__ == "__main__":

@@ -1,19 +1,21 @@
 """
-Repository-owned static validation for the Day 3 Kubernetes manifests.
+Repository-owned static validation for the Day 4 Kubernetes manifests.
 
 Operates on already-parsed Kubernetes objects (plain dict/list/scalar
 Python structures - one entry per rendered document), not raw YAML
 text, so the validation rules stay decoupled from parsing mechanics
 and are directly unit-testable against constructed fixtures.
 
-Day 3 keeps Day 2's two-workload architecture (gateway/app, service
-discovery, ConfigMaps, runtime Secret) and adds: 3 replicas per
-workload, an explicit RollingUpdate strategy (maxUnavailable/maxSurge/
-minReadySeconds/progressDeadlineSeconds/revisionHistoryLimit),
-worker-only required node affinity, per-workload topologySpreadConstraints,
-and a PodDisruptionBudget per workload. The Secret object itself is
-still never rendered by k8s/base (see scope.no_forbidden_resources) -
-it's created out-of-band by scripts/secret_bootstrap.py.
+Day 4 keeps Day 3's two-Deployment architecture (gateway/app, scaling,
+scheduling, rollout/rollback, PDBs) entirely unchanged and adds a third
+workload, `maops-state` - a single-replica StatefulSet with a
+PVC-backed `/data` volume (via `volumeClaimTemplates`, never a
+standalone committed PersistentVolumeClaim), a governing headless
+Service plus a normal ClusterIP Service, its own ConfigMap, and its own
+runtime Secret (`maops-state-auth`, distinct from gateway/app's
+`maops-internal-auth`). Neither Secret object is ever rendered by
+k8s/base (see scope.no_forbidden_resources) - both are created
+out-of-band by scripts/secret_bootstrap.py.
 """
 
 from __future__ import annotations
@@ -23,8 +25,8 @@ import re
 from dataclasses import dataclass
 
 EXPECTED_NAMESPACE = "maops-platform"
-EXPECTED_VERSION = "0.3.0"
-EXPECTED_INSTANCE = "maops-kubernetes-platform-day3"
+EXPECTED_VERSION = "0.4.0"
+EXPECTED_INSTANCE = "maops-kubernetes-platform-day4"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -38,6 +40,30 @@ GATEWAY_CONTAINER = "maops-gateway"
 APP_CONTAINER = "maops-app"
 GATEWAY_IMAGE = f"maops-kubernetes-gateway:{EXPECTED_VERSION}"
 APP_IMAGE = f"maops-kubernetes-app:{EXPECTED_VERSION}"
+
+# DAY4: maops-state StatefulSet - single replica, PVC-backed persistence.
+STATE_STATEFULSET = "maops-state"
+STATE_CONTAINER = "maops-state"
+STATE_IMAGE = f"maops-kubernetes-state:{EXPECTED_VERSION}"
+STATE_CONFIGMAP = "maops-state-config"
+STATE_SERVICE = "maops-state"
+STATE_HEADLESS_SERVICE = "maops-state-headless"
+EXPECTED_STATE_REPLICAS = 1
+STATE_VOLUME_CLAIM_TEMPLATE_NAME = "data"
+EXPECTED_STATE_CLAIM_STORAGE = "256Mi"
+STATE_MOUNT_PATH = "/data"
+
+STATE_SECRET_NAME = "maops-state-auth"
+STATE_SECRET_VOLUME_NAME = "state-auth"
+STATE_SECRET_MOUNT_PATH = "/var/run/secrets/maops-state"
+STATE_SECRET_KEY = "state-token"
+
+# DAY4: total rendered portable application objects (excludes runtime
+# Secrets and the generated PVC/PV, which are not part of k8s/base) -
+# 1 Namespace + 3 ConfigMaps (gateway/app/state) + 2 Deployments +
+# 1 StatefulSet + 4 Services (gateway/app/state/state-headless) +
+# 2 PodDisruptionBudgets (gateway/app only - state carries no PDB).
+EXPECTED_TOTAL_RENDERED_OBJECTS = 13
 
 EXPECTED_REPLICAS = 3
 EXPECTED_REQUESTS = {"cpu": "50m", "memory": "32Mi"}
@@ -74,11 +100,29 @@ SECRET_KEY = "internal-token"
 EXPECTED_BACKEND_HOST = "maops-app"
 EXPECTED_BACKEND_PORT = "8080"
 
+# DAY4 remediation batch 2 (DAY4-ARCH-M1): the real chain is three hops
+# deep - gateway -> app -> state - not the two-hop chain this margin
+# pattern was originally sized for. Each ConfigMap-provided client
+# timeout is a per-call socket connect+read bound (see app/server.py's
+# STATE_TIMEOUT_SECONDS / gateway/server.py's BACKEND_TIMEOUT_SECONDS),
+# not a total wall-clock deadline over any retries a caller might make;
+# each hop's own readinessProbe.timeoutSeconds is kept comfortably (2s)
+# above the client timeout it bounds, mirroring the existing
+# app/STATE_TIMEOUT_SECONDS relationship at the new outer layer.
+EXPECTED_STATE_TIMEOUT_SECONDS = "3"
+EXPECTED_APP_READINESS_TIMEOUT_SECONDS = 5
+EXPECTED_BACKEND_TIMEOUT_SECONDS = "5"
+EXPECTED_GATEWAY_READINESS_TIMEOUT_SECONDS = 7
+
 FORBIDDEN_KINDS = {
     "Secret",
     "Ingress",
+    # DAY4: PersistentVolumeClaim remains forbidden as a STANDALONE
+    # committed object - the only sanctioned way to request storage is
+    # StatefulSet.spec.volumeClaimTemplates (checked explicitly below),
+    # which kubectl kustomize never renders as a separate top-level
+    # PersistentVolumeClaim document.
     "PersistentVolumeClaim",
-    "StatefulSet",
     "Role",
     "RoleBinding",
     "ClusterRole",
@@ -552,6 +596,282 @@ def _check_pdb(c: _Checker, component: str, pdb: dict | None, pod_labels: dict, 
     return pdb_spec
 
 
+def _check_state_statefulset(c: _Checker, statefulset: dict | None) -> tuple[dict, dict]:
+    """DAY4: maops-state StatefulSet - single replica, PVC-backed
+    persistence via volumeClaimTemplates. Shares the same security
+    baseline as the Deployment-based workloads, but deliberately has no
+    RollingUpdate maxUnavailable/maxSurge tuning (meaningless at 1
+    replica), no topologySpreadConstraints, and no PodDisruptionBudget
+    (a single-replica workload cannot have a non-trivial disruption
+    budget)."""
+    c.check(
+        statefulset is not None,
+        "state.statefulset.exists",
+        f"expected StatefulSet {STATE_STATEFULSET!r} to exist, found none",
+    )
+    statefulset = statefulset or {}
+
+    c.check(
+        statefulset.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+        "state.statefulset.namespace_matches",
+        f"expected StatefulSet metadata.namespace == {EXPECTED_NAMESPACE!r}, found "
+        f"{statefulset.get('metadata', {}).get('namespace')!r}",
+    )
+    dep_labels = statefulset.get("metadata", {}).get("labels", {}) or {}
+    c.check(
+        dep_labels.get("app.kubernetes.io/version") == EXPECTED_VERSION,
+        "state.statefulset.version_label",
+        f"expected StatefulSet app.kubernetes.io/version == {EXPECTED_VERSION!r}, found "
+        f"{dep_labels.get('app.kubernetes.io/version')!r}",
+    )
+
+    sts_spec = statefulset.get("spec", {})
+    c.check(
+        sts_spec.get("replicas") == EXPECTED_STATE_REPLICAS,
+        "state.statefulset.replicas",
+        f"expected replicas == {EXPECTED_STATE_REPLICAS}, found {sts_spec.get('replicas')!r}",
+    )
+    c.check(
+        sts_spec.get("serviceName") == STATE_HEADLESS_SERVICE,
+        "state.statefulset.service_name",
+        f"expected spec.serviceName == {STATE_HEADLESS_SERVICE!r}, found {sts_spec.get('serviceName')!r}",
+    )
+
+    pod_spec = sts_spec.get("template", {}).get("spec", {})
+    pod_labels = sts_spec.get("template", {}).get("metadata", {}).get("labels", {}) or {}
+    c.check(
+        pod_labels.get("app.kubernetes.io/version") == EXPECTED_VERSION,
+        "state.pod_template.version_label",
+        f"expected pod template app.kubernetes.io/version == {EXPECTED_VERSION!r}, found "
+        f"{pod_labels.get('app.kubernetes.io/version')!r}",
+    )
+    c.check(
+        pod_labels.get("app.kubernetes.io/component") == "state",
+        "state.pod_template.component_label",
+        f"expected pod template app.kubernetes.io/component == 'state', found "
+        f"{pod_labels.get('app.kubernetes.io/component')!r}",
+    )
+
+    c.check(
+        _has_control_plane_exclusion(pod_spec),
+        "state.scheduling.control_plane_excluded",
+        f"expected a required nodeAffinity term excluding {CONTROL_PLANE_LABEL!r} (operator DoesNotExist), "
+        f"found nodeSelectorTerms={_node_affinity_terms(pod_spec)!r}",
+    )
+    c.check(
+        not (pod_spec.get("topologySpreadConstraints") or []),
+        "state.scheduling.no_topology_spread",
+        "expected no topologySpreadConstraints on the single-replica state StatefulSet, found "
+        f"{pod_spec.get('topologySpreadConstraints')!r}",
+    )
+
+    containers = pod_spec.get("containers") or []
+    c.check(
+        len(containers) == 1,
+        "state.statefulset.single_container",
+        f"expected exactly one container, found {len(containers)}",
+    )
+    container = containers[0] if containers else {}
+    c.check(
+        container.get("name") == STATE_CONTAINER,
+        "state.statefulset.container_name",
+        f"expected container name {STATE_CONTAINER!r}, found {container.get('name')!r}",
+    )
+    c.check(
+        container.get("image") == STATE_IMAGE,
+        "state.statefulset.image",
+        f"expected image {STATE_IMAGE!r}, found {container.get('image')!r}",
+    )
+    c.check(
+        container.get("imagePullPolicy") == "IfNotPresent",
+        "state.statefulset.image_pull_policy",
+        f"expected imagePullPolicy IfNotPresent, found {container.get('imagePullPolicy')!r}",
+    )
+
+    startup = container.get("startupProbe") or {}
+    liveness = container.get("livenessProbe") or {}
+    readiness = container.get("readinessProbe") or {}
+    c.check(
+        bool(startup.get("httpGet")),
+        "state.probes.startup_present",
+        f"expected an HTTP startupProbe, found {startup!r}",
+    )
+    c.check(
+        liveness.get("httpGet", {}).get("path") == "/livez",
+        "state.probes.liveness_path",
+        f"expected livenessProbe httpGet path /livez, found {liveness.get('httpGet', {}).get('path')!r}",
+    )
+    c.check(
+        readiness.get("httpGet", {}).get("path") == "/readyz",
+        "state.probes.readiness_path",
+        f"expected readinessProbe httpGet path /readyz, found {readiness.get('httpGet', {}).get('path')!r}",
+    )
+
+    resources = container.get("resources") or {}
+    c.check(
+        resources.get("requests") == EXPECTED_REQUESTS,
+        "state.resources.requests",
+        f"expected requests {EXPECTED_REQUESTS}, found {resources.get('requests')!r}",
+    )
+    c.check(
+        resources.get("limits") == EXPECTED_LIMITS,
+        "state.resources.limits",
+        f"expected limits {EXPECTED_LIMITS}, found {resources.get('limits')!r}",
+    )
+
+    # Security context - identical baseline to gateway/app.
+    pod_sc = pod_spec.get("securityContext") or {}
+    c.check(pod_sc.get("runAsNonRoot") is True, "state.security.pod_run_as_non_root", f"found {pod_sc.get('runAsNonRoot')!r}")
+    c.check(pod_sc.get("runAsUser") == 10001, "state.security.pod_run_as_user", f"found {pod_sc.get('runAsUser')!r}")
+    c.check(pod_sc.get("runAsGroup") == 10001, "state.security.pod_run_as_group", f"found {pod_sc.get('runAsGroup')!r}")
+    c.check(pod_sc.get("fsGroup") == 10001, "state.security.pod_fs_group", f"found {pod_sc.get('fsGroup')!r}")
+    c.check(
+        (pod_sc.get("seccompProfile") or {}).get("type") == "RuntimeDefault",
+        "state.security.seccomp_profile",
+        f"found {pod_sc.get('seccompProfile')!r}",
+    )
+    container_sc = container.get("securityContext") or {}
+    c.check(
+        container_sc.get("allowPrivilegeEscalation") is False,
+        "state.security.allow_privilege_escalation",
+        f"found {container_sc.get('allowPrivilegeEscalation')!r}",
+    )
+    c.check(
+        container_sc.get("readOnlyRootFilesystem") is True,
+        "state.security.read_only_root_filesystem",
+        f"found {container_sc.get('readOnlyRootFilesystem')!r}",
+    )
+    c.check(
+        (container_sc.get("capabilities") or {}).get("drop") == ["ALL"],
+        "state.security.capabilities_drop_all",
+        f"found {container_sc.get('capabilities')!r}",
+    )
+    c.check(
+        pod_spec.get("automountServiceAccountToken") is False,
+        "state.security.automount_service_account_token",
+        f"found {pod_spec.get('automountServiceAccountToken')!r}",
+    )
+    c.check(not pod_spec.get("hostNetwork"), "state.security.no_host_network", f"found {pod_spec.get('hostNetwork')!r}")
+    c.check(not pod_spec.get("hostPID"), "state.security.no_host_pid", f"found {pod_spec.get('hostPID')!r}")
+    c.check(not pod_spec.get("hostIPC"), "state.security.no_host_ipc", f"found {pod_spec.get('hostIPC')!r}")
+    c.check(
+        container_sc.get("privileged") is not True,
+        "state.security.not_privileged",
+        f"found {container_sc.get('privileged')!r}",
+    )
+    volumes = pod_spec.get("volumes") or []
+    hostpath_volumes = [v for v in volumes if isinstance(v, dict) and "hostPath" in v]
+    c.check(
+        not hostpath_volumes,
+        "state.security.no_host_path_volumes",
+        f"expected no hostPath volumes (the PVC-backed volume is the sanctioned storage path), found {hostpath_volumes}",
+    )
+
+    # ConfigMap wiring
+    env_from = container.get("envFrom") or []
+    env = container.get("env") or []
+    wired_via_env_from = any((ef.get("configMapRef") or {}).get("name") == STATE_CONFIGMAP for ef in env_from)
+    wired_via_env = any(
+        (e.get("valueFrom") or {}).get("configMapKeyRef", {}).get("name") == STATE_CONFIGMAP for e in env
+    )
+    c.check(
+        wired_via_env_from or wired_via_env,
+        "state.configmap.wired_to_container",
+        f"expected container to consume ConfigMap {STATE_CONFIGMAP!r} via envFrom or env",
+    )
+
+    # Secret volume/mount wiring - maops-state-auth (distinct from the
+    # internal-auth Secret gateway/app share).
+    secret_volume = _find_volume(volumes, STATE_SECRET_VOLUME_NAME)
+    secret_spec = secret_volume.get("secret") or {}
+    c.check(
+        secret_spec.get("secretName") == STATE_SECRET_NAME,
+        "state.secret.volume_present",
+        f"expected volume {STATE_SECRET_VOLUME_NAME!r} to reference Secret {STATE_SECRET_NAME!r}, found "
+        f"{secret_spec.get('secretName')!r}",
+    )
+    mounts = container.get("volumeMounts") or []
+    secret_mount = _find_mount(mounts, STATE_SECRET_VOLUME_NAME)
+    c.check(
+        secret_mount.get("mountPath") == STATE_SECRET_MOUNT_PATH,
+        "state.secret.mount_path",
+        f"expected volumeMount {STATE_SECRET_VOLUME_NAME!r} mountPath == {STATE_SECRET_MOUNT_PATH!r}, found "
+        f"{secret_mount.get('mountPath')!r}",
+    )
+    c.check(
+        secret_mount.get("readOnly") is True,
+        "state.secret.mount_read_only",
+        f"expected volumeMount {STATE_SECRET_VOLUME_NAME!r} readOnly == true, found {secret_mount.get('readOnly')!r}",
+    )
+
+    # PVC-backed data volume - via volumeClaimTemplates, never a direct
+    # hostPath and never a standalone committed PersistentVolumeClaim.
+    data_mount = _find_mount(mounts, STATE_VOLUME_CLAIM_TEMPLATE_NAME)
+    c.check(
+        data_mount.get("mountPath") == STATE_MOUNT_PATH,
+        "state.storage.data_mount_path",
+        f"expected volumeMount {STATE_VOLUME_CLAIM_TEMPLATE_NAME!r} mountPath == {STATE_MOUNT_PATH!r}, found "
+        f"{data_mount.get('mountPath')!r}",
+    )
+    c.check(
+        data_mount.get("readOnly") is not True,
+        "state.storage.data_mount_writable",
+        f"expected volumeMount {STATE_VOLUME_CLAIM_TEMPLATE_NAME!r} to be writable, found readOnly="
+        f"{data_mount.get('readOnly')!r}",
+    )
+
+    claim_templates = sts_spec.get("volumeClaimTemplates") or []
+    claim = next(
+        (t for t in claim_templates if t.get("metadata", {}).get("name") == STATE_VOLUME_CLAIM_TEMPLATE_NAME),
+        None,
+    )
+    c.check(
+        claim is not None,
+        "state.storage.volume_claim_template_exists",
+        f"expected volumeClaimTemplates entry named {STATE_VOLUME_CLAIM_TEMPLATE_NAME!r}, found "
+        f"{[t.get('metadata', {}).get('name') for t in claim_templates]}",
+    )
+    claim = claim or {}
+    claim_spec = claim.get("spec") or {}
+    c.check(
+        claim_spec.get("accessModes") == ["ReadWriteOnce"],
+        "state.storage.access_mode",
+        f"expected volumeClaimTemplates accessModes == ['ReadWriteOnce'], found {claim_spec.get('accessModes')!r}",
+    )
+    c.check(
+        claim_spec.get("volumeMode") in (None, "Filesystem"),
+        "state.storage.volume_mode",
+        f"expected volumeMode Filesystem (or omitted, which defaults to Filesystem), found "
+        f"{claim_spec.get('volumeMode')!r}",
+    )
+    c.check(
+        (claim_spec.get("resources") or {}).get("requests", {}).get("storage") == EXPECTED_STATE_CLAIM_STORAGE,
+        "state.storage.requested_capacity",
+        f"expected volumeClaimTemplates requests.storage == {EXPECTED_STATE_CLAIM_STORAGE!r}, found "
+        f"{(claim_spec.get('resources') or {}).get('requests', {}).get('storage')!r}",
+    )
+    c.check(
+        "storageClassName" not in claim_spec,
+        "state.storage.default_storage_class",
+        "expected storageClassName to be omitted so the cluster's default StorageClass is used, found "
+        f"{claim_spec.get('storageClassName')!r}",
+    )
+
+    retention = sts_spec.get("persistentVolumeClaimRetentionPolicy") or {}
+    c.check(
+        retention.get("whenDeleted") == "Retain",
+        "state.storage.retention_when_deleted",
+        f"expected persistentVolumeClaimRetentionPolicy.whenDeleted == 'Retain', found {retention.get('whenDeleted')!r}",
+    )
+    c.check(
+        retention.get("whenScaled") == "Retain",
+        "state.storage.retention_when_scaled",
+        f"expected persistentVolumeClaimRetentionPolicy.whenScaled == 'Retain', found {retention.get('whenScaled')!r}",
+    )
+
+    return pod_spec, pod_labels
+
+
 def run_checks(docs: list[dict]) -> list[Finding]:
     c = _Checker(docs)
 
@@ -576,10 +896,16 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         "app.configmap.exists",
         f"expected ConfigMap {APP_CONFIGMAP!r} to exist, found {cm_names}",
     )
+    c.check(
+        STATE_CONFIGMAP in cm_names,
+        "state.configmap.exists",
+        f"expected ConfigMap {STATE_CONFIGMAP!r} to exist, found {cm_names}",
+    )
     gateway_configmap = next((cm for cm in configmaps if cm.get("metadata", {}).get("name") == GATEWAY_CONFIGMAP), None)
     app_configmap = next((cm for cm in configmaps if cm.get("metadata", {}).get("name") == APP_CONFIGMAP), None)
+    state_configmap = next((cm for cm in configmaps if cm.get("metadata", {}).get("name") == STATE_CONFIGMAP), None)
 
-    for label, cm in (("gateway", gateway_configmap), ("app", app_configmap)):
+    for label, cm in (("gateway", gateway_configmap), ("app", app_configmap), ("state", state_configmap)):
         cm_data = (cm or {}).get("data") or {}
         c.check(
             bool(cm_data) and all(not _looks_secret(k, v) for k, v in cm_data.items()),
@@ -617,6 +943,22 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         f"expected gateway ConfigMap BACKEND_PORT == {EXPECTED_BACKEND_PORT!r}, found "
         f"{gw_cm_data.get('BACKEND_PORT')!r}",
     )
+    c.check(
+        gw_cm_data.get("BACKEND_TIMEOUT_SECONDS") == EXPECTED_BACKEND_TIMEOUT_SECONDS,
+        "gateway.configmap.backend_timeout_seconds",
+        f"expected gateway ConfigMap BACKEND_TIMEOUT_SECONDS == {EXPECTED_BACKEND_TIMEOUT_SECONDS!r} "
+        f"(DAY4-ARCH-M1: must comfortably exceed app's own STATE_TIMEOUT_SECONDS for the nested "
+        f"gateway -> app -> state chain), found {gw_cm_data.get('BACKEND_TIMEOUT_SECONDS')!r}",
+    )
+
+    app_cm_data = (app_configmap or {}).get("data") or {}
+    c.check(
+        app_cm_data.get("STATE_TIMEOUT_SECONDS") == EXPECTED_STATE_TIMEOUT_SECONDS,
+        "app.configmap.state_timeout_seconds",
+        f"expected app ConfigMap STATE_TIMEOUT_SECONDS == {EXPECTED_STATE_TIMEOUT_SECONDS!r} "
+        f"(the innermost budget the nested gateway -> app -> state timeout hierarchy is built from), "
+        f"found {app_cm_data.get('STATE_TIMEOUT_SECONDS')!r}",
+    )
 
     # Deployments
     deployments = c.by_kind("Deployment")
@@ -646,16 +988,61 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         c, "app", app_deployment or {}, APP_CONTAINER, APP_IMAGE, APP_CONFIGMAP
     )
 
+    # DAY4-ARCH-M1: readinessProbe.timeoutSeconds at each hop must stay
+    # comfortably above the client-side call timeout it bounds - a
+    # socket-level per-call timeout, not a total wall-clock deadline -
+    # so a slow-but-healthy downstream never trips the probe before the
+    # client call itself would have given up.
+    gw_readiness = (gw_container or {}).get("readinessProbe") or {}
+    c.check(
+        gw_readiness.get("timeoutSeconds") == EXPECTED_GATEWAY_READINESS_TIMEOUT_SECONDS,
+        "gateway.probes.readiness_timeout_seconds",
+        f"expected gateway readinessProbe.timeoutSeconds == {EXPECTED_GATEWAY_READINESS_TIMEOUT_SECONDS!r} "
+        f"(must exceed BACKEND_TIMEOUT_SECONDS={EXPECTED_BACKEND_TIMEOUT_SECONDS!r}), found "
+        f"{gw_readiness.get('timeoutSeconds')!r}",
+    )
+    app_readiness = (app_container or {}).get("readinessProbe") or {}
+    c.check(
+        app_readiness.get("timeoutSeconds") == EXPECTED_APP_READINESS_TIMEOUT_SECONDS,
+        "app.probes.readiness_timeout_seconds",
+        f"expected app readinessProbe.timeoutSeconds == {EXPECTED_APP_READINESS_TIMEOUT_SECONDS!r} "
+        f"(must exceed STATE_TIMEOUT_SECONDS={EXPECTED_STATE_TIMEOUT_SECONDS!r}), found "
+        f"{app_readiness.get('timeoutSeconds')!r}",
+    )
+
+    # StatefulSet (DAY4)
+    statefulsets = c.by_kind("StatefulSet")
+    c.check(
+        len(statefulsets) == 1,
+        "statefulset.count",
+        f"expected exactly one StatefulSet, found {len(statefulsets)}",
+    )
+    state_statefulset = next(
+        (s for s in statefulsets if s.get("metadata", {}).get("name") == STATE_STATEFULSET), None
+    )
+    state_pod_spec, state_pod_labels = _check_state_statefulset(c, state_statefulset)
+
     # Services
     services = c.by_kind("Service")
     c.check(
-        len(services) == 2,
+        len(services) == 4,
         "service.count",
-        f"expected exactly two Services, found {len(services)}",
+        f"expected exactly four Services (gateway/app/state/state-headless), found {len(services)}",
     )
     svc_names = [s.get("metadata", {}).get("name") for s in services]
     gateway_service = next((s for s in services if s.get("metadata", {}).get("name") == GATEWAY_SERVICE), None)
     app_service = next((s for s in services if s.get("metadata", {}).get("name") == APP_SERVICE), None)
+    state_service = next(
+        (
+            s
+            for s in services
+            if s.get("metadata", {}).get("name") == STATE_SERVICE and (s.get("spec") or {}).get("clusterIP") != "None"
+        ),
+        None,
+    )
+    state_headless_service = next(
+        (s for s in services if s.get("metadata", {}).get("name") == STATE_HEADLESS_SERVICE), None
+    )
     c.check(
         gateway_service is not None,
         "gateway.service.exists",
@@ -665,6 +1052,42 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         app_service is not None,
         "app.service.exists",
         f"expected Service {APP_SERVICE!r} to exist, found {svc_names}",
+    )
+    c.check(
+        state_service is not None,
+        "state.service.exists",
+        f"expected a normal ClusterIP Service {STATE_SERVICE!r} to exist, found {svc_names}",
+    )
+    c.check(
+        state_headless_service is not None,
+        "state.headless_service.exists",
+        f"expected headless Service {STATE_HEADLESS_SERVICE!r} to exist, found {svc_names}",
+    )
+    state_headless_spec = (state_headless_service or {}).get("spec") or {}
+    c.check(
+        state_headless_spec.get("clusterIP") == "None",
+        "state.headless_service.cluster_ip_none",
+        f"expected governing Service {STATE_HEADLESS_SERVICE!r} clusterIP == 'None', found "
+        f"{state_headless_spec.get('clusterIP')!r}",
+    )
+    state_headless_selector = state_headless_spec.get("selector") or {}
+    c.check(
+        bool(state_headless_selector) and all(state_pod_labels.get(k) == v for k, v in state_headless_selector.items()),
+        "state.headless_service.selector_matches_pod_labels",
+        f"expected headless Service selector {state_headless_selector} to be satisfied by state pod labels "
+        f"{state_pod_labels}",
+    )
+    state_svc_spec = (state_service or {}).get("spec") or {}
+    c.check(
+        state_svc_spec.get("type", "ClusterIP") == "ClusterIP",
+        "state.service.type_cluster_ip",
+        f"expected Service type ClusterIP, found {state_svc_spec.get('type')!r}",
+    )
+    state_selector = state_svc_spec.get("selector") or {}
+    c.check(
+        bool(state_selector) and all(state_pod_labels.get(k) == v for k, v in state_selector.items()),
+        "state.service.selector_matches_pod_labels",
+        f"expected Service selector {state_selector} to be satisfied by state pod labels {state_pod_labels}",
     )
 
     gw_selector = None
@@ -719,13 +1142,25 @@ def run_checks(docs: list[dict]) -> list[Finding]:
         "service.no_selector_collision_app_selects_gateway",
         f"app Service selector {app_selector} must NOT be satisfied by gateway pod labels {gw_pod_labels}",
     )
+    c.check(
+        not (bool(state_selector) and all(app_pod_labels.get(k) == v for k, v in state_selector.items())),
+        "service.no_selector_collision_state_selects_app",
+        f"state Service selector {state_selector} must NOT be satisfied by app pod labels {app_pod_labels}",
+    )
+    c.check(
+        not (bool(state_selector) and all(gw_pod_labels.get(k) == v for k, v in state_selector.items())),
+        "service.no_selector_collision_state_selects_gateway",
+        f"state Service selector {state_selector} must NOT be satisfied by gateway pod labels {gw_pod_labels}",
+    )
 
-    # PodDisruptionBudgets (DAY3)
+    # PodDisruptionBudgets (DAY3) - gateway/app only. A single-replica
+    # StatefulSet cannot carry a non-trivial disruption budget, so state
+    # deliberately has none.
     pdbs = c.by_kind("PodDisruptionBudget")
     c.check(
         len(pdbs) == 2,
         "pdb.count",
-        f"expected exactly two PodDisruptionBudgets, found {len(pdbs)}",
+        f"expected exactly two PodDisruptionBudgets (gateway/app only - state has none), found {len(pdbs)}",
     )
     pdb_names = [p.get("metadata", {}).get("name") for p in pdbs]
     gateway_pdb = next((p for p in pdbs if p.get("metadata", {}).get("name") == GATEWAY_PDB), None)
@@ -743,15 +1178,24 @@ def run_checks(docs: list[dict]) -> list[Finding]:
     _check_pdb(c, "gateway", gateway_pdb, gw_pod_labels, app_pod_labels)
     _check_pdb(c, "app", app_pdb, app_pod_labels, gw_pod_labels)
 
-    # Forbidden Day 3 resources (includes: Secret must never be committed;
-    # HPA/StatefulSet/PVC/RBAC/NetworkPolicy/Ingress remain deferred to
-    # later days per docs/roadmap.md)
+    # Forbidden Day 4 resources (Secret and a standalone PersistentVolumeClaim
+    # must never be committed; HPA/RBAC/NetworkPolicy/Ingress remain
+    # deferred to later days per docs/roadmap.md)
     present_kinds = {d.get("kind") for d in docs}
     forbidden_present = present_kinds & FORBIDDEN_KINDS
     c.check(
         not forbidden_present,
         "scope.no_forbidden_resources",
         f"expected none of {sorted(FORBIDDEN_KINDS)} present, found {sorted(forbidden_present)}",
+    )
+
+    # DAY4: exact total rendered object count - catches an accidentally
+    # duplicated or missing object that individual per-kind counts above
+    # wouldn't necessarily surface.
+    c.check(
+        len(docs) == EXPECTED_TOTAL_RENDERED_OBJECTS,
+        "scope.total_rendered_object_count",
+        f"expected exactly {EXPECTED_TOTAL_RENDERED_OBJECTS} rendered objects, found {len(docs)}",
     )
 
     return c.findings

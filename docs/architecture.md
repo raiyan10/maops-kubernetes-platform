@@ -1,12 +1,16 @@
-# Architecture - Day 3 (v0.3.0, in development)
+# Architecture - Day 4 (v0.4.0, in development)
 
-Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation and
+Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
-runtime Secret - both released and frozen; see the historical evidence
-under `docs/engineering-reviews/day-01-*` and `day-02-*`. Day 3 keeps
-that entire architecture unchanged and adds a real multi-node cluster,
+runtime Secret, and Day 3 (`v0.3.0`) added a real multi-node cluster,
 topology-aware scheduling, scaling, rolling-update/rollback behavior,
-and a PodDisruptionBudget per workload.
+and a PodDisruptionBudget per workload - all three released and frozen;
+see the historical evidence under `docs/engineering-reviews/day-0[1-3]-*`.
+Day 4 keeps that entire gateway/app architecture unchanged and adds a
+third workload, `maops-state` - a single-replica StatefulSet with a
+PVC-backed `/data` volume, proving real Kubernetes persistence: data
+survives Pod deletion/rescheduling, and the backing claim survives a
+scale-to-zero/back-to-one cycle.
 
 ## Control flow
 
@@ -359,9 +363,63 @@ and gateway container restart counts don't increase - before restoring
 
 ## Timeout hierarchy
 
-Unchanged since Day 2: every gateway -> app HTTP call is bounded by
-`BACKEND_TIMEOUT_SECONDS` (default `3` seconds); the gateway's own
-`readinessProbe.timeoutSeconds` (`5`) stays comfortably above that.
+DAY4-ARCH-M1 (remediation batch 2): the chain is now three hops deep -
+`gateway -> app -> state` - not the two-hop `gateway -> app` chain this
+margin pattern was originally sized for in Day 2. Each ConfigMap-
+provided value below is a **per-call socket connect+read timeout**
+(`http.client.HTTPConnection(timeout=...)` / `urllib.request.urlopen
+(timeout=...)`), applied to a single HTTP call - never a total
+wall-clock deadline summed over any retries a caller might perform on
+top of it (the validation scripts' own bounded-retry loops, e.g.
+`persistence_check.py`/`retention_check.py`, are a separate, outer
+concern layered on top of these single-call timeouts).
+
+The hierarchy, innermost hop first, each layer keeping a 2s margin over
+the one it bounds:
+
+1. `STATE_TIMEOUT_SECONDS` (`app/server.py`, `app-configmap.yaml` -
+   default/value `3`s): the app -> state HTTP call budget.
+2. `app`'s own `readinessProbe.timeoutSeconds` (`app-deployment.yaml` -
+   `5`s): stays 2s above `STATE_TIMEOUT_SECONDS`, since app's `/readyz`
+   itself makes that bounded state call.
+3. `BACKEND_TIMEOUT_SECONDS` (`gateway/server.py`,
+   `gateway-configmap.yaml` - raised this batch from `3`s to `5`s): the
+   gateway -> app HTTP call budget. Raised specifically because app's
+   own `/readyz`/`/internal/state` handlers can themselves take up to
+   `STATE_TIMEOUT_SECONDS` to respond - the old `3`s value gave zero
+   margin over that nested worst case, not the comfortable margin the
+   two-hop Day 2 design assumed.
+4. `gateway`'s own `readinessProbe.timeoutSeconds`
+   (`gateway-deployment.yaml` - raised this batch from `5`s to `7`s):
+   stays 2s above `BACKEND_TIMEOUT_SECONDS`.
+
+`state`'s own probes are local-process-only (`/livez`) or storage-only
+(`/readyz` - no outbound HTTP call), so they are not part of this
+nested-timeout concern and were not changed.
+
+Statically checked by `scripts/validate_manifests.py`
+(`gateway.configmap.backend_timeout_seconds`,
+`app.configmap.state_timeout_seconds`,
+`gateway.probes.readiness_timeout_seconds`,
+`app.probes.readiness_timeout_seconds`) and covered by deterministic
+unit tests asserting the failure-path propagation and margin ordering
+(`tests/test_app_auth.py`, `tests/test_gateway_backend_target.py`) -
+see `docs/engineering-reviews/day-04-remediation-log.md`'s batch 2
+amendment for the verification evidence.
+
+**Validation-client margin (DAY4 batch 2b):** the hierarchy above
+bounds the *server-side* chain only. `persistence_check.py` and
+`retention_check.py` are HTTP *clients* of `service/maops-gateway`, and
+their own per-call socket timeout previously equaled
+`BACKEND_TIMEOUT_SECONDS` (5s) exactly - a tie that let the client's
+own socket timeout fire at nearly the same instant as gateway's
+controlled 503, making it unreliable to actually observe gateway's
+classified response rather than a bare client-side timeout exception.
+`CLIENT_HTTP_TIMEOUT_SECONDS` in both scripts is now `BACKEND_TIMEOUT_
+SECONDS + 5s`, restoring real margin; `tests/test_gateway_state_routes.py`'s
+`RealSocketTimeoutClassificationTests` proves the underlying
+server-side timing relationship against a real (never mocked) slow
+backend, not merely a documented value.
 
 ## Resources and security baseline
 
@@ -373,16 +431,335 @@ requests `cpu: 50m` / `memory: 32Mi`, limits `cpu: 250m` /
 `automountServiceAccountToken: false`. Day 3 does not weaken any of
 this to make scaling/rollout/scheduling easier to demonstrate.
 
-## No persistence yet
+## DAY4: the storage preflight, and the containerd multi-arch image defect it found
 
-Neither workload writes to disk. Real persistence (PVC/StatefulSet) is
-Day 4 scope, not Day 3's.
+Before any Day 4 manifest was written, a disposable, out-of-band
+preflight against a separate `maops-k8s-day4` kind cluster proved
+whether the cluster's storage backend could support a non-root,
+read-only-root-filesystem workload with a writable PVC. The first
+attempt found that PVC/PV provisioning via `rancher.io/local-path`
+worked cleanly, but the probe container never started: `kind load
+docker-image` cannot import the project's digest-pinned, multi-arch
+(`linux/amd64` + `linux/arm64/v8`) Distroless base directly (it only
+has amd64 content pulled locally), and a manual `ctr images import`
+workaround registered the image under a synthetic alias name that a
+separate containerd 2.3.1 CRI bug then failed to resolve during
+container creation (`failed to check if this is a checkpoint image`).
+A controlled retry - building a genuinely single-platform image via
+`docker build --platform linux/amd64 --provenance=false --sbom=false
+--load` and loading it through the normal `kind load docker-image`
+path, with no manual `ctr import` - resolved this cleanly and produced
+the first real runtime evidence: UID 10001 writing/fsyncing/atomically
+replacing a file on the PVC, and `readOnlyRootFilesystem` proven via a
+specific `EROFS` errno (not a generic write failure, which could
+false-positive on ordinary `EACCES` for a non-root UID writing to a
+root-owned path). `IMAGE_BUILD_FLAGS` in the Makefile carries this
+fix forward for all three Day 4 images - it is a local kind/containerd
+compatibility fix for this environment, not a general production
+supply-chain policy (a real registry-backed pipeline would build and
+attest multi-arch images properly rather than disabling attestations).
+
+The same preflight also found the PV backing directory was
+`0777`/`root:root` - world-writable to any UID, independent of any
+Pod's `fsGroup`. A write succeeding under those permissions is not
+evidence `fsGroup` did anything; it would succeed under any UID/GID.
+This finding directly motivated the storage bootstrap described next.
+
+Full raw evidence (both attempts, all diagnostics, exit codes) is
+preserved outside the repository under
+`~/DevOps-Portfolio/_local-evidence/maops-kubernetes-platform/day-04/`.
+
+## DAY4: storage bootstrap - making `fsGroup` do real access-control work
+
+`scripts/storage_bootstrap.py` (`make storage-bootstrap`) works in two
+parts, in this order:
+
+1. **Harden the provisioning root itself, once, on every node.**
+   `/var/local-path-provisioner` becomes `chown root:10001` +
+   `chmod 2770` (setgid) via `docker exec` - idempotent, and refused if
+   the node's current owner isn't root (unfamiliar state, never
+   overwritten). This step exists because of a real defect found live:
+   the provisioner's own per-request helper Pod image
+   (`kindest/local-path-helper`) is minimal and ships only
+   `mkdir`/`rm`/`sh`/`bash` - it has no `chown`/`chgrp`/`chmod` binary
+   at all, so a `setup` script that tried to call `chgrp` inside that
+   helper failed outright (`chgrp: command not found`), causing every
+   PV provisioning attempt to fail and time out. `docker exec` runs
+   against the node itself, which has full coreutils, sidestepping the
+   helper image's limitation entirely.
+2. **Patch *only* the `local-path-config` ConfigMap's `setup` field**
+   (`config.json`, `helperPod.yaml`, and `teardown` are left untouched,
+   and the script refuses to touch anything if the current `setup`
+   value doesn't byte-for-byte match the known original - never
+   overwrites an unfamiliar hand-edit). The original
+   `mkdir -m 0777 -p "$VOL_DIR"` becomes `mkdir -m 2770 -p "$VOL_DIR"`
+   alone - no chgrp/chown call, because none is available inside the
+   helper image and none is needed: standard Linux setgid-directory
+   semantics mean a new directory created inside a setgid, group-10001
+   parent (step 1, above) inherits group 10001 automatically, regardless
+   of the creating process's own UID/GID - confirmed directly
+   (`mode=2770 uid=0 gid=10001` on a real test directory) before being
+   relied on for the actual fix. This also means the final state is
+   produced by a single `mkdir` syscall, with no multi-step window at
+   all - stronger than "restrictive first, then loosen".
+
+`$VOL_DIR` is validated against the observed provisioning root
+(`/var/local-path-provisioner`), rejected if it's a symlink, and
+rejected if it already exists. Both steps are idempotent, propagation
+is verified against a real scratch PVC before either is considered
+successful, and a failed verification reverts BOTH the ConfigMap patch
+and any node-level root hardening this run actually applied (a node
+already correctly hardened before this run is left untouched by the
+revert) - restoration failure is reported prominently, never hidden.
+
+`scripts/storage_hardening_check.py` (`make storage-hardening-check`)
+then proves the hardening actually changed behavior, against a
+disposable scratch PVC (never `maops-state`'s own claim): a Pod running
+as UID/GID 10001 with `fsGroup: 10001` (matching the directory's now
+`10001` group) can write/fsync/atomically-replace/read back a file, and
+- the actual point of this check - a Pod running as an unrelated
+UID/GID (65532/65532, deliberately **no** `fsGroup`) receives `EACCES`
+attempting the same write, because the directory's mode (`2770`) denies
+`other` entirely. This is what makes `fsGroup: 10001` in
+`k8s/base/state-statefulset.yaml` meaningful for the first time in this
+project - unlike the preflight's `0777` finding, a write succeeding
+here is genuinely attributable to group membership, not to the
+directory being open to everyone.
+
+**Scope note:** group `10001` here is a platform convention specific to
+this single-tenant, isolated Day 4 kind cluster - it is not a general
+multi-tenant storage policy, and this bootstrap never retroactively
+touches an already-provisioned PV's backing directory (including the
+two scratch PVs the storage preflight itself left behind).
+
+**Probe image choice:** both scripts' scratch probe Pods deliberately
+run the project's own already-rebuilt `maops-kubernetes-app` image
+(command overridden to run a short probe script, never the app's HTTP
+server) rather than referencing the raw multi-arch Distroless base
+digest directly - an earlier live run found that once any manual `ctr
+images import` of that raw digest has ever occurred on a node (as
+happened during the two-attempt storage preflight), containerd's
+checkpoint-image resolution can permanently fail for that exact digest
+on that node, independent of whether the image is otherwise present.
+Reusing the genuinely single-platform, normally-loaded app image
+sidesteps this entirely. Both `make storage-bootstrap` and `make
+storage-hardening-check` therefore require `make image-load` to have
+already run - reflected in `day4-check`'s recipe order.
+
+## DAY4: `maops-state` - a single-replica StatefulSet with PVC-backed persistence
+
+`k8s/base/state-statefulset.yaml` adds a third workload alongside the
+unchanged `maops-gateway`/`maops-app` Deployments: `maops-state`,
+`replicas: 1` (never scaled beyond 1 - a single writer avoids the
+concurrent-write/consensus problem a multi-replica stateful service
+would otherwise need to solve, out of scope for this stage), governed
+by a headless Service (`maops-state-headless`, `clusterIP: None`,
+required by `StatefulSet.spec.serviceName` for the Pod's stable DNS
+identity - not used for normal traffic) plus a normal ClusterIP Service
+(`maops-state`) that `app`'s `STATE_HOST` ConfigMap value actually
+resolves through. `volumeClaimTemplates` requests a `data` claim (256Mi,
+`ReadWriteOnce`, `storageClassName` omitted so the cluster's verified
+default StorageClass - `rancher.io/local-path` - is used), mounted at
+`/data`, with `persistentVolumeClaimRetentionPolicy` set explicitly to
+`Retain`/`Retain` - which is actually already the current Kubernetes API
+default for both fields, so this pins (rather than overrides) that
+default explicitly, the same convention Day 3 used for `RollingUpdate`
+tuning, so a future Kubernetes version changing the default can never
+silently start deleting the persisted record on StatefulSet
+deletion/scale-down. Deleting the PVC is always a separate, deliberate
+operator action. `maops-state` schedules only onto workers (the same
+required node affinity as gateway/app) but carries no
+`topologySpreadConstraints` and no PodDisruptionBudget - both are
+meaningless for a single replica.
+
+Expected portable rendered application resources: 13 (1 Namespace, 3
+ConfigMaps, 2 Deployments, 1 StatefulSet, 4 Services, 2
+PodDisruptionBudgets - gateway/app only). Runtime Secrets and the
+generated PVC/PV are outside that count, and the provisioner's own
+configuration is the separately-documented cluster-bootstrap concern
+above - neither is part of the portable Kustomize base.
+
+## DAY4: the state API and the authenticated gateway -> app -> state chain
+
+`state/server.py` (Python stdlib only, same digest-pinned Distroless
+base/interpreter as gateway/app) implements `GET`/`PUT /state` over a
+tiny JSON record, `{"value": <string|null>}`, persisted at
+`/data/state.json`. Every write follows the same durable-write sequence:
+a restrictive (`0600`) temp file in the same directory (so the
+following rename is a same-filesystem atomic operation), `flush()` +
+`os.fsync()` on the temp file, `os.replace()`, then `os.fsync()` on the
+parent directory file descriptor - success is acknowledged only after
+all four steps complete. A missing state file is initialized to
+`{"value": null}` via this exact same safe-write path; an existing file
+that is unreadable or fails schema validation is never silently
+overwritten with a fresh default - it is left as-is and surfaced by
+`/readyz`. `GET /state` always re-reads the file from disk - there is
+no in-memory cache that could paper over a real storage failure. A
+single process-wide lock serializes every read-modify-write, so
+concurrent `PUT`s resolve as documented last-writer-wins, never an
+interleaved/torn write. If `os.replace()` itself succeeds but the
+following parent-directory `fsync()` fails, that is reported as a
+distinct, uncertain outcome (`FAILED_UNCERTAIN`) - different from a
+clean failure where nothing was persisted - rather than claimed as
+either a clean success or a clean failure.
+
+The call chain is `gateway /state` -> `app /internal/state` ->
+`state /state`. Gateway authenticates its call to app with the SAME
+`maops-internal-auth` token it already uses for `/backend` (unchanged
+since Day 2) - it never receives or forwards the new state credential.
+App terminates that call exactly like `/internal/info`, then makes its
+own outbound call to state using a second, dedicated Secret
+(`maops-state-auth`, key `state-token`) that only app and state ever
+hold. App's outbound call to state is built with `http.client`
+directly rather than `urllib.request`: `http.client` never follows
+redirects and never consults proxy environment variables, so there is
+no redirect/proxy path that could ever divert the state token away from
+the allowlisted `maops-state:8080` target (the same in-process
+allowlist pattern as gateway's own `DAY2-SEC-L1` backend-target check).
+The `X-MAOPS-State-Token` header app sends is always built from app's
+own loaded token - never copied from an inbound request's headers, so a
+client can never smuggle a value through. Both Secrets use constant-time
+comparison (`hmac.compare_digest`) and fail closed on a missing or wrong
+credential (`HTTP 403`).
+
+## DAY4: readiness chain and outage behavior
+
+`state`'s `/readyz` checks storage is usable and the persisted record is
+structurally valid - it never repairs or replaces a corrupt record, only
+reports it. `app`'s `/readyz` now also depends on USABLE AUTHENTICATED
+state access: rather than an unauthenticated reachability check, it
+calls the real authenticated `GET /state` path, so a broken token or
+allowlist mismatch shows up as a readiness failure, not just a network
+one. `gateway`'s `/readyz` is unchanged in shape (a bounded HTTP check
+against app's own `/readyz`) but now transitively reflects state's
+health too. All three workloads' `/livez` remain local-process-only, as
+in Day 2/3 - a state outage must never restart an otherwise-healthy
+app or gateway Pod. `scripts/retention_check.py` proves this live:
+scaling `maops-state` to 0 leaves app/gateway `/livez` at `200` and
+their `/readyz` at `503` (observed via direct-Pod port-forwards, since
+a not-Ready Pod stops being a normal Service endpoint), while the PVC
+and its bound PV remain `Bound` throughout (`persistentVolumeClaimRetentionPolicy:
+Retain` doing exactly its job) - then scaling back to 1 produces a
+genuinely new Pod identity with the pre-outage marker intact and normal
+Service-routed 3/3 Ready behavior restored on both Deployments.
+
+## DAY4: persistence proof
+
+`scripts/persistence_check.py` proves data survives Pod
+deletion/rescheduling specifically (as opposed to a full scale-to-zero
+outage, which `retention_check.py` covers): it writes a unique marker
+through the real service chain, records the Pod/PVC/PV identities,
+deletes ONLY `maops-state-0` with a normal `kubectl delete pod` (never
+`--force`), waits for the StatefulSet controller's real replacement,
+then proves the same Pod NAME with a genuinely DIFFERENT Pod UID, the
+SAME PVC UID and PV UID/binding (nothing was recreated), and the marker
+reads back unchanged - through the same service chain, never from a
+value already held in the script's own memory. The pre-experiment
+record is restored on every handled exit path; a restoration failure is
+reported prominently, never hidden behind the experiment's own result.
+
+## DAY4: worker-local storage and its limits
+
+`rancher.io/local-path`'s `WaitForFirstConsumer` binding mode means a
+PV binds to whichever worker its first consuming Pod happens to land
+on, and the resulting PV carries a `nodeAffinity` permanently pinning it
+to that specific node - `maops-state`'s data does not move if that
+worker becomes unschedulable, and this project's 2-worker kind topology
+provides no cross-node replication for it. This is a known, accepted
+limitation of this local development storage backend, not a defect
+introduced by this stage; node-loss recovery for `maops-state`'s PV is
+explicitly out of scope. The claim requests 256Mi; `local-path` does
+not enforce that capacity as a hard quota on the node filesystem (unlike
+a CSI driver backed by a real block device) - the requested capacity is
+a Kubernetes-API-level bookkeeping value, not an enforced ceiling on
+this backend.
+
+## DAY4-ARCH-L1: fixed Day 4 topology and the node-addition limitation
+
+The Day 4 kind cluster's node set (one control-plane, two workers) is
+fixed for the lifetime of the cluster - every storage-hardening step
+this stage performs (`make storage-bootstrap`'s per-node `chown`/`chmod`
+of `/var/local-path-provisioner`, proven by `make
+storage-hardening-check`) is applied explicitly to the node set observed
+at the time those targets run, via `_cluster_nodes()`'s live `kubectl
+get nodes` query - never a hardcoded node list.
+
+**Documented limitation (not yet adjudicated - see below):** a node
+added to the cluster AFTER `make storage-bootstrap` has already run
+(e.g. a future `kind` node pool expansion) would NOT automatically
+receive the same provisioning-root hardening - `storage-bootstrap` is
+invoked once, explicitly, at a known point in `make day4-check`'s
+sequence, not on a recurring or node-lifecycle-triggered basis. Any
+such new node requires an explicit, manual re-run of `make
+storage-bootstrap` (idempotent - see
+[DAY4: storage bootstrap](#day4-storage-bootstrap-making-fsgroup-do-real-access-control-work)
+above) and its own `storage-hardening-check` verification before any
+`maops-state` PVC is ever scheduled to provision on it.
+
+This is recorded here as an accepted Day 4 scope boundary for
+documentation purposes; final risk acceptance (vs. a Day 5+
+DaemonSet-based enforcement mechanism, the alternative the Day 4
+architecture review raised) remains **pending an explicit owner
+decision** - this batch does not choose between the two options or
+assign new Day 5 scope on its own authority.
+
+## DAY4: measured image digest mapping (DAY4-INT-2)
+
+Remediation batch 1's `cluster-integration-engineer` investigation
+(evidence:
+`~/DevOps-Portfolio/_local-evidence/maops-kubernetes-platform/day-04/day4-remediation-batch1-20260910T060524Z/dayrel2-image-provenance/`,
+files `00`-`12`) measured, for the specific images and environment
+inspected in that session (this local Docker Desktop engine using the
+containerd image-store snapshotter, and this project's `kind`
+node/containerd runtime):
+
+| Workload | Host `docker inspect .Id` (platform-manifest digest) | Node `crictl` image ID (config digest) | Running container imageID/imageRef |
+|---|---|---|---|
+| app | `sha256:db24defd5adb0d44...` | `sha256:66a15ef2be0112947a...` | `import-2026-09-08@sha256:1d6c8cc7e2264a69...` |
+| gateway | `sha256:e986f4d61fbfe06f...` | `sha256:2be49e935ce8f941...` | `import-2026-09-08@sha256:c3abb39fe9abbeb15...` |
+| state | `sha256:dc1500feaa27f4e9...` | `sha256:b81768cdd9c629ff...` | `import-2026-09-08@sha256:f8931e085b8e72ac...` |
+
+(Truncated here for readability; full digests are in the evidence
+directory above - this section is a documentation pointer, not a
+re-derivation, per this batch's scope: the expensive byte-level
+forensics that produced these values is not repeated.)
+
+**Why host and node report different digest values for the same
+image** (this local Docker Desktop engine reports `driver-type:
+io.containerd.snapshotter.v1`, `GraphDriver: None`): `docker inspect
+.Id` reports the OCI **platform-manifest digest**, while the node's
+`crictl images`/`crictl inspecti` reports the **config digest** - two
+different, both-legitimate digest kinds for the *same* image content,
+not a content mismatch. Every layer (45 layers + 1 config, all three
+workloads) was confirmed byte-identical between the host-extracted
+`docker save` blobs and the node's containerd content store, on both
+worker nodes, and the source file inside each image's final layer was
+confirmed byte-identical to the corresponding `app/server.py` /
+`gateway/server.py` / `state/server.py` on disk.
+
+**Scope of this observation:** limited to the images and environment
+actually inspected above - a single-manifest OCI index (what `docker
+save` emits for a locally-built, never-registry-pushed,
+single-`linux/amd64` image) is still an index with meaningful content
+identity for that image, not equivalent to "no index." This section
+makes no claim about image flows or environments outside the ones
+measured here.
 
 ## Why RBAC/NetworkPolicy remain deferred
 
 Unchanged rationale from Day 2: both workloads still run with no
 ServiceAccount beyond the default (`automountServiceAccountToken:
 false`) and no NetworkPolicy. Day 5 (`v0.5.0`) introduces both together.
+
+**DAY4-SEC-L1 scope note:** a standard Kubernetes `NetworkPolicy`
+restricts *which pods/namespaces can reach a Service's port at all* (L3/L4
+scope) - it is not HTTP path- or method-level authorization, and cannot
+by itself distinguish "may `GET /state`" from "may `PUT /state`" for a
+caller it otherwise permits to reach the gateway at all. Day 5's
+NetworkPolicy work can narrow *who* may reach the public gateway write
+path, but closing the public-gateway-write-access concern at the
+HTTP-method level (if ever required) would need application-layer
+authorization, which NetworkPolicy does not provide.
 
 ## Why Ingress/Gateway API remain deferred
 

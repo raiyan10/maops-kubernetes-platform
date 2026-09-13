@@ -10,7 +10,7 @@ import json
 import urllib.error
 import urllib.request
 
-GATEWAY_ENDPOINTS = ["/", "/livez", "/readyz", "/config", "/backend"]
+GATEWAY_ENDPOINTS = ["/", "/livez", "/readyz", "/config", "/backend", "/state"]
 APP_ENDPOINTS = ["/", "/livez", "/readyz", "/config"]
 
 EXPECTED_LIVEZ_STATUS = "alive"
@@ -80,6 +80,16 @@ def _check_semantics(role: str, path: str, payload) -> tuple[bool, str]:
                 f"expected backend_service == {APP_EXPECTED_APP_NAME!r} (real data from maops-app via the "
                 f"Service), got {payload.get('backend_service')!r}"
             )
+    elif path == "/state":
+        # DAY4: proves the real gateway -> app -> state chain returns the
+        # documented {"value": <string|null>} shape end to end - never
+        # asserts a specific value, since the persisted record legitimately
+        # changes across other validation scripts' experiments.
+        if set(payload.keys()) != {"value"}:
+            return False, f"expected exactly {{'value': ...}}, got keys {sorted(payload.keys())}"
+        value = payload.get("value")
+        if value is not None and not isinstance(value, str):
+            return False, f"expected 'value' to be a string or null, got {type(value).__name__}"
 
     return True, ""
 
@@ -156,3 +166,38 @@ def fetch_config(local_port: int) -> dict:
     url = f"http://127.0.0.1:{local_port}/config"
     with urllib.request.urlopen(url, timeout=5.0) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def validate_state_value(body) -> tuple[bool, str | None, str]:
+    """DAY4 batch 2b: validates a decoded `/state` response body against
+    the documented `{"value": <string|null>}` schema. Returns
+    `(ok, value, error)` - `value` is only meaningful when `ok` is True.
+
+    Used identically at every capture point AND every independent
+    readback/comparison point across persistence_check.py,
+    retention_check.py, final_state_check.py, and state_check.py - the
+    defect this closes: a comparison that only did
+    `body.get("value") == expected` could not distinguish a body
+    genuinely missing the required 'value' key (e.g. `{}`) from a
+    genuine `{"value": null}` record, since `dict.get` silently returns
+    `None` for both. When `expected` is itself `None` (a legitimately
+    null baseline), `{}`.get("value") == None was a false PASS - this
+    function makes "key present" a required, separately-checked
+    condition, never inferred from the comparison succeeding."""
+    if not isinstance(body, dict):
+        return False, None, f"expected a JSON object, got {type(body).__name__}: {body!r}"
+    if "value" not in body:
+        return False, None, f"response missing required 'value' key: {body!r}"
+    value = body["value"]
+    if value is not None and not isinstance(value, str):
+        return False, None, f"'value' has an unexpected type: {value!r}"
+    return True, value, ""
+
+
+def is_nonempty_identity(value) -> bool:
+    """DAY4 batch 2b: a resource identity (PVC/PV/namespace/Pod UID) is
+    only meaningful as proof of preservation when it is a genuine
+    nonempty string on BOTH sides of a comparison - two `None`/missing
+    UIDs comparing equal is never proof that an identity was preserved,
+    only that neither side could be read."""
+    return isinstance(value, str) and len(value) > 0

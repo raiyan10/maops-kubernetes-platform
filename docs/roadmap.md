@@ -43,9 +43,13 @@ lives under `docs/engineering-reviews/day-02-*` and is not modified by
 later days. Day 3 builds directly on this architecture, unchanged - see
 `docs/architecture.md`.
 
-## Day 3 / v0.3.0 - Scaling, scheduling, rolling updates, rollback, availability (this stage)
+## Day 3 / v0.3.0 - Scaling, scheduling, rolling updates, rollback, availability
 
-**IN DEVELOPMENT / current target.** Not yet released or tagged. Builds
+**COMPLETE / RELEASED / FROZEN.** Released as `v0.3.0` (PR #3, tag
+`v0.3.0` -> commit `9fc7fe9f25d729d76317de85b5722e84271234f0`); historical
+engineering evidence and post-release verification live under
+`docs/engineering-reviews/day-03-*` and are not modified by later days.
+Builds
 directly on Day 2's two-workload architecture, unchanged, and adds:
 
 - A multi-node kind cluster (1 control-plane + 2 workers) - the first
@@ -79,11 +83,33 @@ Ansible, Argo CD, and cloud clusters. See `docs/architecture.md` for the
 full picture and the rationale behind each scheduling/availability
 decision.
 
-## Day 4 / v0.4.0 - StatefulSet, PVC, persistence
+## Day 4 / v0.4.0 - StatefulSet, PVC, persistence (this stage)
 
-**FUTURE - not yet implemented.** A StatefulSet-backed component with a
-PersistentVolumeClaim, proving data survives pod rescheduling and
-recovery after deliberate failure injection.
+**IN DEVELOPMENT / current target.** Not yet released or tagged. Keeps
+Day 3's gateway/app architecture entirely unchanged (still 3 replicas
+each, same scaling/rollout/scheduling/PDB behavior) and adds a third
+workload, `maops-state` - a single-replica StatefulSet with a
+PVC-backed `/data` volume, reached as
+`gateway /state -> app /internal/state -> state /state`, authenticated
+by a second, dedicated runtime Secret (`maops-state-auth`) that only
+`app` and `state` ever hold - `gateway` never receives it. A dedicated,
+narrowly-scoped storage bootstrap (`scripts/storage_bootstrap.py`,
+`make storage-bootstrap`) hardens the already-installed
+`local-path-provisioner`'s directory-creation permissions (root:10001,
+mode 2770 - never world-writable) before the application's PVC is ever
+created, verified against a disposable scratch claim
+(`make storage-hardening-check`) with both a positive (correct UID/GID
+write) and negative (unrelated UID/GID -> EACCES) proof. See
+`docs/architecture.md` for the full design, including the two-attempt
+storage preflight that discovered and resolved a containerd multi-arch
+image-import defect this day's image-build tooling now avoids.
+
+Explicitly out of scope for Day 4: ServiceAccount, RBAC, NetworkPolicy
+(Day 5), Helm/CI/Ingress/Gateway API (Day 6), service mesh/advanced
+deployment strategies (Day 7), horizontal scaling of `maops-state`
+(single-writer only), and any change to Day 1-3's Distroless base image
+digest, interpreter path, or gateway/app application code beyond the
+new `/state`/`/internal/state` proxy hops this stage adds.
 
 ## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy
 

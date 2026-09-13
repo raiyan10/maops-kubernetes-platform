@@ -127,6 +127,8 @@ def attempt_eviction(pod_name: str, timeout: float = EVICTION_SUBPROCESS_TIMEOUT
     return subprocess.run(
         [
             "kubectl",
+            "--kubeconfig",
+            kube.KUBECONFIG_PATH,
             "--context",
             kube.CONTEXT,
             "create",

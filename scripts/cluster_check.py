@@ -43,6 +43,21 @@ EXPECTED_K8S_VERSION = "v1.36.1"
 EXPECTED_REPLICAS = 3
 EXPECTED_NODE_COUNT = 3
 
+# DAY4-INT (batch 3 remediation): the Kubernetes-side bound for `kubectl
+# rollout status` below. Bounded like every other legitimately-long
+# kubectl call in this project (DAY3-INT-H2): the subprocess-level
+# timeout used at the call site is always this value plus
+# kube.SUBPROCESS_TIMEOUT_BUFFER_SECONDS (via kube.subprocess_timeout_for()),
+# so a hung kubectl is converted into an ordinary (False, detail) result
+# rather than ever being the thing that fires first.
+ROLLOUT_COMPLETE_TIMEOUT_SECONDS = 120
+# Bound for the post-rollout-status Pod-count settle poll below, for the
+# same old-ReplicaSet-Pods-still-terminating race that
+# rollout_check._wait_exact_pod_count guards against - matched to that
+# function's own timeout (60s at both of its call sites) rather than an
+# unexplained tighter budget for what is otherwise the identical race.
+POD_COUNT_SETTLE_TIMEOUT_SECONDS = 60.0
+
 WORKLOADS = [
     ("gateway", GATEWAY_DEPLOYMENT, GATEWAY_SERVICE, GATEWAY_LABEL_SELECTOR, "maops-gateway-config"),
     ("app", APP_DEPLOYMENT, APP_SERVICE, APP_LABEL_SELECTOR, "maops-app-config"),
@@ -96,6 +111,86 @@ def wait_for_deployment_available(deployment: str):
         record(False, str(exc))
         dep = get_json("-n", NAMESPACE, "get", "deployment", deployment)
     return dep
+
+
+def wait_for_rollout_complete(deployment: str, timeout_seconds: int = ROLLOUT_COMPLETE_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """DAY4-INT (batch 3 remediation): `wait_for_deployment_available()`
+    above only proves the Deployment's `Available` CONDITION has flipped
+    true at some point - Kubernetes can set that condition as soon as
+    `minReadySeconds`/`maxUnavailable` thresholds are met for a SUBSET of
+    replicas, so it does not by itself prove the CURRENT rollout (the one
+    `deploy` just triggered via `kubectl apply`) has actually finished
+    converging. `kubectl rollout status` is generation-aware - it blocks
+    until `observedGeneration` matches the Deployment's current
+    `generation` AND `replicas == updatedReplicas == availableReplicas`,
+    which is what "this specific rollout is done" actually means; a bare
+    `Available=True` snapshot cannot tell an old, already-finished
+    generation apart from a still-converging new one.
+
+    Bounded exactly like every other legitimately-long kubectl call in
+    this project (DAY3-INT-H2, same pattern as
+    `rollout_check.wait_rollout_status`): the subprocess-level timeout
+    always exceeds the Kubernetes-side `--timeout=<n>s`, via
+    `kube.subprocess_timeout_for()`. A hung kubectl (never even reaching
+    its own `--timeout`) is converted into an ordinary `(False, detail)`
+    result here, and a `kubectl rollout status` that itself reports
+    exceeding its timeout (progress-deadline failure, stuck rollout) exits
+    non-zero rather than hanging - both are ordinary failed results, never
+    an uncaught exception or a silent pass."""
+    try:
+        result = run(
+            "-n",
+            NAMESPACE,
+            "rollout",
+            "status",
+            f"deployment/{deployment}",
+            f"--timeout={timeout_seconds}s",
+            check=False,
+            timeout=kube.subprocess_timeout_for(timeout_seconds),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return False, f"kubectl rollout status subprocess timed out: {_stderr_detail(exc)}"
+    ok = result.returncode == 0
+    output = (result.stdout or "").strip() + (("\n" + result.stderr.strip()) if result.stderr else "")
+    return ok, output.strip()
+
+
+def wait_for_stable_pod_count(label_selector: str, count: int, timeout: float = POD_COUNT_SETTLE_TIMEOUT_SECONDS) -> list[dict]:
+    """Termination-race guard (same pattern as
+    `rollout_check._wait_exact_pod_count`): `kubectl rollout status`
+    reporting success only guarantees the Deployment's spec-level replica
+    bookkeeping has converged - the OLD ReplicaSet's outgoing Pods can
+    still be mid-termination for a brief window afterward. A naive
+    one-shot `get_pods()` taken immediately after rollout completion can
+    therefore still observe old-plus-new Pods together (more than
+    `count`). Poll until the live Pod set settles to exactly `count`
+    before handing the snapshot to the strict Pod-count/readiness
+    assertions below.
+
+    On timeout, returns whatever the last SUCCESSFULLY observed Pod list
+    actually was (never raises, and never issues a second, unguarded
+    `get_pods()` call after the poll gives up - that call could itself
+    raise the very exception this function exists to avoid propagating)
+    - the caller's existing strict assertions then run against real,
+    current data and correctly FAIL rather than the whole check crashing
+    with an uncaught exception. `wait_until()` already swallows and
+    retries any exception `predicate()` raises internally (see
+    kube.wait_until), so `last_seen` only ever needs to be captured, not
+    separately re-guarded here."""
+    last_seen: list[dict] = []
+
+    def predicate():
+        nonlocal last_seen
+        pods = get_pods(label_selector)
+        last_seen = pods
+        return pods if len(pods) == count else None
+
+    try:
+        return wait_until(
+            predicate, timeout=timeout, interval=2, description=f"exactly {count} Pod(s) matching {label_selector!r}"
+        )
+    except TimeoutError:
+        return last_seen
 
 
 def check_replica_counts(deployment: str, dep: dict):
@@ -258,9 +353,17 @@ def main() -> int:
 
     pods_by_component: dict[str, list[dict]] = {}
     for component, deployment, service, label_selector, configmap in WORKLOADS:
-        dep = wait_for_deployment_available(deployment)
+        wait_for_deployment_available(deployment)
+        rollout_ok, rollout_detail = wait_for_rollout_complete(deployment)
+        record(rollout_ok, f"{deployment} rollout status: current generation fully rolled out ({rollout_detail!r})")
+        # Re-read the Deployment fresh regardless of rollout_ok - the
+        # earlier `dep` snapshot (from wait_for_deployment_available) can
+        # predate rollout completion by design; the strict assertions
+        # below must see current, post-convergence-attempt truth, not a
+        # stale mid-rollout snapshot.
+        dep = get_json("-n", NAMESPACE, "get", "deployment", deployment)
         check_replica_counts(deployment, dep)
-        pods = get_pods(label_selector)
+        pods = wait_for_stable_pod_count(label_selector, EXPECTED_REPLICAS)
         pods_by_component[component] = pods
         check_pods_ready(component, pods)
         check_service_type(component, service)

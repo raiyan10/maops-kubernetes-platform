@@ -5,9 +5,13 @@ resources:
   - namespace.yaml
   - gateway-configmap.yaml
   - app-configmap.yaml
+  - state-configmap.yaml
   - gateway-deployment.yaml
   - app-deployment.yaml
+  - state-statefulset.yaml
   - gateway-service.yaml
   - app-service.yaml
+  - state-service.yaml
+  - state-service-headless.yaml
   - gateway-pdb.yaml
   - app-pdb.yaml

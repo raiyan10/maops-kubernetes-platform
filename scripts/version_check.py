@@ -31,14 +31,16 @@ import k8s_yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "VERSION"
 
-# Day 3's pinned target - VERSION itself must have actually been bumped,
+# Day 4's pinned target - VERSION itself must have actually been bumped,
 # not just left agreeing with whatever it already said.
-EXPECTED_TARGET_VERSION = "0.3.0"
+EXPECTED_TARGET_VERSION = "0.4.0"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
+STATE_STATEFULSET = "maops-state"
 GATEWAY_IMAGE_REPO = "maops-kubernetes-gateway"
 APP_IMAGE_REPO = "maops-kubernetes-app"
+STATE_IMAGE_REPO = "maops-kubernetes-state"
 
 
 @dataclass
@@ -75,7 +77,7 @@ def _collect_version_labels(docs: list[dict]) -> list[tuple[str, str | None]]:
         labels = doc.get("metadata", {}).get("labels") or {}
         if "app.kubernetes.io/version" in labels:
             locations.append((f"{kind}/{name}.metadata.labels", labels.get("app.kubernetes.io/version")))
-        if kind == "Deployment":
+        if kind in ("Deployment", "StatefulSet"):
             pod_labels = doc.get("spec", {}).get("template", {}).get("metadata", {}).get("labels") or {}
             if "app.kubernetes.io/version" in pod_labels:
                 locations.append(
@@ -90,17 +92,18 @@ def run_version_checks(version: str, docs: list[dict]) -> list[Finding]:
     findings.append(
         Finding(
             ok=version == EXPECTED_TARGET_VERSION,
-            name="version.file_matches_day3_target",
+            name="version.file_matches_day4_target",
             detail=f"expected VERSION == {EXPECTED_TARGET_VERSION!r}, found {version!r}",
         )
     )
 
-    deployments = [d for d in docs if d.get("kind") == "Deployment"]
+    workloads = [d for d in docs if d.get("kind") in ("Deployment", "StatefulSet")]
     for expected_name, image_repo in (
         (GATEWAY_DEPLOYMENT, GATEWAY_IMAGE_REPO),
         (APP_DEPLOYMENT, APP_IMAGE_REPO),
+        (STATE_STATEFULSET, STATE_IMAGE_REPO),
     ):
-        dep = next((d for d in deployments if d.get("metadata", {}).get("name") == expected_name), None)
+        dep = next((d for d in workloads if d.get("metadata", {}).get("name") == expected_name), None)
         containers = ((dep or {}).get("spec", {}).get("template", {}).get("spec", {}).get("containers")) or []
         image = containers[0].get("image") if containers else None
         tag = _image_tag(image)

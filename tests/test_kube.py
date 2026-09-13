@@ -7,6 +7,8 @@ time.sleep) so these tests are deterministic and do not actually sleep.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import subprocess
 import sys
 import unittest
@@ -16,6 +18,21 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import kube
+
+
+def _load_fresh_kube_module():
+    """Re-executes scripts/kube.py in isolation (a fresh module object,
+    under an explicit `unittest.mock.patch.dict(os.environ, ...)`), so
+    KUBECONFIG_PATH's env-var-override-then-home-directory-fallback
+    resolution (evaluated once at module import time) can be tested
+    under both env states without mutating the shared `kube` module
+    every other test file in this suite already imported."""
+    spec = importlib.util.spec_from_file_location(
+        "maops_kube_fresh", Path(__file__).resolve().parent.parent / "scripts" / "kube.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
@@ -262,6 +279,62 @@ class WaitUntilMonotonicClockTests(unittest.TestCase):
             with _patched_clock(clock):
                 with self.assertRaises(TimeoutError):
                     kube.wait_until(lambda: None, timeout=3, interval=1)
+
+
+class KubeconfigPathResolutionTests(unittest.TestCase):
+    """DAY4-TEST-L2: KUBECONFIG_PATH must prefer an explicit env-var
+    override, and fall back to a path derived from the CURRENT user's
+    home directory (Path.home()) - never a hardcoded personal path -
+    when the env var is unset."""
+
+    def test_env_var_override_takes_precedence(self):
+        with mock.patch.dict(os.environ, {"KUBECONFIG_PATH": "/custom/path/to/kubeconfig"}):
+            fresh = _load_fresh_kube_module()
+        self.assertEqual(fresh.KUBECONFIG_PATH, "/custom/path/to/kubeconfig")
+
+    def test_falls_back_to_home_directory_when_env_var_unset(self):
+        env_without_override = {k: v for k, v in os.environ.items() if k != "KUBECONFIG_PATH"}
+        with mock.patch.dict(os.environ, env_without_override, clear=True):
+            fresh = _load_fresh_kube_module()
+        expected = str(Path.home() / ".kube" / f"{fresh.CLUSTER_NAME}.config")
+        self.assertEqual(fresh.KUBECONFIG_PATH, expected)
+
+    def test_empty_string_env_var_is_treated_as_unset(self):
+        # os.environ.get(...) or <fallback> means an explicitly empty
+        # override still falls back, rather than resolving to "".
+        env = dict(os.environ)
+        env["KUBECONFIG_PATH"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            fresh = _load_fresh_kube_module()
+        self.assertNotEqual(fresh.KUBECONFIG_PATH, "")
+        self.assertIn(".kube", fresh.KUBECONFIG_PATH)
+
+
+class RunConstructsKubeconfigArgvTests(unittest.TestCase):
+    """DAY4-TEST-L2: every kubectl invocation this project makes must
+    pass --kubeconfig explicitly - never relying on the caller's
+    ambient default kubeconfig."""
+
+    def test_run_includes_kubeconfig_flag_and_value_in_argv(self):
+        with mock.patch.object(kube.subprocess, "run", return_value=_completed()) as mock_run:
+            kube.run("get", "nodes")
+        argv = mock_run.call_args.args[0]
+        self.assertIn("--kubeconfig", argv)
+        self.assertEqual(argv[argv.index("--kubeconfig") + 1], kube.KUBECONFIG_PATH)
+
+    def test_run_includes_explicit_context_flag(self):
+        with mock.patch.object(kube.subprocess, "run", return_value=_completed()) as mock_run:
+            kube.run("get", "pods")
+        argv = mock_run.call_args.args[0]
+        self.assertIn("--context", argv)
+        self.assertEqual(argv[argv.index("--context") + 1], kube.CONTEXT)
+
+    def test_kubeconfig_flag_precedes_user_supplied_args(self):
+        with mock.patch.object(kube.subprocess, "run", return_value=_completed()) as mock_run:
+            kube.run("get", "pods", "-n", "maops-platform")
+        argv = mock_run.call_args.args[0]
+        self.assertEqual(argv[0], "kubectl")
+        self.assertLess(argv.index("--kubeconfig"), argv.index("get"))
 
 
 if __name__ == "__main__":

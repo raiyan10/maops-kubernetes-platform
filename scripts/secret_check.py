@@ -44,14 +44,19 @@ from kube import (
     INTERNAL_SECRET,
     INTERNAL_SECRET_KEY,
     NAMESPACE,
+    STATE_LABEL_SELECTOR,
+    STATE_SECRET,
+    STATE_SECRET_KEY,
+    STATE_SERVICE,
     get_json,
     run,
 )
 from portforward import port_forward
-from secret_bootstrap import get_existing_secret, validate_secret_shape
+from secret_bootstrap import get_existing_secret, get_existing_state_secret, validate_secret_shape
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOKEN_HEADER = "X-MAOPS-Internal-Token"
+STATE_TOKEN_HEADER = "X-MAOPS-State-Token"
 WRONG_TOKEN = "definitely-not-the-real-internal-token"  # nosec: not a credential
 
 results: list[tuple[bool, str]] = []
@@ -81,6 +86,115 @@ def check_secret_shape() -> bool:
     ok, message = validate_secret_shape(secret)
     record(ok, message)
     return ok
+
+
+def get_state_token() -> bytes | None:
+    secret = get_existing_state_secret()
+    if secret is None:
+        return None
+    encoded = (secret.get("data") or {}).get(STATE_SECRET_KEY)
+    if not encoded:
+        return None
+    return base64.b64decode(encoded)
+
+
+def check_state_secret_shape() -> bool:
+    secret = get_existing_state_secret()
+    if secret is None:
+        record(False, f"Secret {STATE_SECRET!r} does not exist")
+        return False
+    ok, message = validate_secret_shape(secret, STATE_SECRET, STATE_SECRET_KEY)
+    record(ok, message)
+    return ok
+
+
+def _state_mount_findings(component: str, pods: list[dict]) -> None:
+    if not pods:
+        record(False, f"{component} state-auth Secret mount: no pods available to inspect")
+        return
+    pod = get_json("-n", NAMESPACE, "get", "pod", pods[0]["metadata"]["name"])
+    volumes = pod["spec"].get("volumes") or []
+    volume = next((v for v in volumes if v.get("name") == "state-auth"), {})
+    record(
+        (volume.get("secret") or {}).get("secretName") == STATE_SECRET,
+        f"{component} pod mounts Secret {(volume.get('secret') or {}).get('secretName')!r} via volume "
+        f"'state-auth' (expected {STATE_SECRET!r})",
+    )
+    container = pod["spec"]["containers"][0]
+    mount = next((m for m in (container.get("volumeMounts") or []) if m.get("name") == "state-auth"), {})
+    record(
+        mount.get("mountPath") == "/var/run/secrets/maops-state" and mount.get("readOnly") is True,
+        f"{component} pod mount is read-only at {mount.get('mountPath')!r} (readOnly={mount.get('readOnly')!r})",
+    )
+
+
+def check_state_pod_mounts() -> tuple[list[dict], list[dict]]:
+    """DAY4: only app and state ever mount maops-state-auth - gateway
+    must NOT (checked negatively in check_gateway_never_gets_state_token())."""
+    app_pods = get_pods(APP_LABEL_SELECTOR)
+    state_pods = get_pods(STATE_LABEL_SELECTOR)
+    _state_mount_findings("app", app_pods)
+    _state_mount_findings("state", state_pods)
+    return app_pods, state_pods
+
+
+def check_gateway_never_gets_state_token(gateway_pods: list[dict]) -> None:
+    if not gateway_pods:
+        record(False, "gateway state-token exclusion: no gateway pods available to inspect")
+        return
+    pod = get_json("-n", NAMESPACE, "get", "pod", gateway_pods[0]["metadata"]["name"])
+    volumes = pod["spec"].get("volumes") or []
+    has_state_volume = any(v.get("name") == "state-auth" for v in volumes)
+    record(not has_state_volume, "gateway Pod does NOT mount the state-auth Secret (only app and state ever hold the state credential)")
+
+
+def check_state_process_can_read_mount(component: str, pods: list[dict], expected_length: int | None) -> None:
+    if not pods:
+        record(False, f"{component} state-token readability: no pods available to exec into")
+        return
+    pod_name = pods[0]["metadata"]["name"]
+    snippet = (
+        "import sys\n"
+        "with open('/var/run/secrets/maops-state/state-token', 'rb') as f:\n"
+        "    sys.stdout.write(str(len(f.read())))\n"
+    )
+    try:
+        result = run("-n", NAMESPACE, "exec", pod_name, "--", "/usr/bin/python3.11", "-c", snippet)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        record(False, f"{component} state-token readability: kubectl exec failed in pod {pod_name}: {stderr if stderr else exc}")
+        return
+    try:
+        observed_length = int(result.stdout.strip())
+    except ValueError:
+        record(False, f"{component} state-token readability: unexpected exec output length in pod {pod_name}")
+        return
+    ok = observed_length > 0 and (expected_length is None or observed_length == expected_length)
+    record(ok, f"{component} pod {pod_name} can read the mounted state-token file (length {observed_length} bytes, never displayed)")
+
+
+def check_state_direct_auth(state_token: bytes | None) -> None:
+    """DAY4 test-only exception: port-forwards service/maops-state
+    directly (bypassing app/gateway) purely to exercise state's own auth
+    boundary and non-disclosure behavior - mirrors check_app_direct_auth."""
+    try:
+        with port_forward(CONTEXT, NAMESPACE, STATE_SERVICE, 8080) as local_port:
+            status, body = raw_get(local_port, "/state")
+            record(status == 403, f"state /state with no token -> HTTP {status} (expected exactly 403)")
+            record("token" not in body.lower(), "state 403 (no token) response body does not leak the token")
+
+            status, body = raw_get(local_port, "/state", headers={STATE_TOKEN_HEADER: "definitely-not-the-real-state-token"})
+            record(status == 403, f"state /state with wrong token -> HTTP {status} (expected exactly 403)")
+            record("token" not in body.lower(), "state 403 (wrong token) response body does not leak the token")
+
+            if state_token is not None:
+                status, body = raw_get(local_port, "/state", headers={STATE_TOKEN_HEADER: state_token.decode("utf-8")})
+                record(status == 200, f"state /state with correct token -> HTTP {status} (expected 200)")
+                record("token" not in body.lower(), "state 200 response body does not leak the token")
+            else:
+                record(False, "state correct-token check: no token available to test with")
+    except (TimeoutError, RuntimeError) as exc:
+        record(False, f"state direct auth checks: port-forward failed: {exc}")
 
 
 def _mount_findings(component: str, pods: list[dict]) -> None:
@@ -246,6 +360,20 @@ def main() -> int:
     check_logs_do_not_expose_token("app", app_pods, token)
 
     check_repo_files_do_not_contain_token(token)
+
+    # DAY4: maops-state-auth - distinct credential, app+state only.
+    if not check_state_secret_shape():
+        print("FAIL: state Secret is not in a valid state - skipping remaining state-secret checks", file=sys.stderr)
+    else:
+        state_token = get_state_token()
+        _, state_pods = check_state_pod_mounts()
+        check_gateway_never_gets_state_token(gateway_pods)
+        check_state_process_can_read_mount("app", app_pods, len(state_token) if state_token else None)
+        check_state_process_can_read_mount("state", state_pods, len(state_token) if state_token else None)
+        check_state_direct_auth(state_token)
+        check_logs_do_not_expose_token("app", app_pods, state_token)
+        check_logs_do_not_expose_token("state", state_pods, state_token)
+        check_repo_files_do_not_contain_token(state_token)
 
     failures = [m for ok, m in results if not ok]
     print()

@@ -140,10 +140,13 @@ class LoaderTests(unittest.TestCase):
         [doc] = k8s_yaml.load_all(text)
         self.assertEqual(doc, {"flag": "on"})
 
-    def test_real_rendered_manifest_parses_into_nine_documents(self):
-        # Day 3: Namespace, 2 ConfigMaps, 2 Deployments, 2 Services, 2
-        # PodDisruptionBudgets (the runtime Secret is deliberately never
-        # rendered by k8s/base).
+    def test_real_rendered_manifest_parses_into_thirteen_documents(self):
+        # Day 4: Namespace, 3 ConfigMaps (gateway/app/state), 2
+        # Deployments (gateway/app), 1 StatefulSet (state), 4 Services
+        # (gateway/app/state/state-headless), 2 PodDisruptionBudgets
+        # (gateway/app only - state carries no PDB). The runtime
+        # Secrets (maops-internal-auth, maops-state-auth) are
+        # deliberately never rendered by k8s/base.
         base = Path(__file__).resolve().parent.parent / "k8s" / "base"
         import subprocess
 
@@ -157,6 +160,7 @@ class LoaderTests(unittest.TestCase):
             [
                 "ConfigMap",
                 "ConfigMap",
+                "ConfigMap",
                 "Deployment",
                 "Deployment",
                 "Namespace",
@@ -164,8 +168,31 @@ class LoaderTests(unittest.TestCase):
                 "PodDisruptionBudget",
                 "Service",
                 "Service",
+                "Service",
+                "Service",
+                "StatefulSet",
             ],
         )
+
+        state_statefulset = next(d for d in docs if d.get("kind") == "StatefulSet")
+        self.assertEqual(state_statefulset.get("metadata", {}).get("name"), "maops-state")
+
+        # Targeted assertions on the two Day-4-specific nested
+        # structures unique to a StatefulSet (a Deployment has neither)
+        # - proves the parser's sequence-of-mappings and nested-mapping
+        # handling holds up on these particular real rendered shapes,
+        # not just the top-level kind list.
+        claim_templates = state_statefulset.get("spec", {}).get("volumeClaimTemplates")
+        self.assertEqual(len(claim_templates), 1)
+        claim = claim_templates[0]
+        self.assertEqual(claim.get("metadata", {}).get("name"), "data")
+        self.assertEqual(claim.get("spec", {}).get("accessModes"), ["ReadWriteOnce"])
+        self.assertEqual(
+            claim.get("spec", {}).get("resources", {}).get("requests", {}).get("storage"), "256Mi"
+        )
+
+        retention_policy = state_statefulset.get("spec", {}).get("persistentVolumeClaimRetentionPolicy")
+        self.assertEqual(retention_policy, {"whenDeleted": "Retain", "whenScaled": "Retain"})
 
 
 if __name__ == "__main__":

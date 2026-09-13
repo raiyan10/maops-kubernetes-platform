@@ -233,12 +233,13 @@ class CheckSafeUnavailableBodyTests(unittest.TestCase):
 
 
 class CheckAllEndpointsTests(unittest.TestCase):
-    def test_gateway_role_checks_five_endpoints_including_backend(self):
+    def test_gateway_role_checks_six_endpoints_including_backend_and_state(self):
         with _mock_urlopen(200, json.dumps({"status": "alive"})):
             results = http_checks.check_all_endpoints(1234, role="gateway")
         checked_paths = [http_checks.GATEWAY_ENDPOINTS[i] for i in range(len(results))]
         self.assertIn("/backend", checked_paths)
-        self.assertEqual(len(results), 5)
+        self.assertIn("/state", checked_paths)
+        self.assertEqual(len(results), 6)
 
     def test_app_role_checks_four_endpoints_no_backend(self):
         with _mock_urlopen(200, json.dumps({"status": "alive"})):

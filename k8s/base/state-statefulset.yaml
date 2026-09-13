@@ -1,0 +1,162 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: maops-state
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/component: state
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # DAY4: exactly one replica. maops-state is not horizontally scaled -
+  # a single writer avoids the concurrent-write/consensus problem a
+  # multi-replica stateful service would otherwise need to solve, which
+  # is explicitly out of this stage's scope (see docs/architecture.md).
+  replicas: 1
+  serviceName: maops-state-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maops-kubernetes-platform
+      app.kubernetes.io/instance: maops-kubernetes-platform-day4
+      app.kubernetes.io/component: state
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: maops-kubernetes-platform
+        app.kubernetes.io/instance: maops-kubernetes-platform-day4
+        app.kubernetes.io/version: "0.4.0"
+        app.kubernetes.io/component: state
+        app.kubernetes.io/part-of: maops-kubernetes-platform
+        app.kubernetes.io/managed-by: kustomize
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # DAY4: fsGroup 10001 matters here for real, unlike the storage
+        # preflight's world-writable (0777) finding - the Day 4 storage
+        # bootstrap (scripts/storage_bootstrap.py) configures new
+        # local-path-provisioner backing directories as
+        # owner root / group 10001 / mode 2770, so it is this
+        # directory's group permission bits - not fsGroup alone - that
+        # let UID/GID 10001 (via its supplementary group membership)
+        # write to /data, while an unrelated UID/GID with no
+        # supplementary group 10001 is rejected with EACCES. See
+        # docs/architecture.md for the full explanation and the
+        # negative-case probe that proves it.
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # Scheduling: same worker-only exclusion as gateway/app. No
+      # topologySpreadConstraints and no PodDisruptionBudget - both are
+      # meaningless for a single-replica workload.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      containers:
+        - name: maops-state
+          image: maops-kubernetes-state:0.4.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: maops-state-config
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: state-auth
+              mountPath: /var/run/secrets/maops-state
+              readOnly: true
+            - name: data
+              mountPath: /data
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 1
+          livenessProbe:
+            # Local-process liveness ONLY - never touches /data or the
+            # authenticated /state path, so a storage-layer problem
+            # never restarts an otherwise-healthy process.
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            # Checks storage is usable and the persisted record is
+            # structurally valid - never repairs/replaces a corrupt
+            # record, only reports it (see state/server.py).
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes:
+        - name: state-auth
+          secret:
+            secretName: maops-state-auth
+            defaultMode: 288
+  # DAY4: both explicitly Retain, pinning (not overriding - Retain is
+  # actually the current Kubernetes API default for both fields) the
+  # current default rather than leaving it implicit, matching this
+  # project's own convention of pinning explicitly (see Day 3's
+  # RollingUpdate tuning) so a future Kubernetes version changing this
+  # default can never silently start deleting the persisted record on
+  # StatefulSet deletion/scale-down. Deleting the PVC is always a
+  # separate, deliberate operator action.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: maops-kubernetes-platform
+          app.kubernetes.io/instance: maops-kubernetes-platform-day4
+          app.kubernetes.io/version: "0.4.0"
+          app.kubernetes.io/component: state
+          app.kubernetes.io/part-of: maops-kubernetes-platform
+          app.kubernetes.io/managed-by: kustomize
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        # storageClassName intentionally omitted - uses the cluster's
+        # verified default StorageClass (rancher.io/local-path,
+        # WaitForFirstConsumer, reclaimPolicy Delete at the PV level;
+        # see docs/architecture.md for why the StatefulSet's own Retain
+        # policy above and the StorageClass's PV-level Delete reclaim
+        # policy are two independent, non-conflicting settings).
+        resources:
+          requests:
+            storage: 256Mi
