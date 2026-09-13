@@ -312,7 +312,7 @@ def run_rollout_experiment(component: str, deployment: str, service: str, label_
         f"{component} baseline: captured {len(baseline_pods)} Pod UID(s) and {len(baseline_rs_uids)} ReplicaSet identity(ies)",
     )
 
-    marker = f"day3-{uuid.uuid4().hex[:12]}"
+    marker = f"day4-{uuid.uuid4().hex[:12]}"
     patched = False
     sampler: InFlightServiceSampler | None = None
     try:

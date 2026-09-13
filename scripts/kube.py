@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 
-CLUSTER_NAME = "maops-k8s-day3"
+CLUSTER_NAME = "maops-k8s-day4"
 CONTEXT = f"kind-{CLUSTER_NAME}"
 NAMESPACE = "maops-platform"
+
+# DAY4: explicit, overridable kubeconfig path - every kubectl call this
+# module makes passes --kubeconfig explicitly (see run() below) rather
+# than depending on or mutating the caller's default kubeconfig/current
+# context. `KUBECONFIG_PATH` (the env var the Makefile exports) always
+# wins when set; the fallback is derived from the user's own home
+# directory at runtime (`Path.home()`), never a hardcoded personal path
+# baked into source.
+KUBECONFIG_PATH = os.environ.get("KUBECONFIG_PATH") or str(Path.home() / ".kube" / f"{CLUSTER_NAME}.config")
 
 # DAY3-INT-H2: timeout architecture.
 #
@@ -37,16 +48,19 @@ def subprocess_timeout_for(kubectl_side_timeout_seconds: float) -> float:
     return kubectl_side_timeout_seconds + SUBPROCESS_TIMEOUT_BUFFER_SECONDS
 
 
-_DAY3_NODE_NAME_RE = re.compile(rf"^{re.escape(CLUSTER_NAME)}-(control-plane|worker\d*)$")
+_DAY_NODE_NAME_RE = re.compile(rf"^{re.escape(CLUSTER_NAME)}-(control-plane|worker\d*)$")
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
+STATE_STATEFULSET = "maops-state"
 GATEWAY_SERVICE = "maops-gateway"
 APP_SERVICE = "maops-app"
+STATE_SERVICE = "maops-state"
+STATE_HEADLESS_SERVICE = "maops-state-headless"
 GATEWAY_PDB = "maops-gateway-pdb"
 APP_PDB = "maops-app-pdb"
 
-INSTANCE_LABEL = "maops-kubernetes-platform-day3"
+INSTANCE_LABEL = "maops-kubernetes-platform-day4"
 
 GATEWAY_LABEL_SELECTOR = (
     "app.kubernetes.io/name=maops-kubernetes-platform,"
@@ -58,9 +72,16 @@ APP_LABEL_SELECTOR = (
     f"app.kubernetes.io/instance={INSTANCE_LABEL},"
     "app.kubernetes.io/component=app"
 )
+STATE_LABEL_SELECTOR = (
+    "app.kubernetes.io/name=maops-kubernetes-platform,"
+    f"app.kubernetes.io/instance={INSTANCE_LABEL},"
+    "app.kubernetes.io/component=state"
+)
 
 INTERNAL_SECRET = "maops-internal-auth"
 INTERNAL_SECRET_KEY = "internal-token"
+STATE_SECRET = "maops-state-auth"
+STATE_SECRET_KEY = "state-token"
 
 CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
 
@@ -80,7 +101,7 @@ def run(*args: str, check: bool = True, timeout: float = DEFAULT_TIMEOUT_SECONDS
     catch this alongside `subprocess.CalledProcessError` and convert it
     into a recorded failure rather than letting it propagate uncaught.
     """
-    cmd = ["kubectl", "--context", CONTEXT, *args]
+    cmd = ["kubectl", "--kubeconfig", KUBECONFIG_PATH, "--context", CONTEXT, *args]
     return subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout)
 
 
@@ -113,14 +134,14 @@ def wait_until(predicate, timeout: float, interval: float = 2.0, description: st
 
 def verify_context() -> None:
     """Fail closed (DAY3) if the live cluster this process is about to talk
-    to isn't actually Day 3's isolated cluster.
+    to isn't actually Day 4's isolated cluster.
 
     Every kubectl call in this project already passes an explicit
     `--context` flag (never relying on whatever the ambient
     `kubectl config current-context` happens to be), which rules out one
     class of "wrong cluster" mistake by construction. This function
     covers the remaining one: the context existing in kubeconfig at all,
-    and actually resolving to the expected `maops-k8s-day3` kind cluster
+    and actually resolving to the expected `maops-k8s-day4` kind cluster
     (identified by its node names, which kind derives from the cluster
     name) rather than some other cluster a stale/renamed context happens
     to point at. Every live validation/mutation script calls this first,
@@ -145,11 +166,11 @@ def verify_context() -> None:
     node_names = [n.get("metadata", {}).get("name", "") for n in nodes]
     # DAY3-INT-M2: a bare startswith(f"{CLUSTER_NAME}-") prefix check would
     # wrongly accept a prefix-collision cluster/node name such as
-    # "maops-k8s-day3-staging-control-plane" (which does start with
-    # "maops-k8s-day3-"). Anchor the full node name against kind's actual
+    # "maops-k8s-day4-staging-control-plane" (which does start with
+    # "maops-k8s-day4-"). Anchor the full node name against kind's actual
     # naming convention instead: "<cluster>-control-plane" or
     # "<cluster>-worker[N]" and nothing else.
-    if not node_names or not all(_DAY3_NODE_NAME_RE.match(name) for name in node_names):
+    if not node_names or not all(_DAY_NODE_NAME_RE.match(name) for name in node_names):
         raise RuntimeError(
             f"node names {node_names} do not all belong to expected cluster {CLUSTER_NAME!r} - "
             "refusing to proceed: this context may point at the wrong cluster"

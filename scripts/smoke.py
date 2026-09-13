@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Normal external HTTP smoke test (Day 2): port-forward service/maops-gateway
-(NOT maops-app - the gateway is the only externally-reached workload in
-Day 2's architecture) and perform real HTTP checks against /, /livez,
-/readyz, /config, /backend.
+Normal external HTTP smoke test (introduced Day 2, extended Day 4):
+port-forward service/maops-gateway (NOT maops-app/maops-state - the
+gateway is the only externally-reached workload in this architecture)
+and perform real HTTP checks against /, /livez, /readyz, /config,
+/backend, /state.
 
 Uses a bounded, auto-cleaned-up port-forward (scripts/portforward.py) -
 never leaves a background kubectl process running.

@@ -5,8 +5,8 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day3
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
     app.kubernetes.io/component: gateway
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
@@ -38,14 +38,14 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: maops-kubernetes-platform
-      app.kubernetes.io/instance: maops-kubernetes-platform-day3
+      app.kubernetes.io/instance: maops-kubernetes-platform-day4
       app.kubernetes.io/component: gateway
   template:
     metadata:
       labels:
         app.kubernetes.io/name: maops-kubernetes-platform
-        app.kubernetes.io/instance: maops-kubernetes-platform-day3
-        app.kubernetes.io/version: "0.3.0"
+        app.kubernetes.io/instance: maops-kubernetes-platform-day4
+        app.kubernetes.io/version: "0.4.0"
         app.kubernetes.io/component: gateway
         app.kubernetes.io/part-of: maops-kubernetes-platform
         app.kubernetes.io/managed-by: kustomize
@@ -91,11 +91,11 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: maops-kubernetes-platform
-              app.kubernetes.io/instance: maops-kubernetes-platform-day3
+              app.kubernetes.io/instance: maops-kubernetes-platform-day4
               app.kubernetes.io/component: gateway
       containers:
         - name: maops-gateway
-          image: maops-kubernetes-gateway:0.3.0
+          image: maops-kubernetes-gateway:0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -142,15 +142,21 @@ spec:
           readinessProbe:
             # Dependency-aware: gateway's own /readyz handler performs a
             # bounded HTTP check against http://maops-app:8080/readyz.
-            # timeoutSeconds here is kept comfortably above
-            # BACKEND_TIMEOUT_SECONDS (3s) so the probe itself never times
-            # out before the app-level bounded check can complete.
+            # DAY4-ARCH-M1: timeoutSeconds here is kept comfortably (2s)
+            # above BACKEND_TIMEOUT_SECONDS (5s, gateway-configmap.yaml)
+            # so the probe itself never times out before the client-side
+            # bounded call to app can complete - app's own /readyz can
+            # itself take up to STATE_TIMEOUT_SECONDS (3s) to respond,
+            # which is exactly why BACKEND_TIMEOUT_SECONDS was raised
+            # from 3s to 5s in this same batch (the nested gateway ->
+            # app -> state chain, not the two-hop chain this pattern was
+            # originally sized for in Day 2).
             httpGet:
               path: /readyz
               port: http
             initialDelaySeconds: 0
             periodSeconds: 5
-            timeoutSeconds: 5
+            timeoutSeconds: 7
             failureThreshold: 3
       volumes:
         - name: internal-auth

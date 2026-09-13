@@ -282,6 +282,120 @@ class TempFileModeTests(unittest.TestCase):
         self.assertEqual(captured_mode.get("st_mode"), 0o600)
 
 
+def _state_secret_json(value: str | None) -> dict:
+    data = {}
+    if value is not None:
+        data["state-token"] = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "maops-state-auth", "namespace": "maops-platform"},
+        "data": data,
+    }
+
+
+class StateSecretExistingPreservedTests(unittest.TestCase):
+    """DAY4-SEC-M1 / DAY4-TEST-M3: maops-state-auth mirrors
+    maops-internal-auth's existing-Secret-preserved and malformed-fails-
+    closed contracts, via the dedicated state functions."""
+
+    def test_existing_valid_state_secret_is_preserved_not_rotated(self):
+        existing = _state_secret_json("already-here-state-token")
+        create_calls = []
+        with mock.patch.object(secret_bootstrap, "get_existing_state_secret", return_value=existing):
+            with mock.patch.object(secret_bootstrap, "create_state_secret", side_effect=lambda t: create_calls.append(t)):
+                exit_code = secret_bootstrap.main("state")
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(create_calls, [], "create_state_secret must never be called when a valid Secret already exists")
+
+    def test_existing_malformed_state_secret_fails_closed_without_rotating(self):
+        existing = _state_secret_json(None)
+        create_calls = []
+        with mock.patch.object(secret_bootstrap, "get_existing_state_secret", return_value=existing):
+            with mock.patch.object(secret_bootstrap, "create_state_secret", side_effect=lambda t: create_calls.append(t)):
+                exit_code = secret_bootstrap.main("state")
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(create_calls, [], "a malformed existing state Secret must never trigger silent rotation")
+
+    def test_missing_state_secret_generates_creates_and_verifies(self):
+        generated = {}
+
+        def fake_create_state_secret(token: str) -> None:
+            generated["token"] = token
+
+        with mock.patch.object(secret_bootstrap, "get_existing_state_secret", side_effect=[None, _state_secret_json("placeholder")]):
+            with mock.patch.object(secret_bootstrap, "create_state_secret", side_effect=fake_create_state_secret):
+                exit_code = secret_bootstrap.main("state")
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(generated["token"], "a non-empty token must have been generated and passed to create_state_secret")
+
+    def test_state_secret_get_runtime_error_fails_closed(self):
+        with mock.patch.object(secret_bootstrap, "get_existing_state_secret", side_effect=RuntimeError("namespace gone")):
+            exit_code = secret_bootstrap.main("state")
+        self.assertEqual(exit_code, 1)
+
+    def test_generated_state_token_value_never_printed(self):
+        captured_token = {}
+
+        def fake_create_state_secret(token: str) -> None:
+            captured_token["value"] = token
+
+        buf = io.StringIO()
+        with mock.patch.object(secret_bootstrap, "get_existing_state_secret", side_effect=[None, _state_secret_json("placeholder")]):
+            with mock.patch.object(secret_bootstrap, "create_state_secret", side_effect=fake_create_state_secret):
+                with redirect_stdout(buf):
+                    secret_bootstrap.main("state")
+        printed = buf.getvalue()
+        self.assertNotIn(captured_token["value"], printed)
+
+
+class AllTargetDispatchTests(unittest.TestCase):
+    """DAY4-SEC-M1 / DAY4-TEST-M3: `main("all")` must always invoke both
+    `_bootstrap_internal()` and `_bootstrap_state()` regardless of the
+    first's outcome (parametrized over all four combinations), and the
+    combined exit code must be nonzero if EITHER fails - in both
+    directions, not just internal-fails-state-ok."""
+
+    def _run_all(self, internal_ok: bool, state_ok: bool) -> int:
+        internal_existing = _secret_json("internal-token-value") if internal_ok else _secret_json(None)
+        state_existing = _state_secret_json("state-token-value") if state_ok else _state_secret_json(None)
+        with mock.patch.object(secret_bootstrap, "get_existing_secret", return_value=internal_existing):
+            with mock.patch.object(secret_bootstrap, "get_existing_state_secret", return_value=state_existing):
+                return secret_bootstrap.main("all")
+
+    def test_both_ok_returns_zero(self):
+        self.assertEqual(self._run_all(True, True), 0)
+
+    def test_internal_fails_state_ok_returns_nonzero(self):
+        self.assertEqual(self._run_all(False, True), 1)
+
+    def test_internal_ok_state_fails_returns_nonzero(self):
+        self.assertEqual(self._run_all(True, False), 1)
+
+    def test_both_fail_returns_nonzero(self):
+        self.assertEqual(self._run_all(False, False), 1)
+
+    def test_state_bootstrap_still_runs_even_when_internal_bootstrap_fails(self):
+        # The critical "both directions" assertion: an internal-secret
+        # failure must never short-circuit the state-secret attempt.
+        state_calls = []
+        with mock.patch.object(secret_bootstrap, "get_existing_secret", return_value=_secret_json(None)):
+            with mock.patch.object(secret_bootstrap, "get_existing_state_secret", side_effect=lambda: state_calls.append(1) or _state_secret_json("x")):
+                secret_bootstrap.main("all")
+        self.assertEqual(len(state_calls), 1, "_bootstrap_state must still run when _bootstrap_internal fails")
+
+    def test_internal_bootstrap_still_runs_even_when_state_bootstrap_fails(self):
+        internal_calls = []
+        with mock.patch.object(secret_bootstrap, "get_existing_secret", side_effect=lambda: internal_calls.append(1) or _secret_json("x")):
+            with mock.patch.object(secret_bootstrap, "get_existing_state_secret", return_value=_state_secret_json(None)):
+                secret_bootstrap.main("all")
+        self.assertEqual(len(internal_calls), 1, "_bootstrap_internal must still run regardless of ordering")
+
+    def test_unknown_target_fails_closed(self):
+        exit_code = secret_bootstrap.main("not-a-real-target")
+        self.assertEqual(exit_code, 1)
+
+
 class WrongContextFailsClosedTests(unittest.TestCase):
     """DAY3: secret_bootstrap must never attempt to read/create a Secret
     against an unverified cluster - verify_context() failing must short-

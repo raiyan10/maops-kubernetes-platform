@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Fail-closed Day 3 context/topology/node-version verification.
+Fail-closed Day 4 context/topology/node-version verification.
 
 DAY3-INT-M2: runs before any namespace apply, Secret bootstrap, image
-load, or deploy step in `make day3-check` to prove, against the LIVE
+load, or deploy step in `make day4-check` to prove, against the LIVE
 cluster (never assumed from constants alone):
 
-  - kubectl is actually talking to the isolated `kind-maops-k8s-day3`
+  - kubectl is actually talking to the isolated `kind-maops-k8s-day4`
     context, and every node name is an exact match for kind's own
     naming convention for this cluster (`kube.verify_context()` - this
     also rejects a prefix-collision cluster/node name such as
-    "maops-k8s-day3-staging-control-plane", which a bare `startswith()`
+    "maops-k8s-day4-staging-control-plane", which a bare `startswith()`
     check would wrongly accept);
   - exactly 3 nodes, exactly 1 control-plane (identified dynamically via
     the `node-role.kubernetes.io/control-plane` label, never a
@@ -43,7 +43,7 @@ def record(ok: bool, message: str) -> bool:
 
 
 def main() -> int:
-    print(f"# Day 3 context/topology/node-version verification (expected context: {kube.CONTEXT})")
+    print(f"# Day 4 context/topology/node-version verification (expected context: {kube.CONTEXT})")
     try:
         kube.verify_context()
         record(True, f"context {kube.CONTEXT!r} verified against live cluster node identity")
@@ -65,7 +65,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} context check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: Day 3 context, topology, and node version verified")
+    print("PASS: Day 4 context, topology, and node version verified")
     return 0
 
 

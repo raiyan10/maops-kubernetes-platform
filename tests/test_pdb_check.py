@@ -508,5 +508,63 @@ class WrongContextFailsClosedTests(unittest.TestCase):
         mock_run.assert_not_called()
 
 
+class EvictionSubprocessKubeconfigArgumentTests(unittest.TestCase):
+    """DAY4-INT (batch 5 remediation): attempt_eviction() builds its own
+    raw subprocess.run() kubectl invocation (it needs `input=` for the
+    Eviction body, so it doesn't go through kube.run()) and had the exact
+    same missing-`--kubeconfig` gap batch 4 found and fixed in
+    scripts/portforward.py - it fell back to the default kubeconfig,
+    which never contains this project's isolated per-day context.
+    Exercises the REAL attempt_eviction(), mocking only subprocess.run
+    itself (the external boundary), unlike every other test in this file
+    which mocks attempt_eviction() wholesale."""
+
+    def test_eviction_subprocess_receives_explicit_kubeconfig(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(pdb_check.subprocess, "run", side_effect=fake_run):
+            pdb_check.attempt_eviction("maops-app-abc123")
+
+        cmd = captured["cmd"]
+        self.assertEqual(cmd[0], "kubectl")
+        self.assertIn("--kubeconfig", cmd)
+        self.assertEqual(cmd[cmd.index("--kubeconfig") + 1], pdb_check.kube.KUBECONFIG_PATH)
+        self.assertIn("--context", cmd)
+        self.assertEqual(cmd[cmd.index("--context") + 1], pdb_check.kube.CONTEXT)
+
+    def test_eviction_subprocess_kubeconfig_honors_configured_override(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(pdb_check.kube, "KUBECONFIG_PATH", "/fake/day4.config"):
+            with mock.patch.object(pdb_check.subprocess, "run", side_effect=fake_run):
+                pdb_check.attempt_eviction("maops-gateway-xyz")
+
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--kubeconfig") + 1], "/fake/day4.config")
+
+    def test_eviction_raw_path_and_pod_name_still_correct(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with mock.patch.object(pdb_check.subprocess, "run", side_effect=fake_run):
+            pdb_check.attempt_eviction("maops-app-abc123")
+
+        cmd = captured["cmd"]
+        self.assertIn(f"/api/v1/namespaces/{pdb_check.NAMESPACE}/pods/maops-app-abc123/eviction", cmd)
+        body = json.loads(captured["kwargs"]["input"])
+        self.assertEqual(body["metadata"]["name"], "maops-app-abc123")
+
+
 if __name__ == "__main__":
     unittest.main()

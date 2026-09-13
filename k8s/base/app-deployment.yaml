@@ -5,8 +5,8 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day3
-    app.kubernetes.io/version: "0.3.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
     app.kubernetes.io/component: app
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
@@ -26,14 +26,14 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: maops-kubernetes-platform
-      app.kubernetes.io/instance: maops-kubernetes-platform-day3
+      app.kubernetes.io/instance: maops-kubernetes-platform-day4
       app.kubernetes.io/component: app
   template:
     metadata:
       labels:
         app.kubernetes.io/name: maops-kubernetes-platform
-        app.kubernetes.io/instance: maops-kubernetes-platform-day3
-        app.kubernetes.io/version: "0.3.0"
+        app.kubernetes.io/instance: maops-kubernetes-platform-day4
+        app.kubernetes.io/version: "0.4.0"
         app.kubernetes.io/component: app
         app.kubernetes.io/part-of: maops-kubernetes-platform
         app.kubernetes.io/managed-by: kustomize
@@ -69,11 +69,11 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: maops-kubernetes-platform
-              app.kubernetes.io/instance: maops-kubernetes-platform-day3
+              app.kubernetes.io/instance: maops-kubernetes-platform-day4
               app.kubernetes.io/component: app
       containers:
         - name: maops-app
-          image: maops-kubernetes-app:0.3.0
+          image: maops-kubernetes-app:0.4.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -99,6 +99,12 @@ spec:
             - name: internal-auth
               mountPath: /var/run/secrets/maops
               readOnly: true
+            # DAY4: the credential app uses to authenticate its own
+            # outbound calls to maops-state - gateway never receives
+            # this Secret, only app and state do.
+            - name: state-auth
+              mountPath: /var/run/secrets/maops-state
+              readOnly: true
           startupProbe:
             httpGet:
               path: /livez
@@ -115,12 +121,17 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 3
           readinessProbe:
+            # DAY4: /readyz is now also state-dependent (bounded HTTP
+            # check against maops-state through the authenticated
+            # /internal/state path) - timeoutSeconds kept comfortably
+            # above STATE_TIMEOUT_SECONDS (3s), mirroring the gateway's
+            # own readinessProbe/BACKEND_TIMEOUT_SECONDS relationship.
             httpGet:
               path: /readyz
               port: http
             initialDelaySeconds: 0
             periodSeconds: 5
-            timeoutSeconds: 2
+            timeoutSeconds: 5
             failureThreshold: 3
       volumes:
         - name: internal-auth
@@ -129,4 +140,8 @@ spec:
             # Decimal 288 == octal 0440 (owner/group read-only, matched
             # against fsGroup: 10001 above so UID/GID 10001:10001 can read
             # the mounted token file without a world-readable mode).
+            defaultMode: 288
+        - name: state-auth
+          secret:
+            secretName: maops-state-auth
             defaultMode: 288

@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: maops-state
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/component: state
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # Normal ClusterIP Service - what app's STATE_HOST ConfigMap value
+  # (maops-state) actually resolves to and load-balances through, kept
+  # separate from the governing headless Service the StatefulSet itself
+  # requires (spec.serviceName).
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/component: state
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

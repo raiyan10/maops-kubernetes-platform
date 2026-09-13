@@ -6,6 +6,25 @@ group, waits for it to become connectable, and guarantees the process
 (and its process group) is terminated on exit - even on error - so no
 background kubectl process is ever left running after validation.
 
+DAY4-INT (batch 5 remediation): every OTHER kubectl invocation in this
+project goes through `kube.run()`, which always passes an explicit
+`--kubeconfig` (never relying on an ambient `KUBECONFIG` env var or the
+caller's default kubeconfig/current context). This module's `kubectl
+port-forward` subprocess was the one exception - it never passed
+`--kubeconfig` at all, so it silently fell back to the default
+`~/.kube/config`, which does not contain this project's isolated
+per-day context (kind writes each day's cluster only to the explicit
+`--kubeconfig` path given at `kind create cluster` time). Live day4-check
+evidence: `error: context "kind-maops-k8s-day4" does not exist`, the
+first time any script reached a `port_forward()` call site in a full
+run. `port_forward()` below now defaults its own `--kubeconfig` to
+`kube.KUBECONFIG_PATH` - the SAME configured path (with the same
+`KUBECONFIG_PATH` env-var override and `Path.home()`-derived default)
+every other script already uses - so every existing call site is fixed
+automatically, with zero caller changes required. An explicit
+`kubeconfig_path` argument remains available to override this per call,
+matching `kube.run()`'s own override shape.
+
 SIGTERM safety (DAY1-INT-M1): Python's default disposition for SIGTERM
 terminates the interpreter immediately without unwinding `try/finally`
 blocks (unlike SIGINT, which Python's default handler turns into a
@@ -28,6 +47,8 @@ import socket
 import subprocess
 import threading
 import time
+
+import kube
 
 
 class PortForwardSignalInterrupt(BaseException):
@@ -103,16 +124,29 @@ def port_forward(
     remote_port: int,
     ready_timeout: float = 30.0,
     resource_kind: str = "service",
+    kubeconfig_path: str | None = None,
 ):
     """Yields a local port that forwards to <resource_kind>/<name>:remote_port
     (resource_kind defaults to "service"; pass "pod" to forward directly to a
     Pod, bypassing Service endpoint/readiness filtering entirely - used by
     dependency_check.py to reach a gateway Pod that the Service itself has
     stopped routing to). Cleans up on exit - on normal completion, on an
-    exception, and on SIGTERM."""
+    exception, and on SIGTERM.
+
+    `kubeconfig_path` defaults to `kube.KUBECONFIG_PATH` (read at call
+    time, not at import time, so a test/caller that overrides
+    `kube.KUBECONFIG_PATH` is honored) - the same configured path, with
+    the same `KUBECONFIG_PATH` env-var override and `Path.home()`-derived
+    default, every other kubectl call in this project already uses via
+    `kube.run()`. Pass an explicit value only to override it for one
+    call; every existing caller needs no change."""
+    if kubeconfig_path is None:
+        kubeconfig_path = kube.KUBECONFIG_PATH
     local_port = _free_port()
     cmd = [
         "kubectl",
+        "--kubeconfig",
+        kubeconfig_path,
         "--context",
         kube_context,
         "-n",

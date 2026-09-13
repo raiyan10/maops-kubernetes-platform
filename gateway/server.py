@@ -36,8 +36,13 @@ BACKEND_HOST = os.environ.get("BACKEND_HOST", "maops-app")
 BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "8080"))
 # Bounded, finite timeout for every gateway -> app HTTP call (no infinite
 # waits). Sourced from ConfigMap-provided configuration, with a safe
-# fallback if it were ever missing.
-BACKEND_TIMEOUT_SECONDS = float(os.environ.get("BACKEND_TIMEOUT_SECONDS", "3"))
+# fallback if it were ever missing. DAY4-ARCH-M1: this is a per-call
+# socket connect+read timeout, not a total wall-clock deadline over any
+# retries - raised from 3s to 5s so it comfortably exceeds app's own
+# STATE_TIMEOUT_SECONDS (3s), since the real chain is now three hops
+# deep (gateway -> app -> state), not the two-hop chain this value was
+# originally sized for.
+BACKEND_TIMEOUT_SECONDS = float(os.environ.get("BACKEND_TIMEOUT_SECONDS", "5"))
 
 # DAY2-SEC-L1: BACKEND_HOST/BACKEND_PORT are ConfigMap-driven at runtime,
 # and scripts/validate_manifests.py's static check is only a build-time
@@ -94,20 +99,36 @@ def visible_config() -> dict:
     }
 
 
-def _backend_request(path: str, headers: dict | None = None):
+def _backend_request(path: str, headers: dict | None = None, method: str = "GET", data: bytes | None = None):
     """A single bounded HTTP call to the app workload, reached only via
     the Kubernetes Service DNS name BACKEND_HOST. Returns (status, body_dict)
-    on success. Raises on any network failure/timeout/non-JSON body - the
-    caller decides how to translate that into a safe HTTP response."""
+    on success. Raises on any network failure/timeout/non-2xx-but-still-
+    valid-JSON body is returned normally (the caller inspects `status`);
+    a genuine network failure, timeout, or non-JSON body raises - the
+    caller decides how to translate that into a safe HTTP response.
+
+    urlopen() raises urllib.error.HTTPError for any non-2xx/3xx status,
+    which is caught here and its body decoded the same way as a normal
+    response, so callers see a uniform (status, body_dict) regardless of
+    status code."""
     url = f"http://{BACKEND_HOST}:{BACKEND_PORT}{path}"
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=BACKEND_TIMEOUT_SECONDS) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-        return resp.status, body
+    req = urllib.request.Request(url, headers=headers or {}, method=method, data=data)
+    try:
+        with urllib.request.urlopen(req, timeout=BACKEND_TIMEOUT_SECONDS) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = json.loads(exc.read().decode("utf-8"))
+        return exc.code, body
+
+# DAY4: bounded request-body size for the gateway's own /state PUT
+# handler - rejected from the declared Content-Length alone, before any
+# body is read into memory.
+STATE_PROXY_MAX_BODY_BYTES = int(os.environ.get("STATE_PROXY_MAX_BODY_BYTES", "4096"))
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "maops-kubernetes-gateway/0.3.0"
+    server_version = "maops-kubernetes-gateway/0.4.0"
 
     def _write_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -138,6 +159,14 @@ class Handler(BaseHTTPRequestHandler):
             self._write_json(200, visible_config())
         elif self.path == "/backend":
             self._handle_backend()
+        elif self.path == "/state":
+            self._handle_state_get()
+        else:
+            self._write_json(404, {"error": "not found", "path": self.path})
+
+    def do_PUT(self) -> None:  # noqa: N802
+        if self.path == "/state":
+            self._handle_state_put()
         else:
             self._write_json(404, {"error": "not found", "path": self.path})
 
@@ -192,6 +221,49 @@ class Handler(BaseHTTPRequestHandler):
                 "backend_environment": body.get("environment"),
             },
         )
+
+    def _handle_state_get(self) -> None:
+        """DAY4: public entry point of the gateway/state/app -> app/
+        internal/state -> state/state chain. Uses the SAME
+        maops-internal-auth token gateway already holds for /backend -
+        gateway never receives or forwards the separate state-token
+        Secret, which only app and state hold."""
+        if not BACKEND_TARGET_VALID or INTERNAL_TOKEN is None:
+            self._write_json(503, {"error": "backend unavailable"})
+            return
+        headers = {INTERNAL_TOKEN_HEADER: INTERNAL_TOKEN.decode("utf-8")}
+        try:
+            status, body = _backend_request("/internal/state", headers=headers)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            self._write_json(503, {"error": "backend unavailable"})
+            return
+        self._write_json(status, body)
+
+    def _handle_state_put(self) -> None:
+        if not BACKEND_TARGET_VALID or INTERNAL_TOKEN is None:
+            self._write_json(503, {"error": "backend unavailable"})
+            return
+
+        length_header = self.headers.get("Content-Length")
+        if length_header is None or not length_header.isdigit():
+            self._write_json(411, {"error": "Content-Length required"})
+            return
+        length = int(length_header)
+        if length > STATE_PROXY_MAX_BODY_BYTES:
+            self._write_json(413, {"error": "payload too large", "max_bytes": STATE_PROXY_MAX_BODY_BYTES})
+            return
+        raw = self.rfile.read(length)
+
+        # The internal token is always this process's own loaded
+        # INTERNAL_TOKEN - never a header copied from the inbound client
+        # request, so a client can never smuggle its own value through.
+        headers = {INTERNAL_TOKEN_HEADER: INTERNAL_TOKEN.decode("utf-8")}
+        try:
+            status, body = _backend_request("/internal/state", headers=headers, method="PUT", data=raw)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            self._write_json(503, {"error": "backend unavailable"})
+            return
+        self._write_json(status, body)
 
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         # Deliberately logs only the request line/status - never header

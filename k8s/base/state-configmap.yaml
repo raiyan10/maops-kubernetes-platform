@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maops-state-config
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day4
+    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/component: state
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+data:
+  APP_NAME: "maops-kubernetes-state"
+  APP_ENVIRONMENT: "day4-stateful-persistence"
+  APP_MESSAGE: "Hello from the MAOps Kubernetes State service (Day 4)"
+  APP_LOG_LEVEL: "info"
+  # Persisted record path - always on the PVC-backed volume mounted at
+  # /data (see state-statefulset.yaml's volumeClaimTemplates), never the
+  # read-only root filesystem.
+  STATE_FILE_PATH: "/data/state.json"
+  # Bounded UTF-8 request body size for PUT /state - rejects an
+  # oversized payload before it is ever fully read into memory.
+  STATE_MAX_BODY_BYTES: "4096"
