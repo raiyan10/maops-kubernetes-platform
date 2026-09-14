@@ -47,3 +47,10 @@ v0.4.0 remains permanently on the merge commit.
 
 The central portfolio/profile update remains deferred until the
 Kubernetes project's v1.0.0 closure.
+
+## Screenshots
+
+Added after release; the release tag remains unchanged.
+
+- [Published GitHub Release](../images/day-04/01-v040-github-release.png)
+- [Recorded merged-main validation](../images/day-04/02-v040-merged-main-validation.png)
