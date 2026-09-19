@@ -5,15 +5,15 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day4
-    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
     app.kubernetes.io/component: state
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
 data:
   APP_NAME: "maops-kubernetes-state"
-  APP_ENVIRONMENT: "day4-stateful-persistence"
-  APP_MESSAGE: "Hello from the MAOps Kubernetes State service (Day 4)"
+  APP_ENVIRONMENT: "day5-security-boundaries"
+  APP_MESSAGE: "Hello from the MAOps Kubernetes State service (Day 5)"
   APP_LOG_LEVEL: "info"
   # Persisted record path - always on the PVC-backed volume mounted at
   # /data (see state-statefulset.yaml's volumeClaimTemplates), never the

@@ -230,21 +230,46 @@ class LeakedPortForwardScopeTests(unittest.TestCase):
 
 
 class OtherDayClustersStillExistTests(unittest.TestCase):
-    """DAY3-INT-I2: the function name/message now claim exactly what is
-    proven - existence, not byte-for-byte "untouched"."""
+    """DAY3-INT-I2, extended for Day 5 (DAY5-INT-H2/DAY5-REL-M1): the
+    function name/message claim exactly what is proven - existence, not
+    byte-for-byte "untouched" - and the list must grow to include each
+    new earlier-day cluster as later days introduce their own separate
+    cluster (Day 5 was the first day to do so relative to Day 4)."""
 
     def setUp(self):
         final_state_check.results = []
 
-    def test_both_clusters_present_passes(self):
-        result = subprocess.CompletedProcess(args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\n", stderr="")
+    def test_day5_checks_day4_specifically(self):
+        """Regression for DAY5-INT-H2: previously OTHER_DAY_CLUSTERS
+        stopped at Day 3, so a Day 4 cluster going missing/dying could
+        never be caught by this check - only Day 1-3 presence was ever
+        asserted. maops-k8s-day4 must now be one of the checked names."""
+        self.assertIn("maops-k8s-day4", final_state_check.OTHER_DAY_CLUSTERS)
+
+    def test_all_four_clusters_present_passes(self):
+        result = subprocess.CompletedProcess(
+            args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\nmaops-k8s-day4\n", stderr=""
+        )
         with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
             final_state_check.check_other_day_clusters_still_exist()
         self.assertTrue(all(ok for ok, _msg in final_state_check.results))
         self.assertTrue(all("still exists" in msg for _ok, msg in final_state_check.results))
+        self.assertEqual(len(final_state_check.results), 4)
+
+    def test_missing_day4_cluster_fails(self):
+        """Regression for DAY5-INT-H2: Day 4's cluster missing/dead must
+        itself flip this check to a failure, not just Day 1-3's."""
+        result = subprocess.CompletedProcess(
+            args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\n", stderr=""
+        )
+        with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
+            final_state_check.check_other_day_clusters_still_exist()
+        day4_results = [(ok, msg) for ok, msg in final_state_check.results if "maops-k8s-day4" in msg]
+        self.assertEqual(len(day4_results), 1)
+        self.assertFalse(day4_results[0][0])
 
     def test_missing_cluster_fails(self):
-        result = subprocess.CompletedProcess(args=["kind"], returncode=0, stdout="maops-k8s-day3\n", stderr="")
+        result = subprocess.CompletedProcess(args=["kind"], returncode=0, stdout="maops-k8s-day3\nmaops-k8s-day4\n", stderr="")
         with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
             final_state_check.check_other_day_clusters_still_exist()
         self.assertTrue(any(not ok for ok, _msg in final_state_check.results))

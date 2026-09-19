@@ -9,9 +9,16 @@ import subprocess
 import time
 from pathlib import Path
 
-CLUSTER_NAME = "maops-k8s-day4"
+CLUSTER_NAME = "maops-k8s-day5"
 CONTEXT = f"kind-{CLUSTER_NAME}"
 NAMESPACE = "maops-platform"
+# DAY5: dedicated namespace for validation/diagnostic tooling (the
+# maops-diagnostics ServiceAccount and ephemeral probe Pods used by
+# rbac_check.py/networkpolicy_check.py) - kept separate from
+# maops-platform so NetworkPolicy default-deny in the application
+# namespace never has to account for validation traffic originating
+# FROM inside that same namespace.
+VALIDATION_NAMESPACE = "maops-day5-validation"
 
 # DAY4: explicit, overridable kubeconfig path - every kubectl call this
 # module makes passes --kubeconfig explicitly (see run() below) rather
@@ -60,7 +67,7 @@ STATE_HEADLESS_SERVICE = "maops-state-headless"
 GATEWAY_PDB = "maops-gateway-pdb"
 APP_PDB = "maops-app-pdb"
 
-INSTANCE_LABEL = "maops-kubernetes-platform-day4"
+INSTANCE_LABEL = "maops-kubernetes-platform-day5"
 
 GATEWAY_LABEL_SELECTOR = (
     "app.kubernetes.io/name=maops-kubernetes-platform,"
@@ -84,6 +91,26 @@ STATE_SECRET = "maops-state-auth"
 STATE_SECRET_KEY = "state-token"
 
 CONTROL_PLANE_LABEL = "node-role.kubernetes.io/control-plane"
+
+# DAY5: ServiceAccount identities. Gateway/app/state each get their own
+# purpose-built ServiceAccount (automountServiceAccountToken: false,
+# no RBAC binding - application Pods never talk to the Kubernetes API).
+# maops-diagnostics is the one identity that DOES receive a token, so
+# rbac_check.py can exercise real `kubectl auth can-i`/API-call
+# authorization from inside a live Pod running as it.
+GATEWAY_SERVICE_ACCOUNT = "maops-gateway"
+APP_SERVICE_ACCOUNT = "maops-app"
+STATE_SERVICE_ACCOUNT = "maops-state"
+DIAGNOSTICS_SERVICE_ACCOUNT = "maops-diagnostics"
+DIAGNOSTICS_ROLE = "maops-diagnostics-reader"
+DIAGNOSTICS_ROLE_BINDING = "maops-diagnostics-reader-binding"
+
+# DAY5: NetworkPolicy peer identity - a probe Pod exercising the
+# validation-client -> gateway allow (and the validation-client -> app /
+# validation-client -> state denies) carries this component label,
+# scoped to VALIDATION_NAMESPACE.
+VALIDATION_CLIENT_LABEL_SELECTOR = "app.kubernetes.io/component=validation-client"
+DIAGNOSTICS_LABEL_SELECTOR = "app.kubernetes.io/component=diagnostics"
 
 
 def run(*args: str, check: bool = True, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
@@ -134,14 +161,14 @@ def wait_until(predicate, timeout: float, interval: float = 2.0, description: st
 
 def verify_context() -> None:
     """Fail closed (DAY3) if the live cluster this process is about to talk
-    to isn't actually Day 4's isolated cluster.
+    to isn't actually Day 5's isolated cluster.
 
     Every kubectl call in this project already passes an explicit
     `--context` flag (never relying on whatever the ambient
     `kubectl config current-context` happens to be), which rules out one
     class of "wrong cluster" mistake by construction. This function
     covers the remaining one: the context existing in kubeconfig at all,
-    and actually resolving to the expected `maops-k8s-day4` kind cluster
+    and actually resolving to the expected `maops-k8s-day5` kind cluster
     (identified by its node names, which kind derives from the cluster
     name) rather than some other cluster a stale/renamed context happens
     to point at. Every live validation/mutation script calls this first,
@@ -166,8 +193,8 @@ def verify_context() -> None:
     node_names = [n.get("metadata", {}).get("name", "") for n in nodes]
     # DAY3-INT-M2: a bare startswith(f"{CLUSTER_NAME}-") prefix check would
     # wrongly accept a prefix-collision cluster/node name such as
-    # "maops-k8s-day4-staging-control-plane" (which does start with
-    # "maops-k8s-day4-"). Anchor the full node name against kind's actual
+    # "maops-k8s-day5-staging-control-plane" (which does start with
+    # "maops-k8s-day5-"). Anchor the full node name against kind's actual
     # naming convention instead: "<cluster>-control-plane" or
     # "<cluster>-worker[N]" and nothing else.
     if not node_names or not all(_DAY_NODE_NAME_RE.match(name) for name in node_names):

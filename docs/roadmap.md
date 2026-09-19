@@ -13,8 +13,8 @@ demonstrated and reviewed in isolation.
 | 3 | v0.3.0 | Scaling, scheduling, rolling updates, rollback, availability (PDB) |
 | 4 | v0.4.0 | StatefulSet, PVC, persistence/recovery |
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
-| 6 | v0.6.0 | Helm, CI, automated kind validation |
-| 7 | v1.0.0 | Production-readiness hardening, independent reviews, final release |
+| 6 | v0.6.0 | Helm, CI, automated kind validation, service mesh |
+| 7 | v1.0.0 | Advanced deployment strategies (Recreate, Blue-Green, Canary), production-readiness hardening, independent reviews, final release |
 
 ## Day 1 / v0.1.0 - Kubernetes foundation
 
@@ -76,19 +76,21 @@ directly on Day 2's two-workload architecture, unchanged, and adds:
 
 Explicitly out of scope for Day 3: HorizontalPodAutoscaler (scaling here
 is deliberate/manual, not automatic), StatefulSet, PVC, ServiceAccount,
-RBAC, NetworkPolicy, Ingress, Gateway API, service mesh, advanced
-deployment strategies beyond RollingUpdate (Recreate/Blue-Green/Canary -
-Day 7), Helm, GitHub Actions, an observability stack, Terraform,
+RBAC, NetworkPolicy, Ingress, Gateway API, service mesh (Day 6),
+advanced deployment strategies beyond RollingUpdate (Recreate/
+Blue-Green/Canary - Day 7), Helm, GitHub Actions, an observability stack, Terraform,
 Ansible, Argo CD, and cloud clusters. See `docs/architecture.md` for the
 full picture and the rationale behind each scheduling/availability
 decision.
 
-## Day 4 / v0.4.0 - StatefulSet, PVC, persistence (this stage)
+## Day 4 / v0.4.0 - StatefulSet, PVC, persistence
 
-**IN DEVELOPMENT / current target.** Not yet released or tagged. Keeps
-Day 3's gateway/app architecture entirely unchanged (still 3 replicas
-each, same scaling/rollout/scheduling/PDB behavior) and adds a third
-workload, `maops-state` - a single-replica StatefulSet with a
+**COMPLETE / RELEASED / FROZEN.** Released as `v0.4.0`; historical
+engineering evidence and post-release verification live under
+`docs/engineering-reviews/day-04-*` and are not modified by later days.
+Keeps Day 3's gateway/app architecture entirely unchanged (still 3
+replicas each, same scaling/rollout/scheduling/PDB behavior) and adds a
+third workload, `maops-state` - a single-replica StatefulSet with a
 PVC-backed `/data` volume, reached as
 `gateway /state -> app /internal/state -> state /state`, authenticated
 by a second, dedicated runtime Secret (`maops-state-auth`) that only
@@ -105,23 +107,54 @@ storage preflight that discovered and resolved a containerd multi-arch
 image-import defect this day's image-build tooling now avoids.
 
 Explicitly out of scope for Day 4: ServiceAccount, RBAC, NetworkPolicy
-(Day 5), Helm/CI/Ingress/Gateway API (Day 6), service mesh/advanced
-deployment strategies (Day 7), horizontal scaling of `maops-state`
-(single-writer only), and any change to Day 1-3's Distroless base image
-digest, interpreter path, or gateway/app application code beyond the
-new `/state`/`/internal/state` proxy hops this stage adds.
+(Day 5), Helm/CI/Ingress/Gateway API/service mesh (Day 6), advanced
+deployment strategies (Recreate/Blue-Green/Canary - Day 7), horizontal
+scaling of `maops-state` (single-writer only), and any change to Day
+1-3's Distroless base image digest, interpreter path, or gateway/app
+application code beyond the new `/state`/`/internal/state` proxy hops
+this stage adds.
 
-## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy
+## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy (this stage)
 
-**FUTURE - not yet implemented.** A purpose-built ServiceAccount with
-least-privilege RBAC (Role/RoleBinding, scoped to the namespace), and
-NetworkPolicy objects restricting pod-to-pod traffic to only what's
-required. This is where `automountServiceAccountToken` moves from
-`false` to a deliberately scoped `true` for the workloads that need API
-access, and where Day 2's deferred network-isolation gap (any Pod in
-`maops-platform` can currently reach any other) actually gets closed.
+**IN DEVELOPMENT / current target.** Not yet released or tagged. Keeps
+Day 4's entire gateway/app/state architecture unchanged (security
+contexts, probes, Secrets, PodDisruptionBudgets, persistence/retention
+behavior) and adds identity and network boundaries around it:
 
-## Day 6 / v0.6.0 - Helm, CI, automated kind validation
+- A purpose-built ServiceAccount per workload
+  (`maops-gateway`/`maops-app`/`maops-state`, all
+  `automountServiceAccountToken: false`, never bound to any Role/
+  ClusterRole) - this is where `automountServiceAccountToken` moves
+  from implicit-default-SA to an explicit, purpose-built identity, even
+  though it stays `false` for every application workload.
+- A second namespace, `maops-day5-validation`, holding the one identity
+  that DOES receive an API token: `maops-diagnostics`
+  (`automountServiceAccountToken: true`), bound via a single
+  namespace-scoped `Role`/`RoleBinding` pair to read-only
+  (`get`/`list`/`watch`) access on Pods/Services/EndpointSlices in
+  `maops-platform` only - never Secrets, never write verbs, never
+  another namespace, never cluster-wide (no ClusterRole/
+  ClusterRoleBinding anywhere in this project).
+- Standard `networking.k8s.io/v1` NetworkPolicy objects, enforced by
+  Cilium (replacing kind's default kindnet CNI - kube-proxy stays
+  enabled, Day 5 does not adopt Cilium's kube-proxy-replacement mode):
+  default-deny ingress+egress for every Pod in `maops-platform`, with
+  narrow explicit allows for DNS, `gateway -> app`, `app -> state`, and
+  a `validation-client` identity (in `maops-day5-validation`) reaching
+  `gateway` only - this is where Day 2's deferred network-isolation gap
+  (any Pod in `maops-platform` could reach any other) actually gets
+  closed.
+
+Explicitly out of scope for Day 5: Hubble, service mesh (Day 6), and
+L7/HTTP-aware NetworkPolicy (a standard NetworkPolicy governs L3/L4
+reachability only), Helm-packaged application charts (Helm is used
+this stage only to install Cilium), GitHub Actions CI, Ingress, Gateway
+API (Day 6), advanced deployment strategies beyond RollingUpdate
+(Recreate, Blue-Green, Canary - Day 7), `HorizontalPodAutoscaler`, and
+any change to Day 1-4's Distroless base image digest, interpreter
+path, or application code.
+
+## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 
 **FUTURE - not yet implemented.** The Kustomize base is packaged as a
 Helm chart (or a Helm chart is introduced alongside it, decision made at
@@ -130,17 +163,23 @@ targets against an ephemeral kind cluster in CI - not a reimplementation
 of the local validation logic, just automation of it. Ingress and
 Gateway API are both introduced and compared against each other for
 external access, superseding Day 1-3's `kubectl port-forward`-only
-model.
+model. A service mesh is also introduced this stage, layered on top of
+Day 5's NetworkPolicy L3/L4 boundaries with mTLS between workloads and
+request-level (L7/HTTP) traffic policy - Day 5 deliberately implements
+none of this (no Hubble, no L7-aware policy, standard NetworkPolicy
+only), so this is genuinely new capability at Day 6, not merely an
+extension of what Day 5 already has.
 
-## Day 7 / v1.0.0 - Production-readiness hardening
+## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
 
-**FUTURE - not yet implemented.** Service mesh; advanced deployment
-strategy demonstrations (Recreate, Blue/Green, Canary) compared against
+**FUTURE - not yet implemented.** Advanced deployment strategy
+demonstrations - Recreate, Blue-Green, and Canary - compared against
 Day 3's RollingUpdate; independent review passes across architecture,
 security, and testing; closing gaps found; final hardening pass; final
 tagged `v1.0.0` release. Argo Rollouts is explicitly never introduced in
 this project - the advanced-strategy demonstrations use native
-Kubernetes primitives only.
+Kubernetes primitives only. Service mesh is Day 6 scope, not Day 7 -
+Day 7 builds on the mesh Day 6 introduces rather than introducing it.
 
 ## Explicitly out of scope for this project
 

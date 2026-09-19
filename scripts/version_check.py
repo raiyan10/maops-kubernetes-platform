@@ -31,9 +31,9 @@ import k8s_yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "VERSION"
 
-# Day 4's pinned target - VERSION itself must have actually been bumped,
+# Day 5's pinned target - VERSION itself must have actually been bumped,
 # not just left agreeing with whatever it already said.
-EXPECTED_TARGET_VERSION = "0.4.0"
+EXPECTED_TARGET_VERSION = "0.5.0"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -92,7 +92,7 @@ def run_version_checks(version: str, docs: list[dict]) -> list[Finding]:
     findings.append(
         Finding(
             ok=version == EXPECTED_TARGET_VERSION,
-            name="version.file_matches_day4_target",
+            name="version.file_matches_day5_target",
             detail=f"expected VERSION == {EXPECTED_TARGET_VERSION!r}, found {version!r}",
         )
     )

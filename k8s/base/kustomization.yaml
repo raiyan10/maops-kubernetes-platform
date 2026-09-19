@@ -3,9 +3,16 @@ kind: Kustomization
 
 resources:
   - namespace.yaml
+  - day5-validation-namespace.yaml
   - gateway-configmap.yaml
   - app-configmap.yaml
   - state-configmap.yaml
+  - gateway-serviceaccount.yaml
+  - app-serviceaccount.yaml
+  - state-serviceaccount.yaml
+  - diagnostics-serviceaccount.yaml
+  - diagnostics-role.yaml
+  - diagnostics-rolebinding.yaml
   - gateway-deployment.yaml
   - app-deployment.yaml
   - state-statefulset.yaml
@@ -15,3 +22,10 @@ resources:
   - state-service-headless.yaml
   - gateway-pdb.yaml
   - app-pdb.yaml
+  - networkpolicy-default-deny.yaml
+  - networkpolicy-allow-dns.yaml
+  - networkpolicy-allow-gateway-egress-app.yaml
+  - networkpolicy-allow-app-ingress-gateway.yaml
+  - networkpolicy-allow-app-egress-state.yaml
+  - networkpolicy-allow-state-ingress-app.yaml
+  - networkpolicy-allow-gateway-ingress-validation.yaml

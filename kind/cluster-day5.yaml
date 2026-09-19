@@ -1,0 +1,35 @@
+# MAOps Kubernetes Platform - Day 5 kind cluster.
+#
+# 1 control-plane + 2 worker nodes - same topology and same pinned
+# kindest/node digest as Days 1-4 (worker-only scheduling/topology
+# spread on gateway/app, and the single-replica maops-state
+# StatefulSet, are all unchanged). This is a NEW, tracked file rather
+# than an in-place edit of `kind/cluster.yaml` (Day 4's config, left
+# untouched/preserved): Day 5 replaces kind's default CNI (kindnet)
+# with Cilium as the NetworkPolicy-enforcing dataplane, which is a
+# materially different cluster bootstrap contract worth keeping as its
+# own historical record, not a same-file overwrite like the
+# name-only bump Days 2-4 each made to the previous single file.
+#
+# `networking.disableDefaultCNI: true` is the only substantive change
+# from `kind/cluster.yaml`: kind normally installs kindnet
+# automatically on cluster creation, which would otherwise conflict
+# with a separately-installed CNI. With the default CNI disabled here,
+# every node comes up NotReady (no pod network) until Cilium is
+# installed out-of-band (via `helm install cilium ...`, not part of
+# this manifest - see docs/architecture.md's Day 5 CNI section).
+# kube-proxy is deliberately left at its default (enabled) - Day 5
+# does not adopt Cilium's kube-proxy-replacement mode, only its
+# NetworkPolicy enforcement.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: maops-k8s-day5
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

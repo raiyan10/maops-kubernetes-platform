@@ -1,16 +1,25 @@
-# Architecture - Day 4 (v0.4.0, in development)
+# Architecture - Day 5 (v0.5.0, in development)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
-runtime Secret, and Day 3 (`v0.3.0`) added a real multi-node cluster,
+runtime Secret, Day 3 (`v0.3.0`) added a real multi-node cluster,
 topology-aware scheduling, scaling, rolling-update/rollback behavior,
-and a PodDisruptionBudget per workload - all three released and frozen;
-see the historical evidence under `docs/engineering-reviews/day-0[1-3]-*`.
-Day 4 keeps that entire gateway/app architecture unchanged and adds a
+and a PodDisruptionBudget per workload, and Day 4 (`v0.4.0`) added a
 third workload, `maops-state` - a single-replica StatefulSet with a
-PVC-backed `/data` volume, proving real Kubernetes persistence: data
-survives Pod deletion/rescheduling, and the backing claim survives a
-scale-to-zero/back-to-one cycle.
+PVC-backed `/data` volume, proving real Kubernetes persistence - all
+four released and frozen; see the historical evidence under
+`docs/engineering-reviews/day-0[1-4]-*`. Day 5 keeps that entire
+gateway/app/state architecture (security context, probes, Secrets,
+PodDisruptionBudgets, persistence/retention behavior) **entirely
+unchanged** and adds identity and network boundaries around it: a
+purpose-built ServiceAccount per workload, a namespace-scoped Role/
+RoleBinding for the one identity that exercises real API authorization
+(`maops-diagnostics`), and standard `networking.k8s.io/v1` NetworkPolicy
+objects enforced by Cilium (replacing kind's default kindnet CNI). See
+the Day 5 sections below (after the unchanged Day 1-4 material, which
+this file preserves for continuity) for the full security-boundary
+design, trust boundaries, what is proven live, and what is explicitly
+NOT claimed.
 
 ## Control flow
 
@@ -745,37 +754,350 @@ identity for that image, not equivalent to "no index." This section
 makes no claim about image flows or environments outside the ones
 measured here.
 
-## Why RBAC/NetworkPolicy remain deferred
+## DAY5: trust boundaries
 
-Unchanged rationale from Day 2: both workloads still run with no
-ServiceAccount beyond the default (`automountServiceAccountToken:
-false`) and no NetworkPolicy. Day 5 (`v0.5.0`) introduces both together.
+Before Day 5, every Pod in `maops-platform` was, from the network's
+perspective, equally trusted: any Pod could reach any other Pod's
+Service on any port (Day 2's deferred network-isolation gap), and
+every Pod ran under the implicit `default` ServiceAccount (harmless
+only because `automountServiceAccountToken: false` meant none of them
+ever actually held a token). Day 5 draws three explicit trust
+boundaries around that previously-flat topology:
 
-**DAY4-SEC-L1 scope note:** a standard Kubernetes `NetworkPolicy`
-restricts *which pods/namespaces can reach a Service's port at all* (L3/L4
-scope) - it is not HTTP path- or method-level authorization, and cannot
-by itself distinguish "may `GET /state`" from "may `PUT /state`" for a
-caller it otherwise permits to reach the gateway at all. Day 5's
-NetworkPolicy work can narrow *who* may reach the public gateway write
-path, but closing the public-gateway-write-access concern at the
-HTTP-method level (if ever required) would need application-layer
-authorization, which NetworkPolicy does not provide.
+1. **Identity boundary (RBAC).** Exactly one identity in this entire
+   project - `maops-diagnostics`, living in the separate
+   `maops-day5-validation` namespace - is trusted with a Kubernetes API
+   token, and even that trust is narrow: read-only
+   (`get`/`list`/`watch`) access to Pods/Services/EndpointSlices in
+   `maops-platform` only, granted by exactly one namespace-scoped
+   `Role`/`RoleBinding` pair. No other identity in this project - not
+   `maops-gateway`, not `maops-app`, not `maops-state` - is bound to
+   any Role or ClusterRole at all; `automountServiceAccountToken:
+   false` on each of them means even a hypothetical future RBAC grant
+   pointed at one of their names would still find no token mounted to
+   use it with.
+2. **Network boundary (NetworkPolicy).** Every Pod in `maops-platform`
+   is default-denied both ingress and egress; the application chain
+   (`gateway -> app -> state`) may only ever move forward, never
+   backward or sideways (`gateway -> state` is explicitly absent from
+   every allow rule, not merely unconfigured), and DNS is the only
+   namespace-external egress any of the three workloads may ever
+   reach.
+3. **Namespace boundary (validation vs. application).** Validation/
+   diagnostic tooling (`maops-diagnostics`, and the ephemeral
+   `validation-client` probe Pods `scripts/networkpolicy_check.py`
+   creates) lives in `maops-day5-validation`, never `maops-platform` -
+   so the application namespace's own default-deny NetworkPolicy never
+   has to carve out an exception for tooling that observes it. The
+   ONE crossing this boundary permits is `validation-client -> gateway`
+   (the same path a real external caller would use, via port-forward,
+   in normal human/CI use) - never `-> app`, never `-> state`, and
+   never a namespace-wide allow for `maops-day5-validation` as a whole.
+
+## DAY5: ServiceAccounts - purpose-built identity, not implicit default
+
+`k8s/base/gateway-serviceaccount.yaml`, `app-serviceaccount.yaml`, and
+`state-serviceaccount.yaml` each declare a ServiceAccount named exactly
+after their workload, `automountServiceAccountToken: false` set
+explicitly on the ServiceAccount object itself (not just inferred from
+the pod-level setting each Deployment/StatefulSet has carried since Day
+1). Each workload's `spec.template.spec.serviceAccountName` now names
+its own ServiceAccount rather than leaving Kubernetes to default to
+`default`. This is belt-and-suspenders by design: `automountServiceAccountToken:
+false` is asserted at BOTH the ServiceAccount level and the pod level,
+so either one alone would already prevent a token mount - the value of
+naming a purpose-built ServiceAccount at all, given neither one ever
+gets a token, is that a *future* change to grant one of these workloads
+API access would have to explicitly flip `automountServiceAccountToken`
+on an identity that unambiguously belongs to that one workload, rather
+than silently affecting every Pod that happens to still be using
+`default`.
+
+`maops-diagnostics` (`k8s/base/diagnostics-serviceaccount.yaml`) is the
+deliberate exception: `automountServiceAccountToken: true`, living in
+`maops-day5-validation`, because `scripts/rbac_check.py` needs a real
+mounted token to make real HTTPS calls to the API server from inside a
+Pod - proving the RBAC grant end to end (token mount + API server
+authorization together), not just that a `Role`/`RoleBinding` object
+exists on paper.
+
+## DAY5: RBAC - one Role, one RoleBinding, read-only, namespace-scoped
+
+`k8s/base/diagnostics-role.yaml` grants exactly:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+```
+
+Read-only, and scoped to exactly the resources `scripts/rbac_check.py`
+and `scripts/networkpolicy_check.py` actually need to observe cluster
+state during validation. No `secrets` resource, no write verb
+(`create`/`update`/`patch`/`delete`/`deletecollection`), no wildcard
+apiGroup or resource, and - because this is a `Role`, not a
+`ClusterRole` - no way for any rule inside it to ever reach a namespace
+other than `maops-platform`, even if one tried to. `ClusterRole`/
+`ClusterRoleBinding` remain forbidden at every rendered object in this
+project (`scripts/validate_manifests.py`'s `FORBIDDEN_KINDS`), matching
+this stage's explicit "namespace-scoped only" design.
+
+`k8s/base/diagnostics-rolebinding.yaml` binds this Role to exactly one
+subject: ServiceAccount `maops-diagnostics` in `maops-day5-validation`
+- a cross-namespace RoleBinding subject (the Role/RoleBinding
+themselves live in `maops-platform`, granting access *into*
+`maops-platform`; the ServiceAccount they grant it *to* lives
+elsewhere). No application ServiceAccount (`maops-gateway`/`maops-app`/
+`maops-state`) ever appears as a subject of this or any other
+RoleBinding - checked explicitly and negatively by
+`scripts/validate_manifests.py`'s
+`rbac.application_service_accounts_not_bound`.
+
+`scripts/rbac_check.py` proves this live: from inside a probe Pod
+running as `maops-diagnostics` with its real mounted token, direct
+HTTPS calls to `https://kubernetes.default.svc` prove `pods`/
+`services`/`endpointslices` reads return `200`, while `secrets` reads,
+a Deployment `DELETE`, a Deployment `/scale` `PATCH`, a cross-namespace
+Pod read (`kube-system`), and a cluster-scoped Node read all return
+exactly `403` - never inferring "denied" from a bare non-2xx response
+without confirming it is specifically `403 Forbidden`.
+
+## DAY5: NetworkPolicy - default-deny plus six narrow allows
+
+Seven `networking.k8s.io/v1` NetworkPolicy objects live in
+`k8s/base/`, all namespaced to `maops-platform` (a `NetworkPolicy`
+object itself only ever governs traffic to/from Pods it selects within
+its own namespace - there is no cluster-scoped variant):
+
+1. **`maops-default-deny-all`** - `podSelector: {}` (every Pod in the
+   namespace), `policyTypes: [Ingress, Egress]`, no rules. This is the
+   entire enforcement baseline: Kubernetes NetworkPolicy semantics mean
+   any Pod selected by at least one policy with `Ingress` in
+   `policyTypes` accepts ONLY traffic some ingress rule (in ANY policy
+   selecting that Pod) explicitly allows - so this one object alone
+   makes every other policy below purely additive, never something that
+   could accidentally loosen the baseline by omission.
+2. **`maops-allow-dns-egress`** - `podSelector: {}` (every workload
+   needs DNS), egress to `kube-system`/`k8s-app: kube-dns` on UDP+TCP
+   port 53. Without this, `BACKEND_HOST=maops-app`/`STATE_HOST=
+   maops-state` service-name resolution would fail outright under the
+   default-deny baseline - DNS is the one namespace-external
+   dependency every workload here has always had (unchanged since Day
+   2), so it is the one namespace-wide (not per-component) allow.
+3. **`maops-allow-gateway-egress-to-app`** + **`maops-allow-app-ingress-from-gateway`**
+   - a matched pair: gateway's egress allow targets `component: app`
+   on TCP 8080, and app's ingress allow accepts only from `component:
+   gateway` on TCP 8080. Both sides must independently allow the same
+   traffic for it to actually flow - NetworkPolicy ingress and egress
+   are evaluated completely independently, so a single one-sided policy
+   would never be sufficient on its own.
+4. **`maops-allow-app-egress-to-state`** + **`maops-allow-state-ingress-from-app`**
+   - the same pattern, one hop deeper: app -> state.
+5. **`maops-allow-gateway-ingress-from-validation`** - gateway's
+   ingress allow accepts traffic from Pods labeled `component:
+   validation-client` specifically inside the `maops-day5-validation`
+   namespace (`namespaceSelector` + `podSelector` combined in the same
+   peer entry, which Kubernetes ANDs together - "this label, in that
+   namespace", never "this label, in ANY namespace" or "ANY Pod in that
+   namespace"). This is the ONLY path into `maops-platform` from
+   outside it.
+
+**What is deliberately absent, not just unconfigured:** no rule
+anywhere grants `gateway -> state` (checked negatively:
+`networkpolicy.gateway_egress_app.never_targets_state` and
+`networkpolicy.state_ingress_app.never_allows_gateway`), no rule grants
+`validation-client -> app` or `validation-client -> state` (checked
+negatively for both the app/state ingress-allow policies specifically
+and, as a cross-cutting guard, for every OTHER NetworkPolicy object in
+the namespace - `networkpolicy.<name>.no_stray_validation_namespace_ingress`
+- so a bypass introduced under an unrelated policy name would still be
+caught), and no policy ever grants any Pod in `maops-platform` egress
+toward the Kubernetes API server - `maops-gateway`/`maops-app`/
+`maops-state` have no path to the control plane at all, on top of
+already lacking any mounted token to present to it.
+
+Every selector uses stable `app.kubernetes.io/component` Pod labels
+(the same labels Day 3's Service/PodDisruptionBudget selectors already
+relied on) and the Kubernetes API server's own automatic, standard
+`kubernetes.io/metadata.name` namespace label - never a Pod IP, node
+name, or hardcoded Pod name anywhere in any policy.
+
+`scripts/networkpolicy_check.py` proves all of the above live, using
+REAL in-cluster TCP connection attempts from actual Pods (never only a
+port-forward, which reaches a Service from OUTSIDE the cluster network
+entirely and cannot observe pod-to-pod policy enforcement at all): the
+real gateway/app Pods are exec'd into directly (their labels already
+match what the policies select), and one short-lived
+`validation-client`-labelled probe Pod is created in
+`maops-day5-validation`, exec'd into for all three of its checks, then
+deleted in a guaranteed `finally` block. A policy-blocked connection is
+typically dropped silently by the CNI dataplane rather than actively
+refused, so every probe uses a short, explicit client-side timeout -
+the ONLY reliable signal that a connection was genuinely blocked, never
+a bare "no response" with nothing bounding how long the check waits.
+
+**DAY4-SEC-L1 disposition: REDUCED, not CLOSED (re-adjudicated by the
+Day 5 security review, live-verified).** A standard Kubernetes
+`NetworkPolicy` restricts *which Pods/namespaces can reach a Service's
+port at all* (L3/L4 scope) - it is not HTTP path- or method-level
+authorization, and cannot by itself distinguish "may `GET /state`"
+from "may `PUT /state`" for a caller it otherwise permits to reach the
+gateway at all. The Day 5 security review independently confirmed,
+live, that Day 5's NetworkPolicy genuinely CLOSES the pod-to-pod
+sub-risk DAY4-SEC-L1 originally named (an arbitrary Pod anywhere in the
+cluster reaching gateway's unauthenticated write path is now denied -
+confirmed with a real blocked TCP attempt from a non-`validation-client`
+Pod). It does NOT, and architecturally cannot, close the other sub-risk
+that finding already called the realistic one: `kubectl port-forward`
+tunnels via the API server -> kubelet -> container network namespace, a
+path standard `NetworkPolicy`/Cilium eBPF enforcement never sees or
+polices at all - confirmed live by a direct port-forward to a gateway
+Pod reaching `GET /state` with `HTTP 200` and zero credential supplied.
+Genuinely closing this remaining sub-risk, if ever required, would need
+application-layer authorization ahead of `PUT /state`, which
+NetworkPolicy does not and cannot provide and which remains explicitly
+out of Day 5's scope. No L7/HTTP-aware policy engine (Cilium's own
+`CiliumNetworkPolicy` L7 rules, or any service mesh's request-level
+policy) is introduced this stage - see
+[Why Service Mesh remains deferred to Day 6](#why-service-mesh-remains-deferred-to-day-6)
+below. Tracked forward as `DAY5-SEC-M1` (Medium, non-blocking) in
+`docs/engineering-reviews/day-05-kubernetes-security-review.md`.
+
+## DAY5: Cilium as the enforcing CNI dataplane
+
+Standard Kubernetes `NetworkPolicy` objects are declarative - they mean
+nothing without a CNI plugin that actually enforces them, and kind's
+default CNI (kindnet, installed automatically unless told otherwise)
+does not. `kind/cluster-day5.yaml` sets
+`networking.disableDefaultCNI: true`, which leaves every node
+genuinely `NotReady` (no pod network exists at all) until Cilium is
+installed out-of-band via Helm (`make cni-install`) - this is itself a
+useful live signal: a node that reaches `Ready` after `cni-install`
+proves a real CNI is now present, not merely that one was requested.
+
+Cilium is installed with `kubeProxyReplacement=false` - kube-proxy is
+deliberately left running and doing exactly what it has done since Day
+1 (Service ClusterIP load-balancing via iptables/IPVS rules). Day 5
+adopts Cilium ONLY for its NetworkPolicy enforcement (Cilium implements
+the standard `networking.k8s.io/v1` API using eBPF - the manifests
+committed to `k8s/base/` are 100% portable standard Kubernetes objects,
+with zero Cilium-specific fields or a `CiliumNetworkPolicy` CRD
+anywhere), not as a kube-proxy replacement, not for its L7/HTTP-aware
+policy features, and not with Hubble (Cilium's own observability
+layer) enabled - all three are legitimate Cilium capabilities this
+project deliberately does not reach for at this stage, to keep the
+NetworkPolicy story exactly what a portable, CNI-agnostic Kubernetes
+manifest set can express on its own.
+
+`scripts/cni_check.py` (`make cni-status`) is a READ-ONLY verification
+(never installs or mutates anything - that's the separate, explicit
+`make cni-install`): proves every node is `Ready`, the Cilium agent
+DaemonSet has exactly one Ready Pod per node, the Cilium operator
+Deployment has at least one available replica, and the kube-proxy
+DaemonSet still has Ready Pods (confirming it was never disabled).
+
+## DAY5-ARCH-M2/M3: Cilium operator instability and 3-node Cilium
+resource footprint on constrained local hosts (documented limitation)
+
+The Day 5 architecture and cluster-integration reviews both independently
+observed, live, that the `cilium-operator` Deployment restarts frequently
+(13-15 restarts over several hours in one observed run) with
+`"Failed to update lease" ... context deadline exceeded` ->
+`"Leader election lost, shutting down."` in its previous-container logs
+- an HA leader-election symptom consistent with API-server-response
+latency under host resource pressure, not an OOMKill and not a
+NetworkPolicy/RBAC configuration defect. **This does not affect the
+Cilium agent DaemonSet** (the per-node component that actually enforces
+`NetworkPolicy` in the eBPF datapath), which was independently confirmed
+healthy (all controllers reporting healthy, real ALLOW/DENY traffic
+tests both correct) during the same observation window - the operator
+crash-looping is real, but it is not a hole in what Day 5 actually
+proves.
+
+Separately, the 3-node Cilium-enabled Day 5 topology (agent + envoy +
+2-replica operator DaemonSets/Deployments, per node/cluster, on top of
+the standard control-plane pods) roughly doubles `kube-system`'s
+steady-state pod count versus Day 1-4's kindnet baseline, and was
+observed pushing the control-plane node container to ~38% CPU/~1GiB at
+rest even before any application workload is considered. Running this
+cluster concurrently with several earlier-day kind clusters on a
+memory-constrained local host (e.g. WSL2 with a fixed VM memory
+ceiling) is fragile - this class of resource pressure was directly
+observed to have terminated other kind clusters' node containers during
+this project's own Day 5 review. **Accepted as a documented local-
+resource-sizing limitation** (same pattern as `DAY4-ARCH-L1`), not a
+manifest defect: operators reproducing this locally on a constrained
+host should stop superseded earlier-day clusters
+(`kind delete cluster --name <name>`, or `docker stop` its node
+containers) before running Day 5's suite, and may consider
+`--set operator.replicas=1`/`--set envoy.enabled=false` if the
+2-replica HA operator and unused L7 Envoy dataplane's overhead becomes
+a problem on a single-tenant local cluster.
+
+## What Day 5 proves, and what it explicitly does not claim
+
+**Proven live** (`make rbac-check`, `make networkpolicy-check`, `make
+cni-status`, plus the unchanged Day 1-4 checks re-run against this
+stage's new cluster): the diagnostics identity can read exactly the
+namespaced resources it is granted and nothing else, real pod-to-pod
+traffic follows the `gateway -> app -> state` chain and nowhere else,
+DNS resolution keeps working under the default-deny egress baseline,
+the existing gateway -> app -> state behavior (persistence, auth,
+readiness) is unaffected by NetworkPolicy enforcement, and Cilium is
+genuinely the pod network (not just nominally installed).
+
+**Explicitly NOT claimed:** that this NetworkPolicy layer provides
+HTTP-method-level authorization (see the DAY4-SEC-L1 note above); that
+Cilium's L7 policy, Hubble observability, or kube-proxy-replacement
+mode are configured or available (none are); that a service mesh
+(mTLS between workloads, traffic shaping, request-level policy) exists
+at this stage (Day 6, see below); that RBAC in this project extends
+beyond the single `maops-diagnostics` grant (no other identity holds
+any token or binding); or that this cluster's Cilium installation
+represents a production-grade rollout (only `ipam.mode`,
+`kubeProxyReplacement`, `hubble.enabled`, and `image.pullPolicy` are
+pinned via Helm `--set` flags - a real production deployment would tune
+considerably more, e.g. IPAM CIDR sizing, `kube-proxy`-replacement
+strategy, and encryption, none of which this single-tenant local kind
+cluster needs). The `cilium-envoy` L7 dataplane component runs on every
+node by chart default (`enable-l7-proxy`/`external-envoy-proxy` are
+both `"true"` in the rendered `cilium-config` ConfigMap) even though no
+`CiliumNetworkPolicy` L7 rule exists anywhere in this project (zero
+matches) - this is unused-but-present footprint, not a security gap,
+flagged here per the Day 5 architecture review (`DAY5-ARCH-L1`) for
+completeness. Also note `maops-day5-validation` itself carries no
+NetworkPolicy of its own (`DAY5-ARCH-L2`/`DAY5-SEC-L1`) - consistent
+with this stage's explicit `maops-platform`-only default-deny scope,
+and mitigated by keeping the RBAC-token-bearing `diagnostics` identity
+and the network-privileged `validation-client` identity strictly
+separate, short-lived, and cleanup-guaranteed - but it means the
+validation namespace's own egress is currently unrestricted, a Day 6/7
+candidate.
 
 ## Why Ingress/Gateway API remain deferred
 
-Day 3 still reaches `maops-gateway` only via `kubectl port-forward` -
+Day 5 still reaches `maops-gateway` only via `kubectl port-forward` -
 see
 [Why port-forward instead of NodePort/Ingress](#why-port-forward-instead-of-nodeportingress)
 below. Cluster-external routing (Ingress and Gateway API, compared
 against each other) is Day 6 scope.
 
-## Why Service Mesh and advanced deployment strategies remain deferred
+## Why Service Mesh remains deferred to Day 6
 
-Day 3 implements exactly one deployment strategy - `RollingUpdate` -
-tuned explicitly. `Recreate`, Blue/Green, and Canary strategy
-demonstrations (compared against RollingUpdate) and any service mesh
-are Day 7 scope; neither is implemented, referenced as available, or
-claimed to exist in Day 3.
+Day 5's NetworkPolicy governs L3/L4 reachability between Pods - it has
+no concept of mutual TLS, request-level (L7/HTTP) policy, or traffic
+shaping between workloads, none of which are implemented, referenced
+as available, or claimed to exist at this stage. Per `docs/roadmap.md`,
+a service mesh is Day 6 scope, alongside Helm packaging for the
+application itself (distinct from Day 5's use of Helm solely to install
+Cilium), GitHub Actions CI, and Ingress/Gateway API - not Day 7, which
+is reserved for Recreate/Blue-Green/Canary deployment-strategy
+demonstrations compared against Day 3's RollingUpdate, built on top of
+the mesh Day 6 introduces rather than introducing it.
 
 ## Why port-forward instead of NodePort/Ingress
 

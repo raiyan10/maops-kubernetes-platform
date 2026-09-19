@@ -122,6 +122,30 @@ class LoaderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             k8s_yaml.load_all(text)
 
+    # -- DAY5: the narrow {}/[] empty-flow-literal carve-out --
+
+    def test_empty_flow_mapping_parses_as_empty_dict(self):
+        # `kubectl kustomize` renders NetworkPolicy's `podSelector: {}`
+        # (meaning "select every Pod") in flow style even though there is
+        # no block-style spelling of "empty" - this is the one narrow,
+        # exact-match exception to the flow-style rejection above.
+        text = "podSelector: {}\n"
+        [doc] = k8s_yaml.load_all(text)
+        self.assertEqual(doc, {"podSelector": {}})
+
+    def test_empty_flow_sequence_parses_as_empty_list(self):
+        text = "items: []\n"
+        [doc] = k8s_yaml.load_all(text)
+        self.assertEqual(doc, {"items": []})
+
+    def test_non_empty_flow_mapping_still_raises(self):
+        # The carve-out is an EXACT match on "{}" only - a non-empty flow
+        # mapping (even one containing only whitespace-looking content)
+        # must still be rejected, not silently coerced to empty.
+        text = "podSelector: {matchLabels: {}}\n"
+        with self.assertRaises(ValueError):
+            k8s_yaml.load_all(text)
+
     # -- DAY1-TEST-L4: trusted-input contract - quoted type-ambiguous
     # scalars stay strings, matching what kubectl kustomize always emits --
 
@@ -140,12 +164,15 @@ class LoaderTests(unittest.TestCase):
         [doc] = k8s_yaml.load_all(text)
         self.assertEqual(doc, {"flag": "on"})
 
-    def test_real_rendered_manifest_parses_into_thirteen_documents(self):
-        # Day 4: Namespace, 3 ConfigMaps (gateway/app/state), 2
-        # Deployments (gateway/app), 1 StatefulSet (state), 4 Services
-        # (gateway/app/state/state-headless), 2 PodDisruptionBudgets
-        # (gateway/app only - state carries no PDB). The runtime
-        # Secrets (maops-internal-auth, maops-state-auth) are
+    def test_real_rendered_manifest_parses_into_twenty_seven_documents(self):
+        # Day 5: 2 Namespaces (maops-platform, maops-day5-validation), 3
+        # ConfigMaps (gateway/app/state), 4 ServiceAccounts (gateway/app/
+        # state/diagnostics), 1 Role, 1 RoleBinding, 2 Deployments
+        # (gateway/app), 1 StatefulSet (state), 4 Services (gateway/app/
+        # state/state-headless), 2 PodDisruptionBudgets (gateway/app only
+        # - state carries no PDB), 7 NetworkPolicies (default-deny + DNS +
+        # gateway<->app pair + app<->state pair + gateway<-validation).
+        # The runtime Secrets (maops-internal-auth, maops-state-auth) are
         # deliberately never rendered by k8s/base.
         base = Path(__file__).resolve().parent.parent / "k8s" / "base"
         import subprocess
@@ -157,21 +184,18 @@ class LoaderTests(unittest.TestCase):
         kinds = sorted(d.get("kind") for d in docs)
         self.assertEqual(
             kinds,
-            [
-                "ConfigMap",
-                "ConfigMap",
-                "ConfigMap",
-                "Deployment",
-                "Deployment",
-                "Namespace",
-                "PodDisruptionBudget",
-                "PodDisruptionBudget",
-                "Service",
-                "Service",
-                "Service",
-                "Service",
-                "StatefulSet",
-            ],
+            sorted(
+                ["Namespace"] * 2
+                + ["ConfigMap"] * 3
+                + ["ServiceAccount"] * 4
+                + ["Role"]
+                + ["RoleBinding"]
+                + ["Deployment"] * 2
+                + ["StatefulSet"]
+                + ["Service"] * 4
+                + ["PodDisruptionBudget"] * 2
+                + ["NetworkPolicy"] * 7
+            ),
         )
 
         state_statefulset = next(d for d in docs if d.get("kind") == "StatefulSet")

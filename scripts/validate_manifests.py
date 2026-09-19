@@ -1,21 +1,24 @@
 """
-Repository-owned static validation for the Day 4 Kubernetes manifests.
+Repository-owned static validation for the Day 5 Kubernetes manifests.
 
 Operates on already-parsed Kubernetes objects (plain dict/list/scalar
 Python structures - one entry per rendered document), not raw YAML
 text, so the validation rules stay decoupled from parsing mechanics
 and are directly unit-testable against constructed fixtures.
 
-Day 4 keeps Day 3's two-Deployment architecture (gateway/app, scaling,
-scheduling, rollout/rollback, PDBs) entirely unchanged and adds a third
-workload, `maops-state` - a single-replica StatefulSet with a
-PVC-backed `/data` volume (via `volumeClaimTemplates`, never a
-standalone committed PersistentVolumeClaim), a governing headless
-Service plus a normal ClusterIP Service, its own ConfigMap, and its own
-runtime Secret (`maops-state-auth`, distinct from gateway/app's
-`maops-internal-auth`). Neither Secret object is ever rendered by
-k8s/base (see scope.no_forbidden_resources) - both are created
-out-of-band by scripts/secret_bootstrap.py.
+Day 5 keeps Day 4's three-workload architecture (gateway/app/state,
+scaling, scheduling, rollout/rollback, PDBs, persistence) entirely
+unchanged and adds security boundaries: a purpose-built ServiceAccount
+per workload (automountServiceAccountToken: false, no RBAC binding), a
+second namespace (`maops-day5-validation`) holding the one identity
+that DOES receive an API token (`maops-diagnostics`) plus its
+namespace-scoped Role/RoleBinding against `maops-platform`, and
+standard `networking.k8s.io/v1` NetworkPolicy objects enforcing
+default-deny ingress/egress with narrow, explicit allows (DNS,
+validation-client -> gateway, gateway -> app, app -> state). Neither
+Secret object (`maops-internal-auth`, `maops-state-auth`) is ever
+rendered by k8s/base (see scope.no_forbidden_resources) - both are
+created out-of-band by scripts/secret_bootstrap.py.
 """
 
 from __future__ import annotations
@@ -25,8 +28,50 @@ import re
 from dataclasses import dataclass
 
 EXPECTED_NAMESPACE = "maops-platform"
-EXPECTED_VERSION = "0.4.0"
-EXPECTED_INSTANCE = "maops-kubernetes-platform-day4"
+EXPECTED_VERSION = "0.5.0"
+EXPECTED_INSTANCE = "maops-kubernetes-platform-day5"
+
+# DAY5: validation namespace + identities.
+VALIDATION_NAMESPACE = "maops-day5-validation"
+GATEWAY_SERVICE_ACCOUNT = "maops-gateway"
+APP_SERVICE_ACCOUNT = "maops-app"
+STATE_SERVICE_ACCOUNT = "maops-state"
+DIAGNOSTICS_SERVICE_ACCOUNT = "maops-diagnostics"
+DIAGNOSTICS_ROLE = "maops-diagnostics-reader"
+DIAGNOSTICS_ROLE_BINDING = "maops-diagnostics-reader-binding"
+APPLICATION_SERVICE_ACCOUNTS = {GATEWAY_SERVICE_ACCOUNT, APP_SERVICE_ACCOUNT, STATE_SERVICE_ACCOUNT}
+
+# DAY5: RBAC verbs/resources the diagnostics Role is allowed to grant,
+# and a representative sample of what it must never grant - used both
+# to assert the positive grant and to assert none of the negative
+# surface leaked in via an overly broad rule (e.g. resources: ["*"] or
+# verbs: ["*"] would technically "contain" get/list/watch too).
+DIAGNOSTICS_ALLOWED_CORE_RESOURCES = {"pods", "services"}
+DIAGNOSTICS_ALLOWED_DISCOVERY_RESOURCES = {"endpointslices"}
+DIAGNOSTICS_ALLOWED_VERBS = {"get", "list", "watch"}
+DIAGNOSTICS_FORBIDDEN_RESOURCES = {
+    "secrets",
+    "deployments",
+    "statefulsets",
+    "replicasets",
+    "pods/exec",
+    "pods/eviction",
+    "*",
+}
+DIAGNOSTICS_FORBIDDEN_VERBS = {"create", "update", "patch", "delete", "deletecollection", "*"}
+
+# DAY5: NetworkPolicy object names.
+NETPOL_DEFAULT_DENY = "maops-default-deny-all"
+NETPOL_ALLOW_DNS = "maops-allow-dns-egress"
+NETPOL_ALLOW_GATEWAY_EGRESS_APP = "maops-allow-gateway-egress-to-app"
+NETPOL_ALLOW_APP_INGRESS_GATEWAY = "maops-allow-app-ingress-from-gateway"
+NETPOL_ALLOW_APP_EGRESS_STATE = "maops-allow-app-egress-to-state"
+NETPOL_ALLOW_STATE_INGRESS_APP = "maops-allow-state-ingress-from-app"
+NETPOL_ALLOW_GATEWAY_INGRESS_VALIDATION = "maops-allow-gateway-ingress-from-validation"
+EXPECTED_NETWORK_POLICY_COUNT = 7
+VALIDATION_CLIENT_COMPONENT = "validation-client"
+DNS_PORT = 53
+APP_PORT = 8080
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -58,12 +103,16 @@ STATE_SECRET_VOLUME_NAME = "state-auth"
 STATE_SECRET_MOUNT_PATH = "/var/run/secrets/maops-state"
 STATE_SECRET_KEY = "state-token"
 
-# DAY4: total rendered portable application objects (excludes runtime
+# DAY5: total rendered portable application objects (excludes runtime
 # Secrets and the generated PVC/PV, which are not part of k8s/base) -
-# 1 Namespace + 3 ConfigMaps (gateway/app/state) + 2 Deployments +
-# 1 StatefulSet + 4 Services (gateway/app/state/state-headless) +
-# 2 PodDisruptionBudgets (gateway/app only - state carries no PDB).
-EXPECTED_TOTAL_RENDERED_OBJECTS = 13
+# 2 Namespaces (maops-platform, maops-day5-validation) + 3 ConfigMaps
+# (gateway/app/state) + 4 ServiceAccounts (gateway/app/state/
+# diagnostics) + 1 Role + 1 RoleBinding + 2 Deployments + 1 StatefulSet
+# + 4 Services (gateway/app/state/state-headless) + 2
+# PodDisruptionBudgets (gateway/app only - state carries no PDB) + 7
+# NetworkPolicies (default-deny + DNS + gateway<->app pair +
+# app<->state pair + gateway<-validation).
+EXPECTED_TOTAL_RENDERED_OBJECTS = 27
 
 EXPECTED_REPLICAS = 3
 EXPECTED_REQUESTS = {"cpu": "50m", "memory": "32Mi"}
@@ -123,12 +172,12 @@ FORBIDDEN_KINDS = {
     # which kubectl kustomize never renders as a separate top-level
     # PersistentVolumeClaim document.
     "PersistentVolumeClaim",
-    "Role",
-    "RoleBinding",
+    # DAY5: Role/RoleBinding/ServiceAccount/NetworkPolicy are now
+    # sanctioned (checked explicitly below) - but cluster-wide RBAC
+    # remains forbidden at every day: Day 5's RBAC is deliberately
+    # namespace-scoped only (see docs/roadmap.md).
     "ClusterRole",
     "ClusterRoleBinding",
-    "ServiceAccount",
-    "NetworkPolicy",
     "HorizontalPodAutoscaler",
 }
 
@@ -220,6 +269,7 @@ def _check_workload_security_and_probes(
     expected_container: str,
     expected_image: str,
     expected_configmap: str,
+    expected_service_account: str,
 ) -> tuple[dict, dict, dict]:
     """Checks shared by both workloads: namespace, replicas, rollout
     strategy, scheduling, image, probes, resources, pod/container
@@ -458,6 +508,13 @@ def _check_workload_security_and_probes(
         pod_spec.get("automountServiceAccountToken") is False,
         f"{component}.security.automount_service_account_token",
         f"expected automountServiceAccountToken == false, found {pod_spec.get('automountServiceAccountToken')!r}",
+    )
+
+    # DAY5: purpose-built ServiceAccount, never the implicit `default`.
+    c.check(
+        pod_spec.get("serviceAccountName") == expected_service_account,
+        f"{component}.security.service_account_name",
+        f"expected serviceAccountName == {expected_service_account!r}, found {pod_spec.get('serviceAccountName')!r}",
     )
 
     c.check(
@@ -751,6 +808,11 @@ def _check_state_statefulset(c: _Checker, statefulset: dict | None) -> tuple[dic
         "state.security.automount_service_account_token",
         f"found {pod_spec.get('automountServiceAccountToken')!r}",
     )
+    c.check(
+        pod_spec.get("serviceAccountName") == STATE_SERVICE_ACCOUNT,
+        "state.security.service_account_name",
+        f"expected serviceAccountName == {STATE_SERVICE_ACCOUNT!r}, found {pod_spec.get('serviceAccountName')!r}",
+    )
     c.check(not pod_spec.get("hostNetwork"), "state.security.no_host_network", f"found {pod_spec.get('hostNetwork')!r}")
     c.check(not pod_spec.get("hostPID"), "state.security.no_host_pid", f"found {pod_spec.get('hostPID')!r}")
     c.check(not pod_spec.get("hostIPC"), "state.security.no_host_ipc", f"found {pod_spec.get('hostIPC')!r}")
@@ -872,15 +934,457 @@ def _check_state_statefulset(c: _Checker, statefulset: dict | None) -> tuple[dic
     return pod_spec, pod_labels
 
 
+def _check_service_accounts_and_rbac(c: _Checker) -> None:
+    """DAY5: four ServiceAccounts (gateway/app/state - automount false,
+    no RBAC binding - plus diagnostics, the one identity with automount
+    true), one namespace-scoped Role, and one RoleBinding granting it to
+    the diagnostics ServiceAccount only."""
+    service_accounts = c.by_kind("ServiceAccount")
+    c.check(
+        len(service_accounts) == 4,
+        "rbac.service_account_count",
+        f"expected exactly 4 ServiceAccounts (gateway/app/state/diagnostics), found {len(service_accounts)}",
+    )
+    sa_by_name = {sa.get("metadata", {}).get("name"): sa for sa in service_accounts}
+
+    for name in (GATEWAY_SERVICE_ACCOUNT, APP_SERVICE_ACCOUNT, STATE_SERVICE_ACCOUNT):
+        sa = sa_by_name.get(name)
+        c.check(
+            sa is not None,
+            f"rbac.service_account.{name}.exists",
+            f"expected ServiceAccount {name!r} to exist, found {sorted(k for k in sa_by_name if k)}",
+        )
+        sa = sa or {}
+        c.check(
+            sa.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+            f"rbac.service_account.{name}.namespace",
+            f"expected ServiceAccount {name!r} namespace == {EXPECTED_NAMESPACE!r}, found "
+            f"{sa.get('metadata', {}).get('namespace')!r}",
+        )
+        c.check(
+            sa.get("automountServiceAccountToken") is False,
+            f"rbac.service_account.{name}.automount_false",
+            f"expected ServiceAccount {name!r} automountServiceAccountToken == false, found "
+            f"{sa.get('automountServiceAccountToken')!r}",
+        )
+
+    diagnostics_sa = sa_by_name.get(DIAGNOSTICS_SERVICE_ACCOUNT)
+    c.check(
+        diagnostics_sa is not None,
+        "rbac.service_account.diagnostics.exists",
+        f"expected ServiceAccount {DIAGNOSTICS_SERVICE_ACCOUNT!r} to exist, found {sorted(k for k in sa_by_name if k)}",
+    )
+    diagnostics_sa = diagnostics_sa or {}
+    c.check(
+        diagnostics_sa.get("metadata", {}).get("namespace") == VALIDATION_NAMESPACE,
+        "rbac.service_account.diagnostics.namespace",
+        f"expected ServiceAccount {DIAGNOSTICS_SERVICE_ACCOUNT!r} namespace == {VALIDATION_NAMESPACE!r}, found "
+        f"{diagnostics_sa.get('metadata', {}).get('namespace')!r}",
+    )
+    c.check(
+        diagnostics_sa.get("automountServiceAccountToken") is True,
+        "rbac.service_account.diagnostics.automount_true",
+        "expected ServiceAccount maops-diagnostics automountServiceAccountToken == true (it is the one identity "
+        f"used to test API authorization), found {diagnostics_sa.get('automountServiceAccountToken')!r}",
+    )
+
+    roles = c.by_kind("Role")
+    c.check(len(roles) == 1, "rbac.role_count", f"expected exactly one Role, found {len(roles)}")
+    role = next((r for r in roles if r.get("metadata", {}).get("name") == DIAGNOSTICS_ROLE), None)
+    c.check(
+        role is not None,
+        "rbac.role.exists",
+        f"expected Role {DIAGNOSTICS_ROLE!r} to exist, found {[r.get('metadata', {}).get('name') for r in roles]}",
+    )
+    role = role or {}
+    c.check(
+        role.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+        "rbac.role.namespace_scoped",
+        f"expected Role {DIAGNOSTICS_ROLE!r} namespace == {EXPECTED_NAMESPACE!r} (namespace-scoped, never "
+        f"cluster-wide), found {role.get('metadata', {}).get('namespace')!r}",
+    )
+
+    rules = role.get("rules") or []
+    granted_resources: set = set()
+    granted_verbs: set = set()
+    api_groups: set = set()
+    for rule in rules:
+        granted_resources.update(rule.get("resources") or [])
+        granted_verbs.update(rule.get("verbs") or [])
+        api_groups.update(rule.get("apiGroups") or [])
+
+    c.check(
+        DIAGNOSTICS_ALLOWED_CORE_RESOURCES <= granted_resources,
+        "rbac.role.grants_pods_and_services",
+        f"expected Role to grant access to {sorted(DIAGNOSTICS_ALLOWED_CORE_RESOURCES)}, found resources="
+        f"{sorted(granted_resources)}",
+    )
+    c.check(
+        DIAGNOSTICS_ALLOWED_DISCOVERY_RESOURCES <= granted_resources,
+        "rbac.role.grants_endpointslices",
+        f"expected Role to grant access to {sorted(DIAGNOSTICS_ALLOWED_DISCOVERY_RESOURCES)}, found resources="
+        f"{sorted(granted_resources)}",
+    )
+    c.check(
+        bool(granted_verbs) and granted_verbs <= DIAGNOSTICS_ALLOWED_VERBS,
+        "rbac.role.verbs_read_only",
+        f"expected every granted verb to be one of {sorted(DIAGNOSTICS_ALLOWED_VERBS)} (read-only, non-empty), "
+        f"found {sorted(granted_verbs)}",
+    )
+    c.check(
+        not (granted_resources & DIAGNOSTICS_FORBIDDEN_RESOURCES),
+        "rbac.role.no_forbidden_resources",
+        f"expected none of {sorted(DIAGNOSTICS_FORBIDDEN_RESOURCES)} granted, found overlap "
+        f"{sorted(granted_resources & DIAGNOSTICS_FORBIDDEN_RESOURCES)}",
+    )
+    c.check(
+        not (granted_verbs & DIAGNOSTICS_FORBIDDEN_VERBS),
+        "rbac.role.no_forbidden_verbs",
+        f"expected none of {sorted(DIAGNOSTICS_FORBIDDEN_VERBS)} granted, found overlap "
+        f"{sorted(granted_verbs & DIAGNOSTICS_FORBIDDEN_VERBS)}",
+    )
+    c.check(
+        api_groups <= {"", "discovery.k8s.io"},
+        "rbac.role.api_groups_scoped",
+        f"expected Role apiGroups to be a subset of {{'', 'discovery.k8s.io'}} (never a wildcard), found "
+        f"{sorted(api_groups)}",
+    )
+
+    role_bindings = c.by_kind("RoleBinding")
+    c.check(
+        len(role_bindings) == 1,
+        "rbac.role_binding_count",
+        f"expected exactly one RoleBinding, found {len(role_bindings)}",
+    )
+    binding = next((b for b in role_bindings if b.get("metadata", {}).get("name") == DIAGNOSTICS_ROLE_BINDING), None)
+    c.check(
+        binding is not None,
+        "rbac.role_binding.exists",
+        f"expected RoleBinding {DIAGNOSTICS_ROLE_BINDING!r} to exist, found "
+        f"{[b.get('metadata', {}).get('name') for b in role_bindings]}",
+    )
+    binding = binding or {}
+    c.check(
+        binding.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+        "rbac.role_binding.namespace_scoped",
+        f"expected RoleBinding namespace == {EXPECTED_NAMESPACE!r}, found "
+        f"{binding.get('metadata', {}).get('namespace')!r}",
+    )
+    role_ref = binding.get("roleRef") or {}
+    c.check(
+        role_ref.get("kind") == "Role" and role_ref.get("name") == DIAGNOSTICS_ROLE,
+        "rbac.role_binding.references_role_not_cluster_role",
+        f"expected roleRef {{kind: Role, name: {DIAGNOSTICS_ROLE!r}}} (never ClusterRole), found {role_ref!r}",
+    )
+    subjects = binding.get("subjects") or []
+    diagnostics_subject = next(
+        (
+            s
+            for s in subjects
+            if s.get("kind") == "ServiceAccount"
+            and s.get("name") == DIAGNOSTICS_SERVICE_ACCOUNT
+            and s.get("namespace") == VALIDATION_NAMESPACE
+        ),
+        None,
+    )
+    c.check(
+        diagnostics_subject is not None,
+        "rbac.role_binding.subject_is_diagnostics_sa",
+        f"expected a subject {{kind: ServiceAccount, name: {DIAGNOSTICS_SERVICE_ACCOUNT!r}, "
+        f"namespace: {VALIDATION_NAMESPACE!r}}}, found subjects={subjects!r}",
+    )
+
+    # Application ServiceAccounts must never be bound to any Role/ClusterRole.
+    bound_subject_names = {
+        s.get("name")
+        for b in role_bindings
+        for s in (b.get("subjects") or [])
+        if s.get("kind") == "ServiceAccount"
+    }
+    c.check(
+        not (bound_subject_names & APPLICATION_SERVICE_ACCOUNTS),
+        "rbac.application_service_accounts_not_bound",
+        f"expected none of {sorted(APPLICATION_SERVICE_ACCOUNTS)} to appear as a RoleBinding subject, found "
+        f"overlap {sorted(bound_subject_names & APPLICATION_SERVICE_ACCOUNTS)}",
+    )
+
+
+def _netpol_egress(policy: dict) -> list[dict]:
+    return (policy.get("spec") or {}).get("egress") or []
+
+
+def _netpol_ingress(policy: dict) -> list[dict]:
+    return (policy.get("spec") or {}).get("ingress") or []
+
+
+def _peer_has_component(peer: dict, component: str) -> bool:
+    return (peer.get("podSelector") or {}).get("matchLabels", {}).get("app.kubernetes.io/component") == component
+
+
+def _peer_in_namespace(peer: dict, namespace: str) -> bool:
+    return (peer.get("namespaceSelector") or {}).get("matchLabels", {}).get("kubernetes.io/metadata.name") == namespace
+
+
+def _rule_allows_port(rule: dict, port: int, protocol: str) -> bool:
+    ports = rule.get("ports") or []
+    return any(p.get("port") == port and p.get("protocol") == protocol for p in ports)
+
+
+def _check_network_policies(c: _Checker) -> None:
+    """DAY5: default-deny ingress+egress for every Pod in maops-platform,
+    plus exactly the narrow allows the architecture requires - checked
+    both positively (the allow exists with the right selector/port) and
+    negatively (the specific forbidden paths - validation-client -> app/
+    state, gateway -> state - are never satisfiable by any rule)."""
+    policies = c.by_kind("NetworkPolicy")
+    c.check(
+        len(policies) == EXPECTED_NETWORK_POLICY_COUNT,
+        "networkpolicy.count",
+        f"expected exactly {EXPECTED_NETWORK_POLICY_COUNT} NetworkPolicies, found {len(policies)}",
+    )
+    by_name = {p.get("metadata", {}).get("name"): p for p in policies}
+
+    for policy in policies:
+        name = policy.get("metadata", {}).get("name")
+        c.check(
+            policy.get("metadata", {}).get("namespace") == EXPECTED_NAMESPACE,
+            f"networkpolicy.{name}.namespace_matches",
+            f"expected NetworkPolicy metadata.namespace == {EXPECTED_NAMESPACE!r}, found "
+            f"{policy.get('metadata', {}).get('namespace')!r}",
+        )
+
+    # default-deny-all
+    deny_all = by_name.get(NETPOL_DEFAULT_DENY)
+    c.check(
+        deny_all is not None,
+        "networkpolicy.default_deny.exists",
+        f"expected NetworkPolicy {NETPOL_DEFAULT_DENY!r} to exist, found {sorted(k for k in by_name if k)}",
+    )
+    deny_all = deny_all or {}
+    deny_spec = deny_all.get("spec") or {}
+    c.check(
+        deny_spec.get("podSelector") == {},
+        "networkpolicy.default_deny.applies_to_all_pods",
+        f"expected default-deny podSelector == {{}} (every Pod in the namespace), found "
+        f"{deny_spec.get('podSelector')!r}",
+    )
+    c.check(
+        set(deny_spec.get("policyTypes") or []) == {"Ingress", "Egress"},
+        "networkpolicy.default_deny.both_directions",
+        f"expected policyTypes == ['Ingress', 'Egress'], found {deny_spec.get('policyTypes')!r}",
+    )
+    c.check(
+        not deny_spec.get("ingress") and not deny_spec.get("egress"),
+        "networkpolicy.default_deny.no_rules",
+        "expected no ingress/egress rules on the default-deny policy (absence of rules is what makes it "
+        f"deny-all), found ingress={deny_spec.get('ingress')!r} egress={deny_spec.get('egress')!r}",
+    )
+
+    # allow-dns-egress
+    dns = by_name.get(NETPOL_ALLOW_DNS)
+    c.check(
+        dns is not None,
+        "networkpolicy.dns.exists",
+        f"expected NetworkPolicy {NETPOL_ALLOW_DNS!r} to exist, found {sorted(k for k in by_name if k)}",
+    )
+    dns = dns or {}
+    c.check(
+        (dns.get("spec") or {}).get("podSelector") == {},
+        "networkpolicy.dns.applies_to_all_pods",
+        f"expected DNS-allow podSelector == {{}} (every workload needs DNS), found "
+        f"{(dns.get('spec') or {}).get('podSelector')!r}",
+    )
+    dns_ok = any(
+        _peer_in_namespace(peer, "kube-system")
+        and (peer.get("podSelector") or {}).get("matchLabels", {}).get("k8s-app") == "kube-dns"
+        and _rule_allows_port(rule, DNS_PORT, "UDP")
+        and _rule_allows_port(rule, DNS_PORT, "TCP")
+        for rule in _netpol_egress(dns)
+        for peer in rule.get("to") or []
+    )
+    c.check(
+        dns_ok,
+        "networkpolicy.dns.allows_udp_tcp_53_to_coredns",
+        f"expected an egress rule to kube-system/k8s-app=kube-dns on UDP+TCP port {DNS_PORT}, found egress="
+        f"{_netpol_egress(dns)!r}",
+    )
+
+    # gateway -> app pair
+    gw_egress = by_name.get(NETPOL_ALLOW_GATEWAY_EGRESS_APP) or {}
+    c.check(
+        (gw_egress.get("spec") or {}).get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/component")
+        == "gateway",
+        "networkpolicy.gateway_egress_app.pod_selector_is_gateway",
+        f"expected podSelector component == 'gateway', found {(gw_egress.get('spec') or {}).get('podSelector')!r}",
+    )
+    c.check(
+        any(
+            _peer_has_component(peer, "app") and _rule_allows_port(rule, APP_PORT, "TCP")
+            for rule in _netpol_egress(gw_egress)
+            for peer in rule.get("to") or []
+        ),
+        "networkpolicy.gateway_egress_app.allows_app_8080",
+        f"expected an egress rule to component=app on TCP {APP_PORT}, found egress={_netpol_egress(gw_egress)!r}",
+    )
+    c.check(
+        not any(
+            _peer_has_component(peer, "state") for rule in _netpol_egress(gw_egress) for peer in rule.get("to") or []
+        ),
+        "networkpolicy.gateway_egress_app.never_targets_state",
+        "expected gateway's egress allow to never target component=state (gateway -> state must stay denied)",
+    )
+
+    app_ingress_gw = by_name.get(NETPOL_ALLOW_APP_INGRESS_GATEWAY) or {}
+    c.check(
+        (app_ingress_gw.get("spec") or {}).get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/component")
+        == "app",
+        "networkpolicy.app_ingress_gateway.pod_selector_is_app",
+        f"expected podSelector component == 'app', found {(app_ingress_gw.get('spec') or {}).get('podSelector')!r}",
+    )
+    c.check(
+        any(
+            _peer_has_component(peer, "gateway") and _rule_allows_port(rule, APP_PORT, "TCP")
+            for rule in _netpol_ingress(app_ingress_gw)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.app_ingress_gateway.allows_gateway_8080",
+        f"expected an ingress rule from component=gateway on TCP {APP_PORT}, found ingress="
+        f"{_netpol_ingress(app_ingress_gw)!r}",
+    )
+    c.check(
+        not any(
+            _peer_in_namespace(peer, VALIDATION_NAMESPACE)
+            for rule in _netpol_ingress(app_ingress_gw)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.app_ingress_gateway.never_allows_validation_namespace",
+        "expected app's ingress allow to never reference the validation namespace (validation-client -> app must "
+        "stay denied)",
+    )
+
+    # app -> state pair
+    app_egress_state = by_name.get(NETPOL_ALLOW_APP_EGRESS_STATE) or {}
+    c.check(
+        (app_egress_state.get("spec") or {}).get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/component")
+        == "app",
+        "networkpolicy.app_egress_state.pod_selector_is_app",
+        f"expected podSelector component == 'app', found {(app_egress_state.get('spec') or {}).get('podSelector')!r}",
+    )
+    c.check(
+        any(
+            _peer_has_component(peer, "state") and _rule_allows_port(rule, APP_PORT, "TCP")
+            for rule in _netpol_egress(app_egress_state)
+            for peer in rule.get("to") or []
+        ),
+        "networkpolicy.app_egress_state.allows_state_8080",
+        f"expected an egress rule to component=state on TCP {APP_PORT}, found egress="
+        f"{_netpol_egress(app_egress_state)!r}",
+    )
+
+    state_ingress_app = by_name.get(NETPOL_ALLOW_STATE_INGRESS_APP) or {}
+    c.check(
+        (state_ingress_app.get("spec") or {}).get("podSelector", {}).get("matchLabels", {}).get("app.kubernetes.io/component")
+        == "state",
+        "networkpolicy.state_ingress_app.pod_selector_is_state",
+        f"expected podSelector component == 'state', found {(state_ingress_app.get('spec') or {}).get('podSelector')!r}",
+    )
+    c.check(
+        any(
+            _peer_has_component(peer, "app") and _rule_allows_port(rule, APP_PORT, "TCP")
+            for rule in _netpol_ingress(state_ingress_app)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.state_ingress_app.allows_app_8080",
+        f"expected an ingress rule from component=app on TCP {APP_PORT}, found ingress="
+        f"{_netpol_ingress(state_ingress_app)!r}",
+    )
+    c.check(
+        not any(
+            _peer_has_component(peer, "gateway")
+            for rule in _netpol_ingress(state_ingress_app)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.state_ingress_app.never_allows_gateway",
+        "expected state's ingress allow to never reference component=gateway (gateway -> state must stay denied)",
+    )
+    c.check(
+        not any(
+            _peer_in_namespace(peer, VALIDATION_NAMESPACE)
+            for rule in _netpol_ingress(state_ingress_app)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.state_ingress_app.never_allows_validation_namespace",
+        "expected state's ingress allow to never reference the validation namespace (validation-client -> state "
+        "must stay denied)",
+    )
+
+    # gateway <- validation-client
+    gw_ingress_validation = by_name.get(NETPOL_ALLOW_GATEWAY_INGRESS_VALIDATION) or {}
+    c.check(
+        (gw_ingress_validation.get("spec") or {}).get("podSelector", {}).get("matchLabels", {}).get(
+            "app.kubernetes.io/component"
+        )
+        == "gateway",
+        "networkpolicy.gateway_ingress_validation.pod_selector_is_gateway",
+        f"expected podSelector component == 'gateway', found "
+        f"{(gw_ingress_validation.get('spec') or {}).get('podSelector')!r}",
+    )
+    c.check(
+        any(
+            _peer_in_namespace(peer, VALIDATION_NAMESPACE)
+            and _peer_has_component(peer, VALIDATION_CLIENT_COMPONENT)
+            and _rule_allows_port(rule, APP_PORT, "TCP")
+            for rule in _netpol_ingress(gw_ingress_validation)
+            for peer in rule.get("from") or []
+        ),
+        "networkpolicy.gateway_ingress_validation.allows_validation_client_8080",
+        f"expected an ingress rule from namespace={VALIDATION_NAMESPACE!r}/component={VALIDATION_CLIENT_COMPONENT!r} "
+        f"on TCP {APP_PORT}, found ingress={_netpol_ingress(gw_ingress_validation)!r}",
+    )
+
+    # Cross-cutting negative: no OTHER NetworkPolicy document introduces a
+    # stray ingress rule referencing the validation namespace (a bypass
+    # under a different object name would evade the per-policy checks
+    # above, which only inspect the specific documents expected to carry
+    # such a rule).
+    already_checked = {
+        NETPOL_ALLOW_APP_INGRESS_GATEWAY,
+        NETPOL_ALLOW_STATE_INGRESS_APP,
+        NETPOL_ALLOW_GATEWAY_INGRESS_VALIDATION,
+    }
+    for policy in policies:
+        name = policy.get("metadata", {}).get("name")
+        if name in already_checked:
+            continue
+        stray = any(
+            _peer_in_namespace(peer, VALIDATION_NAMESPACE) for rule in _netpol_ingress(policy) for peer in rule.get("from") or []
+        )
+        c.check(
+            not stray,
+            f"networkpolicy.{name}.no_stray_validation_namespace_ingress",
+            f"expected NetworkPolicy {name!r} to carry no ingress rule referencing the validation namespace",
+        )
+
+
 def run_checks(docs: list[dict]) -> list[Finding]:
     c = _Checker(docs)
 
     namespaces = c.by_kind("Namespace")
+    ns_names = [n.get("metadata", {}).get("name") for n in namespaces]
     c.check(
-        len(namespaces) == 1 and namespaces[0].get("metadata", {}).get("name") == EXPECTED_NAMESPACE,
+        len(namespaces) == 2,
+        "namespace.count",
+        f"expected exactly two Namespaces (application + validation), found {len(namespaces)}: {ns_names}",
+    )
+    c.check(
+        EXPECTED_NAMESPACE in ns_names,
         "namespace.exists",
-        f"expected exactly one Namespace named {EXPECTED_NAMESPACE!r}, found "
-        f"{[n.get('metadata', {}).get('name') for n in namespaces]}",
+        f"expected a Namespace named {EXPECTED_NAMESPACE!r}, found {ns_names}",
+    )
+    c.check(
+        VALIDATION_NAMESPACE in ns_names,
+        "namespace.validation_exists",
+        f"expected a Namespace named {VALIDATION_NAMESPACE!r}, found {ns_names}",
     )
 
     # ConfigMaps
@@ -982,10 +1486,10 @@ def run_checks(docs: list[dict]) -> list[Finding]:
     )
 
     gw_pod_spec, gw_pod_labels, gw_container = _check_workload_security_and_probes(
-        c, "gateway", gateway_deployment or {}, GATEWAY_CONTAINER, GATEWAY_IMAGE, GATEWAY_CONFIGMAP
+        c, "gateway", gateway_deployment or {}, GATEWAY_CONTAINER, GATEWAY_IMAGE, GATEWAY_CONFIGMAP, GATEWAY_SERVICE_ACCOUNT
     )
     app_pod_spec, app_pod_labels, app_container = _check_workload_security_and_probes(
-        c, "app", app_deployment or {}, APP_CONTAINER, APP_IMAGE, APP_CONFIGMAP
+        c, "app", app_deployment or {}, APP_CONTAINER, APP_IMAGE, APP_CONFIGMAP, APP_SERVICE_ACCOUNT
     )
 
     # DAY4-ARCH-M1: readinessProbe.timeoutSeconds at each hop must stay
@@ -1178,9 +1682,14 @@ def run_checks(docs: list[dict]) -> list[Finding]:
     _check_pdb(c, "gateway", gateway_pdb, gw_pod_labels, app_pod_labels)
     _check_pdb(c, "app", app_pdb, app_pod_labels, gw_pod_labels)
 
-    # Forbidden Day 4 resources (Secret and a standalone PersistentVolumeClaim
-    # must never be committed; HPA/RBAC/NetworkPolicy/Ingress remain
-    # deferred to later days per docs/roadmap.md)
+    # ServiceAccounts, RBAC (DAY5), and NetworkPolicy (DAY5).
+    _check_service_accounts_and_rbac(c)
+    _check_network_policies(c)
+
+    # Forbidden resources (Secret and a standalone PersistentVolumeClaim
+    # must never be committed; HPA/ClusterRole/ClusterRoleBinding/Ingress
+    # remain forbidden - Day 5's RBAC is namespace-scoped only, per
+    # docs/roadmap.md)
     present_kinds = {d.get("kind") for d in docs}
     forbidden_present = present_kinds & FORBIDDEN_KINDS
     c.check(
