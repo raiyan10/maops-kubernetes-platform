@@ -5,8 +5,8 @@ metadata:
   namespace: maops-platform
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day4
-    app.kubernetes.io/version: "0.4.0"
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
     app.kubernetes.io/component: gateway
     app.kubernetes.io/part-of: maops-kubernetes-platform
     app.kubernetes.io/managed-by: kustomize
@@ -38,18 +38,25 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: maops-kubernetes-platform
-      app.kubernetes.io/instance: maops-kubernetes-platform-day4
+      app.kubernetes.io/instance: maops-kubernetes-platform-day5
       app.kubernetes.io/component: gateway
   template:
     metadata:
       labels:
         app.kubernetes.io/name: maops-kubernetes-platform
-        app.kubernetes.io/instance: maops-kubernetes-platform-day4
-        app.kubernetes.io/version: "0.4.0"
+        app.kubernetes.io/instance: maops-kubernetes-platform-day5
+        app.kubernetes.io/version: "0.5.0"
         app.kubernetes.io/component: gateway
         app.kubernetes.io/part-of: maops-kubernetes-platform
         app.kubernetes.io/managed-by: kustomize
     spec:
+      # DAY5: purpose-built ServiceAccount (k8s/base/gateway-serviceaccount.yaml)
+      # rather than the implicit `default` ServiceAccount - automount is
+      # false on BOTH the ServiceAccount and here at the pod level
+      # (belt-and-suspenders); gateway is never bound to any Role/
+      # ClusterRole, so it has no Kubernetes API access even in the
+      # hypothetical case a token were ever mounted.
+      serviceAccountName: maops-gateway
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
@@ -91,11 +98,11 @@ spec:
           labelSelector:
             matchLabels:
               app.kubernetes.io/name: maops-kubernetes-platform
-              app.kubernetes.io/instance: maops-kubernetes-platform-day4
+              app.kubernetes.io/instance: maops-kubernetes-platform-day5
               app.kubernetes.io/component: gateway
       containers:
         - name: maops-gateway
-          image: maops-kubernetes-gateway:0.4.0
+          image: maops-kubernetes-gateway:0.5.0
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

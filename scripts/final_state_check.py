@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Day 4 final restored-state validation.
+Day 5 final restored-state validation.
 
-Run after all mutating Day 4 experiments (scaling, rolling update +
-rollback, PDB/Eviction) to independently prove the cluster is back in
-its normal, fully-healthy Day 4 baseline state - not by re-reading the
-manifest, but by querying the live cluster:
+Run after all mutating Day 5 experiments (scaling, rolling update +
+rollback, PDB/Eviction, persistence, retention) to independently prove
+the cluster is back in its normal, fully-healthy Day 5 baseline state -
+not by re-reading the manifest, but by querying the live cluster:
 
-  - context is kind-maops-k8s-day4, 3 nodes Ready.
+  - context is kind-maops-k8s-day5, 3 nodes Ready.
   - both workloads: desired 3, Ready 3, 3 Ready Pods, 3 ready
     EndpointSlice endpoints, worker-only scheduling, worker skew <= 1.
   - both PodDisruptionBudgets: minAvailable 2, and a normal healthy
@@ -20,12 +20,13 @@ manifest, but by querying the live cluster:
     Day 4 validation scripts (scoped to the Day 4 context/namespace -
     DAY3-INT-L2 - never flagging an unrelated operator's port-forward to
     a different cluster/project).
-  - Day 1 (maops-k8s-day1), Day 2 (maops-k8s-day2), and Day 3
-    (maops-k8s-day3) kind clusters still EXIST (DAY3-INT-I2: existence only, not a byte-for-byte
-    "unchanged" claim - the separate, stronger safety argument is that
-    every Day 4 kubectl mutation is explicitly scoped to
-    `kind-maops-k8s-day4` and gated by `context_check.py` before it ever
-    runs).
+  - Day 1 (maops-k8s-day1), Day 2 (maops-k8s-day2), Day 3
+    (maops-k8s-day3), and Day 4 (maops-k8s-day4) kind clusters still
+    EXIST (DAY3-INT-I2, extended for Day 5: existence only, not a
+    byte-for-byte "unchanged" claim - the separate, stronger safety
+    argument is that every Day 5 kubectl mutation is explicitly scoped
+    to `kind-maops-k8s-day5` and gated by `context_check.py` before it
+    ever runs).
 
 Node-topology and per-workload scheduling proof reuses
 scheduling_check's own functions directly (not a re-implementation) -
@@ -70,7 +71,7 @@ EXPECTED_REPLICAS = 3
 EXPECTED_STATE_REPLICAS = 1
 EXPECTED_MIN_AVAILABLE = 2
 EXPECTED_STATE_CLAIM_STORAGE = "256Mi"
-OTHER_DAY_CLUSTERS = ["maops-k8s-day1", "maops-k8s-day2", "maops-k8s-day3"]
+OTHER_DAY_CLUSTERS = ["maops-k8s-day1", "maops-k8s-day2", "maops-k8s-day3", "maops-k8s-day4"]
 
 results: list[tuple[bool, str]] = []
 
@@ -253,7 +254,7 @@ def check_suite_state_baseline_restored() -> None:
     of leftover baseline files, and never satisfied by recapturing the
     current value here (that would prove nothing). A run without a
     supplied run ID/path (standalone `final-state-check`, or
-    `state-check` did not run first in the same `make day4-check`
+    `state-check` did not run first in the same `make day5-check`
     invocation) is recorded as an explicit FAILURE of this specific
     check, never a silent skip - it cannot claim suite-baseline
     restoration it was never given the means to verify."""
@@ -263,8 +264,8 @@ def check_suite_state_baseline_restored() -> None:
             False,
             f"suite-level state baseline restoration cannot be verified: {suite_baseline.RUN_ID_ENV}/"
             f"{suite_baseline.PATH_ENV} not supplied to this invocation (standalone final-state-check, or "
-            "state-check did not run first in the same `make day4-check` sequence) - this check only has "
-            "meaning when run via the full `make day4-check` sequence",
+            "state-check did not run first in the same `make day5-check` sequence) - this check only has "
+            "meaning when run via the full `make day5-check` sequence",
         )
         return
 
@@ -338,12 +339,12 @@ def check_secret_final_state() -> None:
 
 
 def check_no_leaked_port_forwards() -> None:
-    """DAY3-INT-L2: scoped to THIS project's Day 4 port-forwards only. A
+    """DAY3-INT-L2: scoped to THIS project's Day 5 port-forwards only. A
     bare "kubectl" + "port-forward" substring match would also flag an
     unrelated operator's port-forward to a completely different
-    cluster/project as a Day 4 leak. Every port-forward this project's
+    cluster/project as a Day 5 leak. Every port-forward this project's
     own `scripts/portforward.py` starts always carries an explicit
-    `--context kind-maops-k8s-day4 -n maops-platform` (see
+    `--context kind-maops-k8s-day5 -n maops-platform` (see
     `port_forward()`), so requiring both substrings together is a
     reliable, minimal scope without needing to also enumerate the exact
     resource names it can create."""
@@ -353,20 +354,25 @@ def check_no_leaked_port_forwards() -> None:
         for line in result.stdout.splitlines()
         if "kubectl" in line and "port-forward" in line and kube.CONTEXT in line and kube.NAMESPACE in line
     ]
-    record(not leaked, f"no leaked Day 4 ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
+    record(not leaked, f"no leaked Day 5 ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
 
 
 def check_other_day_clusters_still_exist() -> None:
-    """DAY3-INT-I2: this proves only that the Day 1 and Day 2 kind
-    clusters still EXIST as named clusters - not that every object inside
-    them is byte-for-byte unchanged ("untouched" would overclaim that).
-    The separate, stronger structural safety argument that nothing in
-    them was ever mutated is: every Day 4 kubectl mutation in this
-    project is explicitly scoped to `kind-maops-k8s-day4`
-    (`kube.CONTEXT`, never the ambient current-context) and is preceded
-    by the fail-closed identity/topology gate in `context_check.py` /
-    `kube.verify_context()` - not a runtime snapshot comparison performed
-    by this function."""
+    """DAY3-INT-I2, extended for Day 5 (DAY5-INT-H2/DAY5-REL-M1 fix -
+    this list previously stopped at Day 3 and never grew to include Day
+    4 once Day 5 introduced its own separate cluster, so a Day 4
+    cluster failure was structurally unable to be caught here): this
+    proves only that each earlier-day kind cluster still EXISTS as a
+    named cluster - not that every object inside it is byte-for-byte
+    unchanged ("untouched" would overclaim that), and NOT that its node
+    containers are actually running/healthy (`kind get clusters` matches
+    on registration, not liveness). The separate, stronger structural
+    safety argument that nothing in them was ever mutated is: every Day
+    5 kubectl mutation in this project is explicitly scoped to
+    `kind-maops-k8s-day5` (`kube.CONTEXT`, never the ambient
+    current-context) and is preceded by the fail-closed identity/
+    topology gate in `context_check.py` / `kube.verify_context()` - not
+    a runtime snapshot comparison performed by this function."""
     result = subprocess.run(["kind", "get", "clusters"], capture_output=True, text=True, check=False, timeout=15)
     clusters = set(result.stdout.split())
     for name in OTHER_DAY_CLUSTERS:
@@ -374,7 +380,7 @@ def check_other_day_clusters_still_exist() -> None:
 
 
 def main() -> int:
-    print(f"# Day 4 final restored-state validation against context {kube.CONTEXT}")
+    print(f"# Day 5 final restored-state validation against context {kube.CONTEXT}")
     try:
         kube.verify_context()
     except RuntimeError as exc:
@@ -408,7 +414,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} final-state check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: Day 4 cluster fully restored to its normal healthy baseline state")
+    print("PASS: Day 5 cluster fully restored to its normal healthy baseline state")
     return 0
 
 

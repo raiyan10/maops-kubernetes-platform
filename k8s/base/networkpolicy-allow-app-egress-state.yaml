@@ -1,0 +1,31 @@
+# DAY5: app -> state is the only egress maops-app Pods are allowed
+# toward the state workload (besides DNS and its ingress-side allow
+# from gateway, which is a separate policy). Mirrors
+# networkpolicy-allow-gateway-egress-app.yaml one hop deeper in the
+# chain.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-app-egress-to-state
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: state
+      ports:
+        - protocol: TCP
+          port: 8080

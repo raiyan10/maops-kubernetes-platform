@@ -1,0 +1,26 @@
+# DAY5: baseline default-deny for every Pod in maops-platform, both
+# directions. `podSelector: {}` selects every Pod in this namespace;
+# `policyTypes: [Ingress, Egress]` with no ingress/egress rules means
+# NO traffic is allowed in or out by default - every other NetworkPolicy
+# in this directory is a narrow, explicit ADD on top of this baseline
+# (NetworkPolicy allow rules are additive across policies that select
+# the same Pod). Cilium is the enforcing CNI (installed out-of-band via
+# Helm - see docs/architecture.md); this is a standard
+# networking.k8s.io/v1 object with no Cilium-specific (CiliumNetworkPolicy,
+# L7/HTTP-aware) extensions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-default-deny-all
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

@@ -1,0 +1,20 @@
+# DAY5: dedicated namespace for validation/diagnostic tooling. Kept
+# separate from maops-platform so:
+#   - the maops-platform default-deny NetworkPolicy never has to make
+#     an exception for traffic that originates from validation tooling
+#     running alongside the application Pods it is testing;
+#   - the maops-diagnostics ServiceAccount's namespace-scoped RBAC
+#     grant against maops-platform is a cross-namespace RoleBinding
+#     subject, not a same-namespace grant that could be mistaken for
+#     "app workloads can read their own namespace's Pods/Services".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maops-day5-validation
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/component: validation
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize

@@ -4,14 +4,16 @@ Minimal, dependency-free YAML-subset loader.
 Kubernetes manifests rendered by ``kubectl kustomize`` use a bounded,
 deterministic subset of YAML: block mappings, block sequences (aligned
 with either their parent key's indentation or deeper), plain/quoted
-scalars, and multi-document streams separated by ``---``. No anchors,
-tags, flow collections, or multi-line block scalars are emitted for
-this repository's manifests.
+scalars, multi-document streams separated by ``---``, and (DAY5) the
+two empty flow-style literals ``{}``/``[]`` (there is no block-style
+spelling of "empty" - e.g. NetworkPolicy's ``podSelector: {}``, meaning
+"select every Pod"). No anchors, tags, non-empty flow collections, or
+multi-line block scalars are emitted for this repository's manifests.
 
 This module parses exactly that subset so repository validation does
 not require a third-party YAML library. It is not a general-purpose
-YAML parser: flow-style collections (``{a: b}``, ``[a, b]``) and
-malformed/inconsistently-indented input raise ``ValueError`` rather
+YAML parser: NON-EMPTY flow-style collections (``{a: b}``, ``[a, b]``)
+and malformed/inconsistently-indented input raise ``ValueError`` rather
 than being silently accepted.
 
 Trusted-input contract: the only production caller is
@@ -64,10 +66,21 @@ def _scalar(token: str):
         return True
     if token in ("false", "False"):
         return False
+    # DAY5: `kubectl kustomize` renders an empty mapping/sequence value
+    # (e.g. NetworkPolicy's `podSelector: {}`, meaning "select every Pod")
+    # in flow style even though this loader otherwise only accepts
+    # block style - there is no block-style spelling of "empty" at all.
+    # This is a narrow, exact-match carve-out for the two empty literals
+    # only; any NON-empty flow-style content (`{a: b}`, `[a, b]`) still
+    # raises below, unchanged.
+    if token == "{}":
+        return {}
+    if token == "[]":
+        return []
     if token[0] in ("{", "["):
         raise ValueError(
             f"flow-style YAML is not supported by this loader: {token!r}; "
-            "only block-style mappings/sequences are supported"
+            "only block-style mappings/sequences are supported (empty {} / [] are the sole exception)"
         )
     if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
         return token[1:-1]

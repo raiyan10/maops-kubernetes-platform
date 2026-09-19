@@ -1,0 +1,29 @@
+# DAY5: binds the maops-diagnostics ServiceAccount (living in
+# maops-day5-validation) to the namespace-scoped
+# maops-diagnostics-reader Role in maops-platform. A RoleBinding's
+# subject may reference a ServiceAccount in a different namespace than
+# the RoleBinding/Role themselves (a cross-namespace grant of a
+# namespace-scoped Role) - the grant still only ever applies within
+# maops-platform, never namespace-wide across the cluster. Only this
+# one identity is ever bound to a Role - the application ServiceAccounts
+# (maops-gateway/maops-app/maops-state) have no RoleBinding at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: maops-diagnostics-reader-binding
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/component: diagnostics
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+subjects:
+  - kind: ServiceAccount
+    name: maops-diagnostics
+    namespace: maops-day5-validation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: maops-diagnostics-reader

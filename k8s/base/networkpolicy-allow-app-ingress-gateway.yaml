@@ -1,0 +1,32 @@
+# DAY5: app accepts ingress ONLY from gateway (plus the separate
+# validation-client allow does NOT exist for app - see
+# docs/architecture.md's Day 5 section for the explicit deny list).
+# Paired with networkpolicy-allow-gateway-egress-app.yaml - both the
+# egress-out-of-gateway and ingress-into-app sides must independently
+# allow the same traffic for it to actually flow.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-app-ingress-from-gateway
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/component: app
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - protocol: TCP
+          port: 8080

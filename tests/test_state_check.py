@@ -4,7 +4,7 @@ Docker/Kubernetes-free unit tests for scripts/state_check.py.
 DAY4-TEST-H2 (state_check coverage) and the suite-level baseline
 capture design (§C): proves `capture_suite_baseline()` - the writer
 half of scripts/suite_baseline.py's contract - correctly skips
-non-fatally when standalone (no DAY4_RUN_ID/DAY4_SUITE_BASELINE_PATH),
+non-fatally when standalone (no DAY5_RUN_ID/DAY5_SUITE_BASELINE_PATH),
 and correctly gates on valid identity preconditions AND a valid
 authenticated GET before ever writing the baseline file.
 

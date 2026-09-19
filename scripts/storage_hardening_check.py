@@ -68,8 +68,22 @@ _VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text().stri
 PROBE_IMAGE = f"maops-kubernetes-app:{_VERSION}"
 
 POD_DEADLINE_SECONDS = 90.0
+# DAY5: the Pod's own `activeDeadlineSeconds` must stay comfortably below
+# POD_DEADLINE_SECONDS (the checker's own wait budget). Day 4 originally set
+# this to 60 against a 90s wait budget - under any scheduling/image-pull
+# contention that ate into the first ~30-60s, kubelet would SIGKILL
+# (exit 137) a probe that was still genuinely running and about to complete
+# on its own, well before the checker's own wait ever gave up. That
+# self-inconsistent contract (not storage permissions) is what produced the
+# observed exit_code=137 results. 75s leaves a 15s margin under the 90s wait
+# budget for the final API round-trip/log fetch after termination.
+POD_ACTIVE_DEADLINE_SECONDS = 75
 NAMESPACE_CLEANUP_TIMEOUT_SECONDS = 30.0
 OWNER_LABEL = "maops.dev/storage-hardening-owner"
+# DAY5: container states that must never be accepted as a completed probe
+# result, regardless of exit code or log content - a killed probe proves
+# nothing about storage permissions either way.
+REJECTED_CONTAINER_REASONS = {"OOMKilled"}
 
 results: list[tuple[bool, str]] = []
 
@@ -248,7 +262,7 @@ metadata:
   namespace: {NAMESPACE}
 spec:
   restartPolicy: Never
-  activeDeadlineSeconds: 60
+  activeDeadlineSeconds: {POD_ACTIVE_DEADLINE_SECONDS}
   automountServiceAccountToken: false
   affinity:
     nodeAffinity:
@@ -290,23 +304,183 @@ spec:
 """
 
 
-def _wait_terminal(pod_name: str) -> dict:
-    def _terminal():
+def _terminated_pod(pod_name: str):
+    """Returns a predicate (for kube.wait_until) that only signals success
+    once the container's OWN termination status is actually populated - not
+    merely once Pod `status.phase` has flipped to a terminal value.
+
+    DAY5 remediation: Kubernetes does not write `status.phase` and
+    `status.containerStatuses[].state` atomically together - they can land
+    in separate sequential patches to the same object. Polling `phase`
+    alone (the previous behavior) could observe a snapshot where phase was
+    already `Failed` (e.g. kubelet had already decided the Pod's outcome)
+    but `containerStatuses[0].state.terminated` had not yet been written,
+    reading back `exitCode=None` on an otherwise real result. Waiting for
+    the container's own terminated state closes that window: only a
+    snapshot that carries the real, final exit code/reason is ever
+    returned.
+    """
+
+    def _check():
         # No check=False: get_json() has no such parameter (it always
         # calls kube.run() with the default check=True) - a transient
         # "not found yet" kubectl failure raises CalledProcessError,
         # which wait_until()'s own except-and-retry handling already
         # treats as "not ready yet, keep polling".
         pod = kube.get_json("-n", NAMESPACE, "get", "pod", pod_name)
-        phase = pod.get("status", {}).get("phase")
-        return pod if phase in ("Succeeded", "Failed") else None
+        statuses = pod.get("status", {}).get("containerStatuses") or []
+        if not statuses or statuses[0].get("state", {}).get("terminated") is None:
+            return None
+        return pod
 
-    return kube.wait_until(_terminal, timeout=POD_DEADLINE_SECONDS, description=f"pod {pod_name} terminal")
+    return _check
 
 
 def _logs(pod_name: str) -> str:
     result = kube.run("-n", NAMESPACE, "logs", pod_name, check=False)
     return result.stdout
+
+
+def _pod_events(pod_name: str) -> str:
+    """Best-effort Kubernetes Events for this Pod (e.g. `Pulling`/`Failed`/
+    `BackOff` around image pulls, `FailedScheduling`), fetched before the
+    guaranteed cleanup deletes the namespace. This is the only place
+    information about what a Pod was doing BEFORE it was killed/observed
+    terminated can come from - `containerStatuses` only ever reflects the
+    final state. Never raises: an events lookup is diagnostic-only and must
+    never itself fail the check or replace the real pass/fail signal."""
+    try:
+        result = kube.run(
+            "-n", NAMESPACE, "get", "events",
+            "--field-selector", f"involvedObject.name={pod_name}",
+            "--sort-by=.lastTimestamp",
+            "-o", "json",
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
+    if result.returncode != 0:
+        return ""
+    try:
+        items = json.loads(result.stdout).get("items", [])
+    except json.JSONDecodeError:
+        return ""
+    return "\n".join(
+        f"{item.get('reason', '')}: {item.get('message', '')} (x{item.get('count', 1)})" for item in items
+    )
+
+
+def _last_known_pod_state(pod_name: str) -> str:
+    """Best-effort final snapshot of phase + per-container state, used only
+    when a probe never reaches a terminated state at all (a genuine
+    `_observe_probe` timeout) - otherwise that case would report nothing
+    beyond "timed out", leaving no clue whether the container was still
+    `Pending`/`ContainerCreating`/`ImagePullBackOff` the whole time. Never
+    raises: this is diagnostic-only, called after the real timeout has
+    already been decided."""
+    try:
+        pod = kube.get_json("-n", NAMESPACE, "get", "pod", pod_name)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return ""
+    status = pod.get("status", {})
+    statuses = status.get("containerStatuses") or []
+    container_state = statuses[0].get("state") if statuses else {}
+    return f"phase={status.get('phase')!r} container_state={container_state!r}"
+
+
+def _extract_diagnostics(pod: dict, pod_name: str) -> dict:
+    """Captures phase, pod-level reason, exit code, container-level
+    reason/message, logs (kubectl merges stdout+stderr into one stream -
+    Kubernetes exposes no way to split them), and recent Pod events from an
+    already-terminated pod, before any cleanup happens."""
+    status = pod.get("status", {})
+    container_status = (status.get("containerStatuses") or [{}])[0]
+    terminated = container_status.get("state", {}).get("terminated") or {}
+    return {
+        "phase": status.get("phase"),
+        "pod_reason": status.get("reason"),
+        "exit_code": terminated.get("exitCode"),
+        "container_reason": terminated.get("reason"),
+        "container_message": terminated.get("message"),
+        "logs": _logs(pod_name),
+        "events": _pod_events(pod_name),
+    }
+
+
+def _observe_probe(pod_name: str) -> tuple[dict | None, str | None]:
+    """Waits (bounded) for the probe container's real termination status and
+    returns (diagnostics, None) on success or (None, detail) on a genuine
+    timeout - a timeout must never be silently treated as a pass. On a
+    timeout, best-effort enriches the detail with the last observed pod/
+    container state and events, captured before cleanup, so a stuck
+    ImagePullBackOff/scheduling failure is visible without a manual repro."""
+    try:
+        pod = kube.wait_until(
+            _terminated_pod(pod_name),
+            timeout=POD_DEADLINE_SECONDS,
+            description=f"pod {pod_name} container terminated",
+        )
+    except TimeoutError as exc:
+        detail = f"did not observe a container termination status within {POD_DEADLINE_SECONDS}s: {exc}"
+        snapshot = _last_known_pod_state(pod_name)
+        if snapshot:
+            detail += f"\n  last observed state: {snapshot}"
+        events = _pod_events(pod_name)
+        if events:
+            detail += f"\n  events:\n    " + events.replace("\n", "\n    ")
+        return None, detail
+    return _extract_diagnostics(pod, pod_name), None
+
+
+def _classify_probe(diag: dict | None, timeout_detail: str | None, expected_marker: str, label: str) -> tuple[bool, str]:
+    """Turns captured diagnostics into a pass/fail verdict. Never accepts a
+    timeout, a missing exit code, an exit 137, or a killed-container reason
+    (e.g. OOMKilled) as success, regardless of what the logs contain - a
+    killed probe proves nothing about storage permissions either way. Any
+    rejection carries captured events, so e.g. a DeadlineExceeded/
+    ContainerStatusUnknown kill (the container never actually ran) is
+    distinguishable from one that ran and was then killed.
+
+    DAY5 remediation, second race (found live): Pod-level `status.phase`
+    and the container's own `state.terminated` are written via separate,
+    non-atomic patches in BOTH directions - the first race (phase flips
+    before terminated is written) was fixed by `_terminated_pod()` waiting
+    for `terminated` specifically, but a live run then hit the SYMMETRIC
+    case: `terminated` already showed `exitCode=0, reason='Completed'`
+    (a genuine clean exit, with the expected marker in the logs) while
+    `phase` still read `'Running'` in that same snapshot. Requiring
+    `phase == 'Succeeded'` as an additional gate was therefore itself
+    racy. The container's own terminated state is the ground truth for
+    what happened to it; `phase` is a derived, potentially-lagging
+    summary field and is reported for diagnostics only, never required."""
+    if diag is None:
+        return False, f"{label}: {timeout_detail}"
+    exit_code = diag["exit_code"]
+    reason = diag["container_reason"]
+    events = diag.get("events") or ""
+    events_suffix = f"\n  events:\n    " + events.replace("\n", "\n    ") if events else ""
+    if exit_code is None:
+        return False, (
+            f"{label}: no container termination exit code was ever observed "
+            f"(phase={diag['phase']!r}, pod_reason={diag['pod_reason']!r}) - never treated as success{events_suffix}"
+        )
+    if exit_code == 137 or reason in REJECTED_CONTAINER_REASONS:
+        return False, (
+            f"{label}: container was killed, not completed naturally "
+            f"(exit_code={exit_code}, container_reason={reason!r}, pod_reason={diag['pod_reason']!r}) - "
+            f"rejected regardless of log content{events_suffix}"
+        )
+    if exit_code != 0:
+        return False, (
+            f"{label}: container exited non-zero, not completed successfully "
+            f"(exit_code={exit_code}, container_reason={reason!r}, phase={diag['phase']!r}){events_suffix}"
+        )
+    if expected_marker not in diag["logs"]:
+        return False, f"{label}: exit_code=0 but expected marker {expected_marker!r} missing from logs{events_suffix}"
+    return True, (
+        f"{label}: completed naturally (exit_code=0, container_reason={reason!r}, phase={diag['phase']!r}, "
+        f"marker={expected_marker!r} observed)"
+    )
 
 
 def main() -> int:
@@ -381,19 +555,13 @@ def main() -> int:
         )
         _apply(_pod_manifest(POSITIVE_POD, 10001, 10001, 10001, POSITIVE_PROBE))
 
-        try:
-            pod = _wait_terminal(POSITIVE_POD)
-        except TimeoutError as exc:
-            overall_ok = record(False, f"positive probe: did not reach a terminal phase: {exc}")
-        else:
-            phase = pod.get("status", {}).get("phase")
-            exit_code = (
-                pod.get("status", {}).get("containerStatuses", [{}])[0].get("state", {}).get("terminated", {}).get("exitCode")
-            )
-            logs = _logs(POSITIVE_POD)
-            print(logs)
-            ok = phase == "Succeeded" and exit_code == 0 and "POSITIVE_PROBE_PASS" in logs
-            overall_ok = record(ok, f"positive probe (UID/GID 10001, fsGroup 10001): phase={phase} exit_code={exit_code}") and overall_ok
+        diag, timeout_detail = _observe_probe(POSITIVE_POD)
+        if diag is not None:
+            print(diag["logs"])
+        ok, message = _classify_probe(
+            diag, timeout_detail, "POSITIVE_PROBE_PASS", "positive probe (UID/GID 10001, fsGroup 10001)"
+        )
+        overall_ok = record(ok, message) and overall_ok
 
         # Only proceed to the negative probe once the PVC is confirmed
         # bound and its backing directory exists - the negative probe
@@ -404,29 +572,16 @@ def main() -> int:
             overall_ok = record(False, "negative probe skipped: scratch PVC never reached Bound") and False
         else:
             _apply(_pod_manifest(NEGATIVE_POD, 65532, 65532, None, NEGATIVE_PROBE))
-            try:
-                pod = _wait_terminal(NEGATIVE_POD)
-            except TimeoutError as exc:
-                overall_ok = record(False, f"negative probe: did not reach a terminal phase: {exc}") and overall_ok
-            else:
-                phase = pod.get("status", {}).get("phase")
-                exit_code = (
-                    pod.get("status", {}).get("containerStatuses", [{}])[0]
-                    .get("state", {})
-                    .get("terminated", {})
-                    .get("exitCode")
-                )
-                logs = _logs(NEGATIVE_POD)
-                print(logs)
-                ok = phase == "Succeeded" and exit_code == 0 and "NEGATIVE_PROBE_PASS" in logs
-                overall_ok = (
-                    record(
-                        ok,
-                        f"negative probe (UID/GID 65532, no supplementary group 10001) received EACCES as expected: "
-                        f"phase={phase} exit_code={exit_code}",
-                    )
-                    and overall_ok
-                )
+            diag, timeout_detail = _observe_probe(NEGATIVE_POD)
+            if diag is not None:
+                print(diag["logs"])
+            ok, message = _classify_probe(
+                diag,
+                timeout_detail,
+                "NEGATIVE_PROBE_PASS",
+                "negative probe (UID/GID 65532, no supplementary group 10001)",
+            )
+            overall_ok = record(ok, message) and overall_ok
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         # A manifest apply or kube.get_json() call above can fail for
         # reasons unrelated to the probes themselves (a real API server

@@ -1,0 +1,40 @@
+# DAY5: the ONLY way into maops-platform from outside the namespace -
+# a validation-client Pod in maops-day5-validation (identified by BOTH
+# the namespace's automatic `kubernetes.io/metadata.name` label AND the
+# stable `app.kubernetes.io/component: validation-client` Pod label -
+# combining namespaceSelector and podSelector in one `from` peer ANDs
+# them, so this can never be satisfied by an arbitrary Pod in that
+# namespace, only one carrying the validation-client label) may reach
+# gateway. No equivalent allow exists for app or state, and no
+# namespace-wide allow exists for maops-day5-validation as a whole -
+# every other cross-namespace path stays denied by the default-deny
+# baseline.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-gateway-ingress-from-validation
+  namespace: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day5
+    app.kubernetes.io/version: "0.5.0"
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: maops-day5-validation
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: validation-client
+      ports:
+        - protocol: TCP
+          port: 8080

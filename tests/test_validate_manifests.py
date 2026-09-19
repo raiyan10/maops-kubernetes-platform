@@ -1,9 +1,10 @@
 """
 Docker-free unit tests for the repository-owned static validation logic
-in scripts/validate_manifests.py (Day 4: adds the maops-state
-StatefulSet - single-replica, PVC-backed persistence via
-volumeClaimTemplates - alongside the unchanged Day 3 gateway/app
-Deployments, their Services, and their PodDisruptionBudgets).
+in scripts/validate_manifests.py (Day 5: adds ServiceAccounts, a
+namespace-scoped Role/RoleBinding for the maops-diagnostics identity,
+and standard networking.k8s.io/v1 NetworkPolicy default-deny +
+narrow-allow objects, alongside the unchanged Day 4 gateway/app/state
+architecture).
 
 Fixtures are constructed directly as Python dict/list structures (not
 parsed from YAML text) so these tests exercise validation rules only,
@@ -24,8 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from validate_manifests import run_checks
 
-VERSION = "0.4.0"
-INSTANCE = "maops-kubernetes-platform-day4"
+VERSION = "0.5.0"
+INSTANCE = "maops-kubernetes-platform-day5"
+VALIDATION_NAMESPACE = "maops-day5-validation"
 
 
 def _labels(component: str | None) -> dict:
@@ -132,6 +134,7 @@ def _deployment(name: str, component: str, image: str, configmap: str) -> dict:
             "template": {
                 "metadata": {"labels": pod_labels},
                 "spec": {
+                    "serviceAccountName": name,
                     "automountServiceAccountToken": False,
                     "securityContext": _security_context(),
                     "affinity": _node_affinity(),
@@ -210,6 +213,7 @@ def _state_statefulset() -> dict:
             "template": {
                 "metadata": {"labels": pod_labels},
                 "spec": {
+                    "serviceAccountName": "maops-state",
                     "automountServiceAccountToken": False,
                     "securityContext": _security_context(),
                     "affinity": _node_affinity(),
@@ -237,11 +241,198 @@ def _state_statefulset() -> dict:
     }
 
 
+def _service_account(name: str, namespace: str, component: str, automount: bool) -> dict:
+    return {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {"name": name, "namespace": namespace, "labels": _labels(component)},
+        "automountServiceAccountToken": automount,
+    }
+
+
+def _diagnostics_role() -> dict:
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {"name": "maops-diagnostics-reader", "namespace": "maops-platform", "labels": _labels("diagnostics")},
+        "rules": [
+            {"apiGroups": [""], "resources": ["pods", "services"], "verbs": ["get", "list", "watch"]},
+            {"apiGroups": ["discovery.k8s.io"], "resources": ["endpointslices"], "verbs": ["get", "list", "watch"]},
+        ],
+    }
+
+
+def _diagnostics_role_binding() -> dict:
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "name": "maops-diagnostics-reader-binding",
+            "namespace": "maops-platform",
+            "labels": _labels("diagnostics"),
+        },
+        "subjects": [{"kind": "ServiceAccount", "name": "maops-diagnostics", "namespace": VALIDATION_NAMESPACE}],
+        "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "maops-diagnostics-reader"},
+    }
+
+
+def _netpol_default_deny() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "maops-default-deny-all", "namespace": "maops-platform", "labels": _labels(None)},
+        "spec": {"podSelector": {}, "policyTypes": ["Ingress", "Egress"]},
+    }
+
+
+def _netpol_allow_dns() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "maops-allow-dns-egress", "namespace": "maops-platform", "labels": _labels(None)},
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                        }
+                    ],
+                    "ports": [{"protocol": "UDP", "port": 53}, {"protocol": "TCP", "port": 53}],
+                }
+            ],
+        },
+    }
+
+
+def _netpol_gateway_egress_app() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "maops-allow-gateway-egress-to-app",
+            "namespace": "maops-platform",
+            "labels": _labels("gateway"),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "gateway"}},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "to": [{"podSelector": {"matchLabels": {"app.kubernetes.io/component": "app"}}}],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
+def _netpol_app_ingress_gateway() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "maops-allow-app-ingress-from-gateway",
+            "namespace": "maops-platform",
+            "labels": _labels("app"),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "app"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/component": "gateway"}}}],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
+def _netpol_app_egress_state() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "maops-allow-app-egress-to-state",
+            "namespace": "maops-platform",
+            "labels": _labels("app"),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "app"}},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "to": [{"podSelector": {"matchLabels": {"app.kubernetes.io/component": "state"}}}],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
+def _netpol_state_ingress_app() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "maops-allow-state-ingress-from-app",
+            "namespace": "maops-platform",
+            "labels": _labels("state"),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "state"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/component": "app"}}}],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
+def _netpol_gateway_ingress_validation() -> dict:
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "maops-allow-gateway-ingress-from-validation",
+            "namespace": "maops-platform",
+            "labels": _labels("gateway"),
+        },
+        "spec": {
+            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "gateway"}},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VALIDATION_NAMESPACE}},
+                            "podSelector": {"matchLabels": {"app.kubernetes.io/component": "validation-client"}},
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                }
+            ],
+        },
+    }
+
+
 def _base_docs() -> list[dict]:
     namespace = {
         "apiVersion": "v1",
         "kind": "Namespace",
         "metadata": {"name": "maops-platform", "labels": _labels(None)},
+    }
+    validation_namespace = {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {"name": VALIDATION_NAMESPACE, "labels": _labels("validation")},
     }
     gateway_configmap = {
         "apiVersion": "v1",
@@ -304,11 +495,35 @@ def _base_docs() -> list[dict]:
         },
     }
 
+    gateway_sa = _service_account("maops-gateway", "maops-platform", "gateway", False)
+    app_sa = _service_account("maops-app", "maops-platform", "app", False)
+    state_sa = _service_account("maops-state", "maops-platform", "state", False)
+    diagnostics_sa = _service_account("maops-diagnostics", VALIDATION_NAMESPACE, "diagnostics", True)
+    diagnostics_role = _diagnostics_role()
+    diagnostics_role_binding = _diagnostics_role_binding()
+
+    netpols = [
+        _netpol_default_deny(),
+        _netpol_allow_dns(),
+        _netpol_gateway_egress_app(),
+        _netpol_app_ingress_gateway(),
+        _netpol_app_egress_state(),
+        _netpol_state_ingress_app(),
+        _netpol_gateway_ingress_validation(),
+    ]
+
     return [
         namespace,
+        validation_namespace,
         gateway_configmap,
         app_configmap,
         state_configmap,
+        gateway_sa,
+        app_sa,
+        state_sa,
+        diagnostics_sa,
+        diagnostics_role,
+        diagnostics_role_binding,
         gateway_deployment,
         app_deployment,
         state_statefulset,
@@ -318,6 +533,7 @@ def _base_docs() -> list[dict]:
         state_headless_service,
         gateway_pdb,
         app_pdb,
+        *netpols,
     ]
 
 
@@ -344,7 +560,7 @@ class BaselineTests(unittest.TestCase):
         findings = run_checks(_base_docs())
         failed = _failed_names(findings)
         self.assertEqual(failed, set(), f"unexpected failures: {failed}")
-        self.assertGreaterEqual(len(findings), 190)
+        self.assertGreaterEqual(len(findings), 260)
 
 
 class ObjectCountTests(unittest.TestCase):
@@ -829,30 +1045,40 @@ class ForbiddenResourceTests(unittest.TestCase):
         failed = _failed_names(run_checks(docs))
         self.assertIn("scope.no_forbidden_resources", failed)
 
-    def test_forbidden_serviceaccount_present_fails(self):
+    def test_unexpected_extra_serviceaccount_fails_count(self):
+        # DAY5: ServiceAccount is now a sanctioned kind (exactly 4 are
+        # expected - gateway/app/state/diagnostics), so an extra one no
+        # longer trips scope.no_forbidden_resources - it trips the exact
+        # count check instead.
         docs = copy.deepcopy(_base_docs())
         docs.append(
             {
                 "apiVersion": "v1",
                 "kind": "ServiceAccount",
-                "metadata": {"name": "maops-workload", "namespace": "maops-platform"},
+                "metadata": {"name": "maops-unexpected", "namespace": "maops-platform"},
+                "automountServiceAccountToken": False,
             }
         )
         failed = _failed_names(run_checks(docs))
-        self.assertIn("scope.no_forbidden_resources", failed)
+        self.assertIn("rbac.service_account_count", failed)
+        self.assertNotIn("scope.no_forbidden_resources", failed)
 
-    def test_forbidden_networkpolicy_present_fails(self):
+    def test_unexpected_extra_networkpolicy_fails_count(self):
+        # DAY5: NetworkPolicy is now sanctioned (exactly 7 are expected),
+        # so an extra one trips the exact count check, not
+        # scope.no_forbidden_resources.
         docs = copy.deepcopy(_base_docs())
         docs.append(
             {
                 "apiVersion": "networking.k8s.io/v1",
                 "kind": "NetworkPolicy",
-                "metadata": {"name": "maops-deny-all", "namespace": "maops-platform"},
-                "spec": {},
+                "metadata": {"name": "maops-unexpected", "namespace": "maops-platform"},
+                "spec": {"podSelector": {}, "policyTypes": ["Ingress"]},
             }
         )
         failed = _failed_names(run_checks(docs))
-        self.assertIn("scope.no_forbidden_resources", failed)
+        self.assertIn("networkpolicy.count", failed)
+        self.assertNotIn("scope.no_forbidden_resources", failed)
 
     def test_forbidden_standalone_state_pvc_present_fails(self):
         # DAY4: StatefulSet itself is now sanctioned (it's how maops-state
@@ -875,35 +1101,21 @@ class ForbiddenResourceTests(unittest.TestCase):
         self.assertIn("scope.no_forbidden_resources", failed)
 
     def test_statefulset_alone_is_not_forbidden(self):
-        # DAY4: the baseline fixture's StatefulSet must NOT trip
-        # scope.no_forbidden_resources - only Secret/Ingress/PVC/RBAC
-        # kinds/ServiceAccount/NetworkPolicy/HPA remain forbidden as of
-        # Day 4.
+        # DAY5: the baseline fixture's StatefulSet, ServiceAccounts, Role,
+        # RoleBinding, and NetworkPolicies must NOT trip
+        # scope.no_forbidden_resources - only Secret/Ingress/PVC/
+        # ClusterRole/ClusterRoleBinding/HPA remain forbidden as of Day 5.
         failed = _failed_names(run_checks(copy.deepcopy(_base_docs())))
         self.assertNotIn("scope.no_forbidden_resources", failed)
 
 
 class ForbiddenRbacKindTests(unittest.TestCase):
-    """DAY2-TEST-L3: Role/RoleBinding/ClusterRole/ClusterRoleBinding relied
-    on the same already-proven scope.no_forbidden_resources set-
-    intersection mechanism but had no dedicated mutation test of their
-    own. RBAC itself is not implemented here - these tests only prove it
-    remains forbidden during Day 2."""
+    """DAY5: Role and RoleBinding are now sanctioned kinds (checked
+    positively/structurally elsewhere), but ClusterRole/
+    ClusterRoleBinding remain forbidden at every day - Day 5's RBAC is
+    deliberately namespace-scoped only (see docs/roadmap.md)."""
 
-    _RBAC_FIXTURES = {
-        "Role": {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "Role",
-            "metadata": {"name": "maops-role", "namespace": "maops-platform"},
-            "rules": [],
-        },
-        "RoleBinding": {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "RoleBinding",
-            "metadata": {"name": "maops-role-binding", "namespace": "maops-platform"},
-            "subjects": [],
-            "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": "maops-role"},
-        },
+    _CLUSTER_RBAC_FIXTURES = {
         "ClusterRole": {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -919,13 +1131,48 @@ class ForbiddenRbacKindTests(unittest.TestCase):
         },
     }
 
-    def test_forbidden_rbac_kinds_each_fail(self):
-        for kind, fixture in self._RBAC_FIXTURES.items():
+    def test_forbidden_cluster_scoped_rbac_kinds_each_fail(self):
+        for kind, fixture in self._CLUSTER_RBAC_FIXTURES.items():
             with self.subTest(kind=kind):
                 docs = copy.deepcopy(_base_docs())
                 docs.append(copy.deepcopy(fixture))
                 failed = _failed_names(run_checks(docs))
                 self.assertIn("scope.no_forbidden_resources", failed)
+
+    def test_unexpected_extra_role_fails_count_not_forbidden(self):
+        # DAY5: Role is sanctioned (exactly 1 is expected), so an extra
+        # one trips the exact count check, not scope.no_forbidden_resources.
+        docs = copy.deepcopy(_base_docs())
+        docs.append(
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": "maops-unexpected-role", "namespace": "maops-platform"},
+                "rules": [],
+            }
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role_count", failed)
+        self.assertNotIn("scope.no_forbidden_resources", failed)
+
+    def test_unexpected_extra_role_binding_fails_count_not_forbidden(self):
+        docs = copy.deepcopy(_base_docs())
+        docs.append(
+            {
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {"name": "maops-unexpected-binding", "namespace": "maops-platform"},
+                "subjects": [],
+                "roleRef": {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "Role",
+                    "name": "maops-diagnostics-reader",
+                },
+            }
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role_binding_count", failed)
+        self.assertNotIn("scope.no_forbidden_resources", failed)
 
 
 class SecretWiringTests(unittest.TestCase):
@@ -1607,6 +1854,354 @@ class StateServiceMutationTests(unittest.TestCase):
         _find(docs, "Service", "maops-state-headless")["spec"]["selector"] = {"app.kubernetes.io/component": "wrong"}
         failed = _failed_names(run_checks(docs))
         self.assertIn("state.headless_service.selector_matches_pod_labels", failed)
+
+
+# ---------------------------------------------------------------------------
+# DAY5: ServiceAccount / RBAC / NetworkPolicy
+# ---------------------------------------------------------------------------
+
+
+class ServiceAccountTests(unittest.TestCase):
+    """ServiceAccount names and token automount behavior for all four
+    Day 5 identities."""
+
+    def test_gateway_service_account_missing_fails(self):
+        docs = [
+            d
+            for d in copy.deepcopy(_base_docs())
+            if not (d.get("kind") == "ServiceAccount" and d["metadata"]["name"] == "maops-gateway")
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.service_account.maops-gateway.exists", failed)
+        self.assertIn("rbac.service_account_count", failed)
+
+    def test_app_service_account_automount_true_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "ServiceAccount", "maops-app")["automountServiceAccountToken"] = True
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.service_account.maops-app.automount_false", failed)
+        self.assertNotIn("rbac.service_account.maops-gateway.automount_false", failed)
+
+    def test_state_service_account_wrong_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "ServiceAccount", "maops-state")["metadata"]["namespace"] = "default"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.service_account.maops-state.namespace", failed)
+
+    def test_diagnostics_service_account_wrong_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "ServiceAccount", "maops-diagnostics")["metadata"]["namespace"] = "maops-platform"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.service_account.diagnostics.namespace", failed)
+
+    def test_diagnostics_service_account_automount_false_fails(self):
+        # DAY5: diagnostics is the ONE identity that must receive a
+        # token, unlike the three application ServiceAccounts.
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "ServiceAccount", "maops-diagnostics")["automountServiceAccountToken"] = False
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.service_account.diagnostics.automount_true", failed)
+
+    def test_gateway_deployment_not_using_own_service_account_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _pod_spec_of(_find(docs, "Deployment", "maops-gateway"))["serviceAccountName"] = "default"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("gateway.security.service_account_name", failed)
+
+    def test_state_statefulset_not_using_own_service_account_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _pod_spec_of(_find(docs, "StatefulSet", "maops-state"))["serviceAccountName"] = "default"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("state.security.service_account_name", failed)
+
+
+class RbacRoleAndBindingTests(unittest.TestCase):
+    """Role/RoleBinding scope, and allowed/forbidden RBAC verbs and
+    resources for the maops-diagnostics-reader Role."""
+
+    def test_role_not_namespace_scoped_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "Role", "maops-diagnostics-reader")["metadata"]["namespace"] = "kube-system"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.namespace_scoped", failed)
+
+    def test_role_missing_pods_grant_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        role = _find(docs, "Role", "maops-diagnostics-reader")
+        role["rules"] = [r for r in role["rules"] if "pods" not in (r.get("resources") or [])]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.grants_pods_and_services", failed)
+
+    def test_role_missing_endpointslices_grant_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        role = _find(docs, "Role", "maops-diagnostics-reader")
+        role["rules"] = [r for r in role["rules"] if "discovery.k8s.io" not in (r.get("apiGroups") or [])]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.grants_endpointslices", failed)
+
+    def test_role_write_verb_added_fails_read_only_and_forbidden_verbs(self):
+        docs = copy.deepcopy(_base_docs())
+        role = _find(docs, "Role", "maops-diagnostics-reader")
+        role["rules"][0]["verbs"].append("delete")
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.verbs_read_only", failed)
+        self.assertIn("rbac.role.no_forbidden_verbs", failed)
+
+    def test_role_secrets_resource_added_fails_forbidden_resources(self):
+        docs = copy.deepcopy(_base_docs())
+        role = _find(docs, "Role", "maops-diagnostics-reader")
+        role["rules"][0]["resources"].append("secrets")
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.no_forbidden_resources", failed)
+
+    def test_role_wildcard_api_group_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        role = _find(docs, "Role", "maops-diagnostics-reader")
+        role["rules"][0]["apiGroups"] = ["*"]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role.api_groups_scoped", failed)
+
+    def test_role_binding_references_cluster_role_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "RoleBinding", "maops-diagnostics-reader-binding")["roleRef"]["kind"] = "ClusterRole"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role_binding.references_role_not_cluster_role", failed)
+
+    def test_role_binding_subject_wrong_service_account_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "RoleBinding", "maops-diagnostics-reader-binding")["subjects"][0]["name"] = "maops-gateway"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role_binding.subject_is_diagnostics_sa", failed)
+
+    def test_role_binding_subject_wrong_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "RoleBinding", "maops-diagnostics-reader-binding")["subjects"][0]["namespace"] = "maops-platform"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.role_binding.subject_is_diagnostics_sa", failed)
+
+    def test_application_service_account_bound_to_role_fails(self):
+        # DAY5 explicit requirement: application ServiceAccounts must
+        # never be bound to any Role/ClusterRole.
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "RoleBinding", "maops-diagnostics-reader-binding")["subjects"].append(
+            {"kind": "ServiceAccount", "name": "maops-gateway", "namespace": "maops-platform"}
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("rbac.application_service_accounts_not_bound", failed)
+
+
+class NetworkPolicyDefaultDenyTests(unittest.TestCase):
+    """Structure of the default-deny ingress+egress baseline policy."""
+
+    def test_default_deny_missing_fails(self):
+        docs = [
+            d
+            for d in copy.deepcopy(_base_docs())
+            if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "maops-default-deny-all")
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.default_deny.exists", failed)
+        self.assertIn("networkpolicy.count", failed)
+
+    def test_default_deny_pod_selector_not_empty_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "NetworkPolicy", "maops-default-deny-all")["spec"]["podSelector"] = {
+            "matchLabels": {"app.kubernetes.io/component": "gateway"}
+        }
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.default_deny.applies_to_all_pods", failed)
+
+    def test_default_deny_missing_egress_policy_type_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "NetworkPolicy", "maops-default-deny-all")["spec"]["policyTypes"] = ["Ingress"]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.default_deny.both_directions", failed)
+
+    def test_default_deny_with_an_ingress_rule_fails_no_rules(self):
+        # An accidental ingress rule on the deny-all policy would punch a
+        # hole in the baseline for every Pod in the namespace at once.
+        docs = copy.deepcopy(_base_docs())
+        _find(docs, "NetworkPolicy", "maops-default-deny-all")["spec"]["ingress"] = [{"from": []}]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.default_deny.no_rules", failed)
+
+
+class NetworkPolicyAllowTests(unittest.TestCase):
+    """DNS, gateway -> app, and app -> state allow rules."""
+
+    def test_dns_policy_missing_kube_dns_selector_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        peer = _find(docs, "NetworkPolicy", "maops-allow-dns-egress")["spec"]["egress"][0]["to"][0]
+        peer["podSelector"]["matchLabels"]["k8s-app"] = "wrong"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.dns.allows_udp_tcp_53_to_coredns", failed)
+
+    def test_dns_policy_missing_tcp_port_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        rule = _find(docs, "NetworkPolicy", "maops-allow-dns-egress")["spec"]["egress"][0]
+        rule["ports"] = [{"protocol": "UDP", "port": 53}]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.dns.allows_udp_tcp_53_to_coredns", failed)
+
+    def test_gateway_egress_app_wrong_pod_selector_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-gateway-egress-to-app")
+        netpol["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] = "app"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.gateway_egress_app.pod_selector_is_gateway", failed)
+
+    def test_gateway_egress_app_wrong_port_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-gateway-egress-to-app")
+        netpol["spec"]["egress"][0]["ports"] = [{"protocol": "TCP", "port": 9999}]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.gateway_egress_app.allows_app_8080", failed)
+
+    def test_app_ingress_gateway_missing_fails(self):
+        docs = [
+            d
+            for d in copy.deepcopy(_base_docs())
+            if not (d.get("kind") == "NetworkPolicy" and d["metadata"]["name"] == "maops-allow-app-ingress-from-gateway")
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.app_ingress_gateway.pod_selector_is_app", failed)
+        self.assertIn("networkpolicy.app_ingress_gateway.allows_gateway_8080", failed)
+
+    def test_app_egress_state_wrong_component_target_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-app-egress-to-state")
+        netpol["spec"]["egress"][0]["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/component"] = "gateway"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.app_egress_state.allows_state_8080", failed)
+
+    def test_state_ingress_app_wrong_port_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-state-ingress-from-app")
+        netpol["spec"]["ingress"][0]["ports"] = [{"protocol": "TCP", "port": 80}]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.state_ingress_app.allows_app_8080", failed)
+
+    def test_gateway_ingress_validation_wrong_component_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-gateway-ingress-from-validation")
+        peer = netpol["spec"]["ingress"][0]["from"][0]
+        peer["podSelector"]["matchLabels"]["app.kubernetes.io/component"] = "diagnostics"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.gateway_ingress_validation.allows_validation_client_8080", failed)
+
+    def test_gateway_ingress_validation_wrong_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-gateway-ingress-from-validation")
+        peer = netpol["spec"]["ingress"][0]["from"][0]
+        peer["namespaceSelector"]["matchLabels"]["kubernetes.io/metadata.name"] = "maops-platform"
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.gateway_ingress_validation.allows_validation_client_8080", failed)
+
+
+class NetworkPolicyNegativeTests(unittest.TestCase):
+    """Absence of a gateway -> state allow, and absence of any
+    validation-client bypass into app/state - the explicit denies this
+    architecture requires."""
+
+    def test_gateway_egress_allow_extended_to_state_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-gateway-egress-to-app")
+        netpol["spec"]["egress"][0]["to"].append(
+            {"podSelector": {"matchLabels": {"app.kubernetes.io/component": "state"}}}
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.gateway_egress_app.never_targets_state", failed)
+
+    def test_state_ingress_allow_extended_to_gateway_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-state-ingress-from-app")
+        netpol["spec"]["ingress"][0]["from"].append(
+            {"podSelector": {"matchLabels": {"app.kubernetes.io/component": "gateway"}}}
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.state_ingress_app.never_allows_gateway", failed)
+
+    def test_app_ingress_allow_extended_to_validation_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-app-ingress-from-gateway")
+        netpol["spec"]["ingress"][0]["from"].append(
+            {
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VALIDATION_NAMESPACE}},
+                "podSelector": {"matchLabels": {"app.kubernetes.io/component": "validation-client"}},
+            }
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.app_ingress_gateway.never_allows_validation_namespace", failed)
+
+    def test_state_ingress_allow_extended_to_validation_namespace_fails(self):
+        docs = copy.deepcopy(_base_docs())
+        netpol = _find(docs, "NetworkPolicy", "maops-allow-state-ingress-from-app")
+        netpol["spec"]["ingress"][0]["from"].append(
+            {
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VALIDATION_NAMESPACE}},
+                "podSelector": {"matchLabels": {"app.kubernetes.io/component": "validation-client"}},
+            }
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.state_ingress_app.never_allows_validation_namespace", failed)
+
+    def test_stray_extra_policy_granting_validation_namespace_into_app_fails(self):
+        # A bypass introduced under an unrelated NetworkPolicy name (not
+        # one of the three already-scrutinized allow objects) must still
+        # be caught by the cross-cutting stray-rule guard.
+        docs = copy.deepcopy(_base_docs())
+        docs.append(
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "metadata": {"name": "maops-sneaky-allow", "namespace": "maops-platform"},
+                "spec": {
+                    "podSelector": {"matchLabels": {"app.kubernetes.io/component": "app"}},
+                    "policyTypes": ["Ingress"],
+                    "ingress": [
+                        {
+                            "from": [
+                                {
+                                    "namespaceSelector": {
+                                        "matchLabels": {"kubernetes.io/metadata.name": VALIDATION_NAMESPACE}
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                },
+            }
+        )
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("networkpolicy.maops-sneaky-allow.no_stray_validation_namespace_ingress", failed)
+        # And it also trips the exact-count guard, independently.
+        self.assertIn("networkpolicy.count", failed)
+
+
+class NamespaceValidationTests(unittest.TestCase):
+    """Namespace/pod selector correctness for the two-namespace Day 5
+    topology."""
+
+    def test_validation_namespace_missing_fails(self):
+        docs = [
+            d
+            for d in copy.deepcopy(_base_docs())
+            if not (d.get("kind") == "Namespace" and d["metadata"]["name"] == VALIDATION_NAMESPACE)
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("namespace.validation_exists", failed)
+        self.assertIn("namespace.count", failed)
+        self.assertNotIn("namespace.exists", failed)
+
+    def test_application_namespace_missing_fails(self):
+        docs = [
+            d
+            for d in copy.deepcopy(_base_docs())
+            if not (d.get("kind") == "Namespace" and d["metadata"]["name"] == "maops-platform")
+        ]
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("namespace.exists", failed)
+        self.assertNotIn("namespace.validation_exists", failed)
 
 
 if __name__ == "__main__":
