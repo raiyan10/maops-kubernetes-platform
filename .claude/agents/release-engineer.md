@@ -21,16 +21,19 @@ asked to perform any of those actions, decline and explain why.
 
 Checklist for a readiness assessment:
 
-1. **VERSION file** matches the day's target version exactly (e.g.
-   `0.2.0` for Day 2), with no trailing whitespace/newline surprises. From
-   Day 2 onward, also re-run `make version-check` yourself rather than
-   trusting the file alone - it closes `DAY1-REL-I1` precisely because
-   drift between VERSION/image tags/labels is no longer just eyeballed.
+1. **VERSION file** matches the day's target version exactly (current
+   released baseline: `0.5.0` for Day 5; use whatever `docs/roadmap.md`
+   names for the day actually under review), with no trailing
+   whitespace/newline surprises. Also re-run `make version-check`
+   yourself rather than trusting the file alone - it closes
+   `DAY1-REL-I1` precisely because drift between VERSION/image
+   tags/labels is no longer just eyeballed.
 2. **No git tag, commit, or push has occurred** as part of this work -
    check `git status` and `git log` against the base branch; uncommitted
-   changes are the expected, correct state at handoff. An earlier day's
-   tag (e.g. `v0.1.0`) must still exist unmoved.
-3. **`make dayN-check`** for the current day (e.g. `make day2-check`) has
+   changes are the expected, correct state at handoff. Earlier days'
+   tags (as of the current baseline: `v0.1.0` through `v0.5.0`) must
+   still exist unmoved.
+3. **`make dayN-check`** for the current day (e.g. `make day5-check`) has
    actually been run and its real output captured - not assumed. Re-run
    it if you can't find fresh evidence it passed.
 4. **No leaked processes.** Confirm no background `kubectl port-forward`
@@ -42,10 +45,19 @@ Checklist for a readiness assessment:
    resource values, security fields, Secret wiring); `docs/roadmap.md`'s
    seven-stage plan is unmodified in structure, with each day's status
    accurately marked, unless the user explicitly asked to change scope.
-6. **Scope boundaries respected.** Nothing from a later day (RBAC,
-   NetworkPolicy, PVC/StatefulSet, Helm, CI, observability,
-   Terraform/Ansible/Argo CD, cloud provisioning) leaked into this day's
-   deliverable - cross-check against `docs/roadmap.md`. A *committed*
+6. **Scope boundaries respected.** Nothing from a later day leaked into
+   this day's deliverable - cross-check against `docs/roadmap.md`. As of
+   the frozen `v0.5.0` baseline (Days 1-5 released), the Day 5 security
+   objects - dedicated ServiceAccounts, the single `maops-diagnostics`
+   `Role`/`RoleBinding`, the seven NetworkPolicy objects, and Cilium as
+   the enforcing CNI - are **required deliverables**, not leaked future
+   content; their absence is the finding, not their presence. What must
+   still be excluded from the frozen `v0.5.0` baseline: Day 6 work
+   (Helm-packaged application charts - Helm here installs only Cilium -
+   GitHub Actions CI, a service mesh, Ingress/Gateway API) and Day 7 work
+   (Recreate/Blue-Green/Canary deployment-strategy demonstrations), plus
+   the evergreen exclusions at any day: observability stack,
+   Terraform/Ansible/Argo CD, and cloud provisioning. A *committed*
    Secret object is always forbidden; a runtime-bootstrapped Secret live
    in the cluster is expected from Day 2 onward and is not a violation.
 7. **Claims match evidence.** Any count claimed (agents, skills, tests,

@@ -1,72 +1,88 @@
 ---
 name: kind-cluster-validation
-description: Create/use the project's kind cluster and prove real Kubernetes behavior - node readiness, server version, Deployment availability, replica/EndpointSlice counts, ConfigMap consumption, Secret mount/auth behavior, worker-only scheduling and topology spread, scaling, rolling update/rollback, PodDisruptionBudget/Eviction behavior, bounded port-forward HTTP checks, dependency-failure behavior, and controller-reconciliation proof via pod deletion. Use whenever asked to validate against a live cluster, debug a failing rollout, or prove the workload actually runs.
+description: Create/use the project's kind cluster and prove real Kubernetes behavior - node readiness, server version, Deployment/StatefulSet availability, replica/EndpointSlice counts, ConfigMap consumption, Secret mount/auth behavior, worker-only scheduling and topology spread, scaling, rolling update/rollback, PodDisruptionBudget/Eviction behavior, storage hardening, persistence/retention, RBAC scope, NetworkPolicy allow/deny behavior, CNI status, bounded port-forward HTTP checks, dependency-failure behavior, and controller-reconciliation proof via pod deletion. Use whenever asked to validate against a live cluster, debug a failing rollout, or prove the workload actually runs.
 ---
 
 # kind cluster validation
 
 Real-cluster validation for the maops-kubernetes-platform project's kind
-cluster - as of Day 3, `maops-k8s-day3` (context `kind-maops-k8s-day3`),
-1 control-plane + 2 worker nodes, a separate cluster from Day 1's
-`maops-k8s-day1` and Day 2's `maops-k8s-day2` which this validation never
-touches. This is the live-cluster counterpart to `manifest-validation`
-(static) and `workload-security-validation` (security-specific) - it
-proves runtime behavior via `kubectl -o json` and real HTTP calls, never
-by re-reading the manifest.
+cluster. **Current default (Day 5 / `v0.5.0`, released):**
+`maops-k8s-day5` (context `kind-maops-k8s-day5`, kubeconfig
+`$HOME/.kube/maops-k8s-day5.config`), 1 control-plane + 2 worker nodes,
+`networking.disableDefaultCNI: true` (every node is `NotReady` until
+`make cni-install` completes) - a separate, independently-created
+cluster from every earlier day's, which this validation never touches.
+This is the live-cluster counterpart to `manifest-validation` (static)
+and `workload-security-validation` (security-specific) - it proves
+runtime behavior via `kubectl -o json` and real HTTP calls, never by
+re-reading the manifest.
 
 Every script in this list calls `kube.verify_context()` first and fails
 closed (never proceeds) if the live cluster's node identity doesn't
-actually match `maops-k8s-day3` - this is checked at runtime, not assumed
-from the hardcoded constant.
+actually match the expected cluster - this is checked at runtime, not
+assumed from a hardcoded constant.
 
-## Sequence (mirrors the Makefile)
+## Sequence (mirrors the Makefile, current default)
 
 ```bash
-make cluster-create         # idempotent: kind create cluster --config kind/cluster.yaml (1 control-plane + 2 workers)
-make context-check          # fail closed unless verified against the isolated Day 3 cluster at the pinned node version
-make namespace-apply        # apply ONLY the Namespace to the explicit context (must precede secret-bootstrap)
-make secret-bootstrap       # create/preserve the runtime Secret - never printed
-make image-build              # docker build both gateway/ and app/ images
-make image-load                # kind load docker-image for both, into every node of maops-k8s-day3
-make deploy                     # kubectl apply -k k8s/base
-make rollout-check             # scripts/cluster_check.py - checks 1-10, 12-20 below
-make scheduling-check         # scripts/scheduling_check.py - worker-only scheduling + topology spread proof
-make discovery-check          # scripts/discovery_check.py - real DNS + Service HTTP proof
-make secret-check                # scripts/secret_check.py - Secret wiring/auth/non-disclosure
-make smoke                         # scripts/smoke.py - normal HTTP smoke via service/maops-gateway
-make dependency-check          # scripts/dependency_check.py - liveness vs. dependency-aware readiness
+make cluster-create           # idempotent: kind create cluster --config kind/cluster-day5.yaml (CNI disabled)
+make context-check            # fail closed unless verified against the isolated Day 5 cluster
+make cni-install               # helm install Cilium 1.20.1 as the CNI (idempotent) - nodes NotReady until this completes
+make cni-status                 # READ-ONLY: Cilium agent/operator + kube-proxy health
+make image-build                # docker build gateway/, app/, state/ images
+make image-load                 # kind load docker-image for all three, into every node
+make storage-bootstrap        # harden local-path-provisioner directory permissions (must run before any PVC)
+make storage-hardening-check  # prove the hardening against a disposable scratch PVC
+make namespace-apply          # apply BOTH Namespaces (maops-platform, maops-day5-validation)
+make secret-bootstrap         # create/preserve BOTH runtime Secrets - never printed
+make deploy                       # kubectl apply -k k8s/base (ServiceAccounts, RBAC, NetworkPolicies, workloads)
+make rollout-check             # scripts/cluster_check.py - real Deployment/security/Secret-mount state (gateway/app)
+make scheduling-check         # scripts/scheduling_check.py - worker-only scheduling + topology spread (gateway/app)
+make discovery-check          # scripts/discovery_check.py - real DNS + gateway -> app Service HTTP proof
+make secret-check                # scripts/secret_check.py - both Secrets' wiring/auth/non-disclosure
+make rbac-check                    # scripts/rbac_check.py - real maops-diagnostics RBAC: allowed reads, denied everything else
+make networkpolicy-check       # scripts/networkpolicy_check.py - real default-deny + explicit-allow behavior via probe Pods
+make smoke                         # scripts/smoke.py - normal HTTP smoke via service/maops-gateway, incl. /state
+make dependency-check           # scripts/dependency_check.py - liveness vs. dependency-aware readiness
 make scaling-check              # scripts/scaling_check.py - real scaling 3 -> 4 -> 3, guaranteed restoration
 make rolling-update-check     # scripts/rollout_check.py - real rolling update + real kubectl rollout undo
-make pdb-check                     # scripts/pdb_check.py - real PDB/Eviction-API behavior, guaranteed restoration
+make pdb-check                    # scripts/pdb_check.py - real PDB/Eviction-API behavior, guaranteed restoration
+make state-check                  # scripts/state_check.py - maops-state identity, security, storage binding
+make persistence-check          # scripts/persistence_check.py - data survives maops-state-0 deletion/rescheduling
+make retention-check             # scripts/retention_check.py - PVC/PV retention across a 1 -> 0 -> 1 cycle
 make final-state-check         # scripts/final_state_check.py - proves everything is restored after all of the above
 ```
 
-`make day3-check` runs the full sequence (plus `tool-check`, `test`,
-`version-check`, and `manifest-check`) in the required order and is the
-authoritative one-shot validation.
+`make day5-check` runs the full sequence (plus `tool-check`, `test`,
+`version-check`, and `manifest-check`) in the required recipe-sequential
+order and is the authoritative one-shot validation.
 
 ## What each real check proves
 
-`scripts/cluster_check.py` (`make rollout-check`), for **both**
-`maops-gateway` and `maops-app`:
+`scripts/cluster_check.py` (`make rollout-check`), for **gateway and
+app** (StatefulSet-specific proofs for `state` live in
+`state_check.py`, below):
 
 1. Cluster has exactly 3 nodes (1 control-plane + 2 workers), all Ready.
-2. `kubectl version -o json` server `gitVersion` == `v1.36.1` exactly.
+2. `kubectl version -o json` server `gitVersion` matches the pinned
+   node's Kubernetes version exactly.
 3. Namespace `maops-platform` exists.
-4-5. Each Deployment reaches `status.conditions[Available]=True`
-   (bounded wait, not an instant check).
-6-9. `spec.replicas == 3` and `status.readyReplicas == 3` for each.
+4-9. Each Deployment reaches `status.conditions[Available]=True`,
+   `spec.replicas == 3`, `status.readyReplicas == 3` (bounded wait, not
+   an instant check).
 10-11. All three pods per workload individually report `Ready=True`.
 12. Each Service is `ClusterIP`.
 13-14. Each Service's `discovery.k8s.io/v1` EndpointSlice has exactly 3
     ready endpoints (`scripts/endpointslice.py` - **not** the legacy
-    `v1 Endpoints` API, which Kubernetes 1.36 deprecates).
+    `v1 Endpoints` API).
 15-16. Each ConfigMap's value matches what `kubectl exec` (via the
     Python interpreter directly - the distroless image has no shell)
     reads from the live process's environment.
 17-18. Live pod's actual UID/GID and the API server's recorded
     `securityContext` fields, for both workloads.
-19. Neither pod mounts a Kubernetes API ServiceAccount token.
+19. Neither pod mounts a Kubernetes API ServiceAccount token
+    (`automountServiceAccountToken: false` on both the ServiceAccount
+    and pod level).
 20. Both pods have the expected Secret volume/mount
     (`internal-auth` -> `/var/run/secrets/maops`, read-only).
 
@@ -78,24 +94,55 @@ control-plane, both workers host at least one Pod, and worker
 replica-count skew <= 1 (a 2/1 or 1/2 split, never 3/0).
 
 `scripts/discovery_check.py` (`make discovery-check`): from a live
-gateway Pod, a real `socket.getaddrinfo('maops-app', ...)` call (via
-`kubectl exec` + the pinned interpreter - no shell/dig/nslookup
-available) proves DNS resolution succeeds (never asserting a specific
-IP), then a real port-forwarded HTTP call to `/backend` proves the
-resolved address actually routes through the Service to a live app Pod.
+gateway Pod, a real `socket.getaddrinfo('maops-app', ...)` call proves
+DNS resolution succeeds, then a real port-forwarded HTTP call to
+`/backend` proves the resolved address actually routes through the
+Service to a live app Pod.
 
-`scripts/secret_check.py` (`make secret-check`): Secret exists with a
-non-empty `internal-token` key; both pods mount it read-only and can
-read it; a gateway-authenticated call to the app succeeds; a direct,
-unauthenticated (and wrong-token) call to `maops-app`'s
-`/internal/info` is rejected with exactly `HTTP 403`; neither workload's
-normal responses, `/config`, nor logs ever contain the token; no tracked
-repository file contains the live generated token.
+`scripts/secret_check.py` (`make secret-check`): both Secrets
+(`maops-internal-auth`, `maops-state-auth`) exist with non-empty keys;
+all mounting pods can read them read-only; the full authenticated
+`gateway -> app -> state` chain succeeds; a direct, unauthenticated
+call to either internal endpoint is rejected with exactly `HTTP 403`;
+neither workload's normal responses, `/config`, nor logs ever contain
+either token; no tracked repository file contains a live generated
+token.
+
+`scripts/rbac_check.py` (`make rbac-check`): from inside a probe Pod
+running as `maops-diagnostics` with its real mounted token, direct
+HTTPS calls to `https://kubernetes.default.svc` prove
+`pods`/`services`/`endpointslices` reads in `maops-platform` return
+`200`, while `secrets` reads, a Deployment `DELETE`, a Deployment
+`/scale` `PATCH`, a cross-namespace Pod read, and a cluster-scoped Node
+read all return exactly `403 Forbidden`.
+
+`scripts/networkpolicy_check.py` (`make networkpolicy-check`): real
+in-cluster TCP connection attempts (never only a port-forward, which
+never traverses the pod network as a policy-visible peer) prove
+`validation-client -> gateway` succeeds, `validation-client -> app`/
+`-> state` are blocked, `gateway -> app` and `app -> state` succeed,
+`gateway -> state` is blocked, and DNS still resolves under the
+default-deny egress baseline. A short-lived `validation-client` probe
+Pod is created in `maops-day5-validation` and always deleted
+afterward.
+
+`scripts/cni_check.py` (`make cni-status`, READ-ONLY): every node is
+`Ready`, the Cilium agent DaemonSet has exactly one Ready Pod per node,
+the Cilium operator has at least one available replica, and the
+kube-proxy DaemonSet still has Ready Pods (kube-proxy remains enabled -
+Cilium is adopted here only for NetworkPolicy enforcement).
+
+`scripts/storage_hardening_check.py` (`make storage-hardening-check`):
+against a disposable scratch PVC (never `maops-state`'s own claim), a
+Pod at the correct UID/GID + `fsGroup` can write/read, and a Pod at an
+unrelated UID/GID (no `fsGroup`) gets `EACCES` - proving the
+provisioning-root hardening (`root:10001`, mode `2770`) actually does
+access-control work.
 
 `scripts/smoke.py` (`make smoke`): opens a bounded, auto-cleaned-up
-port-forward to `service/maops-gateway` and performs real HTTP GETs
-against `/`, `/livez`, `/readyz`, `/config`, `/backend`, asserting real
-response semantics (not just HTTP 200 + valid JSON).
+port-forward to `service/maops-gateway` and performs real HTTP GETs/PUT
+against `/`, `/livez`, `/readyz`, `/config`, `/backend`, `/state`,
+asserting real response semantics (not just HTTP 200 + valid JSON).
 
 `scripts/dependency_check.py` (`make dependency-check`): scales
 `maops-app` to 0 replicas (leaving `maops-gateway` untouched), proves
@@ -103,81 +150,120 @@ gateway `/livez` stays `200`, `/readyz` becomes `503`, `/backend`
 becomes a controlled `503`, and gateway restart counts don't increase -
 then restores `maops-app` to 3 replicas in a guaranteed `finally` path.
 
-`scripts/scaling_check.py` (`make scaling-check`): for both workloads
+`scripts/scaling_check.py` (`make scaling-check`): for gateway and app
 independently, baseline 3/3 -> `kubectl scale --replicas=4` -> proves
 Deployment/Pods/EndpointSlice all agree on 4 and the Service stays
 functional -> restores to 3 in a guaranteed `finally` path,
-independently re-verified. `HorizontalPodAutoscaler` is out of scope.
+independently re-verified. `HorizontalPodAutoscaler` is out of scope;
+`maops-state` is never scaled beyond its single replica.
 
-`scripts/rollout_check.py` (`make rolling-update-check`): for both
-workloads independently, patches a temporary, uniquely-marked
+`scripts/rollout_check.py` (`make rolling-update-check`): for gateway
+and app independently, patches a temporary, uniquely-marked
 `spec.template.metadata.annotations` key (never a fake image tag) to
 trigger a real new ReplicaSet/rolling update, proves Pods are actually
-replaced (UID-set comparison) and the rollout completes, samples the
-Service during the rollout window with bounded polling, then performs a
-**real** `kubectl rollout undo` and proves full restoration - Deployment
-Available, 3/3 Ready, annotation gone, a genuinely new replacement Pod
-set, EndpointSlice back to 3. Uses `_wait_exact_pod_count()` to poll past
-the termination race between "rollout reports done" and "old Pods
-actually deleted" before trusting any Pod-set snapshot.
+replaced (UID-set comparison) and the rollout completes, then performs
+a **real** `kubectl rollout undo` and proves full restoration. Uses
+`_wait_exact_pod_count()` to poll past the termination race between
+"rollout reports done" and "old Pods actually deleted" before trusting
+any Pod-set snapshot.
 
-`scripts/pdb_check.py` (`make pdb-check`): for both workloads
+`scripts/pdb_check.py` (`make pdb-check`): for gateway and app
 independently, proves the normal healthy PDB status
 (`desiredHealthy=2`, `disruptionsAllowed=1`), scales 3 -> 2 (proving the
 PDB does **not** block ordinary scaling) and confirms
-`disruptionsAllowed=0`, then submits a real `policy/v1 Eviction` via
-`kubectl create --raw .../eviction -f -` (never `kubectl delete pod`)
-against a Pod filtered to be genuinely `Ready`/non-terminating (a
-terminating straggler Pod is always evictable regardless of the PDB, so
-selecting one would produce a false "eviction succeeded" result unrelated
-to the PDB). The rejection is classified from the actual API response
-text (`TooManyRequests`), never a bare non-zero exit code, and the
-target Pod's continued presence is independently confirmed before
-restoring to 3 replicas in a guaranteed `finally` path.
+`disruptionsAllowed=0`, then submits a real `policy/v1 Eviction`
+against a Pod filtered to be genuinely `Ready`/non-terminating, expects
+`TooManyRequests`, and restores to 3 replicas in a guaranteed `finally`
+path.
+
+`scripts/state_check.py` (`make state-check`): `maops-state` 1/1 Ready,
+worker-only placement, PVC/PV `Bound`, and the same security-baseline
+proofs (UID/GID, no token mount) as gateway/app.
+
+`scripts/persistence_check.py` (`make persistence-check`): writes a
+unique marker through the real `gateway -> app -> state` chain,
+deletes only `maops-state-0`, proves the StatefulSet controller
+replaces it with the same PVC/PV but a genuinely new Pod UID, and the
+marker reads back unchanged.
+
+`scripts/retention_check.py` (`make retention-check`): scales
+`maops-state` 1 -> 0 -> 1, proving the PVC/PV remain `Bound` throughout
+(degraded-but-live app/gateway behavior), and full recovery with the
+pre-outage marker intact.
 
 `scripts/final_state_check.py` (`make final-state-check`): after all of
 the above, independently re-proves the cluster is back at its normal
-3/3/healthy baseline for both workloads (including worker-only
-scheduling/skew, reusing `scheduling_check`'s own functions), both PDBs
-at their normal healthy status, no leftover rollout-test annotation, the
-Secret still valid, no leaked `kubectl port-forward` process, and that
-Day 1/Day 2's clusters still exist untouched.
+healthy baseline for all three workloads (scheduling/skew, both PDBs
+healthy, no leftover rollout-test annotation, both Secrets still valid,
+no leaked `kubectl port-forward` process), and that every other-day
+cluster it can detect (`OTHER_DAY_CLUSTERS` in the script) is checked
+for continued *registration* - not started or assumed healthy if it
+isn't running (see "Legacy/frozen earlier-day clusters" below).
 
 `scripts/reconcile_check.py` (`make controller-check` - bonus, not part
-of `day3-check`): records all three `maops-app` pod UIDs, deletes
+of `day5-check`): records all three `maops-app` pod UIDs, deletes
 exactly one pod, waits for the Deployment to reconcile back to 3/3
 Ready, confirms a genuinely new UID appeared while the other two
-survived, then re-runs HTTP checks via a scoped test-only port-forward
-to `service/maops-app`.
+survived.
+
+## Legacy/frozen earlier-day clusters (explicit compatibility path, not the default)
+
+Days 1-4 each have their own frozen, independently-created kind
+cluster/context (`maops-k8s-day1`/`kind-maops-k8s-day1` through
+`maops-k8s-day4`/`kind-maops-k8s-day4`, the latter using
+`kind/cluster.yaml`). These are **not** the current validation target -
+only `maops-k8s-day5` is. As documented in
+`docs/engineering-reviews/day-05-post-release-verification.md`, running
+several multi-node kind clusters concurrently can exceed a WSL2 host's
+available capacity, so Day 1-4's clusters were stopped (not deleted) at
+Day 5's release and their current runtime health is not claimed.
+
+- **Do not start an earlier-day cluster** as part of ordinary Day 5
+  validation, and never assume one is already running.
+- Only start (or inspect, if already running) an earlier-day cluster
+  for an explicit, scoped investigation of that specific day's
+  behavior - e.g. reproducing a historical finding referenced in
+  `docs/engineering-reviews/day-0N-*`. Treat this as a deliberate,
+  explicitly-labeled legacy path, not the default workflow, and stop it
+  again afterward rather than leaving it running alongside Day 5's
+  cluster.
+- Never run Day 5's authoritative suite while relying on an earlier-day
+  cluster also being up - the two are independent and neither's
+  tooling touches the other's cluster/kubeconfig/context.
 
 ## Debugging a failure
 
-Don't guess - pull real evidence:
+Don't guess - pull real evidence, against the current default context:
 
 ```bash
-kubectl --context kind-maops-k8s-day3 -n maops-platform describe deployment/maops-gateway
-kubectl --context kind-maops-k8s-day3 -n maops-platform describe deployment/maops-app
-kubectl --context kind-maops-k8s-day3 -n maops-platform describe pod <name>
-kubectl --context kind-maops-k8s-day3 -n maops-platform get events --sort-by=.lastTimestamp
-kubectl --context kind-maops-k8s-day3 -n maops-platform logs <pod>
-kubectl --context kind-maops-k8s-day3 -n maops-platform get endpointslices -l kubernetes.io/service-name=maops-app
-kubectl --context kind-maops-k8s-day3 -n maops-platform get poddisruptionbudget
-kubectl --context kind-maops-k8s-day3 get nodes -o wide
+kubectl --context kind-maops-k8s-day5 -n maops-platform describe deployment/maops-gateway
+kubectl --context kind-maops-k8s-day5 -n maops-platform describe deployment/maops-app
+kubectl --context kind-maops-k8s-day5 -n maops-platform describe statefulset/maops-state
+kubectl --context kind-maops-k8s-day5 -n maops-platform describe pod <name>
+kubectl --context kind-maops-k8s-day5 -n maops-platform get events --sort-by=.lastTimestamp
+kubectl --context kind-maops-k8s-day5 -n maops-platform logs <pod>
+kubectl --context kind-maops-k8s-day5 -n maops-platform get endpointslices -l kubernetes.io/service-name=maops-app
+kubectl --context kind-maops-k8s-day5 -n maops-platform get poddisruptionbudget
+kubectl --context kind-maops-k8s-day5 -n maops-platform get networkpolicy
+kubectl --context kind-maops-k8s-day5 get nodes -o wide
 ```
 
 Fix the root cause (manifest, image, probe timing, resource sizing,
-Secret bootstrap ordering, a genuine termination race) and re-run only
-the affected `make` target - don't re-run the whole sequence
-unnecessarily, and don't loosen a script's assertions to force a pass.
+Secret bootstrap ordering, a genuine termination race, host resource
+pressure on Cilium) and re-run only the affected `make` target - don't
+re-run the whole sequence unnecessarily, and don't loosen a script's
+assertions to force a pass.
 
 ## Cleanup discipline
 
-- `make cluster-delete` deletes **only** the current day's named cluster
-  (`maops-k8s-day3` as of Day 3) - never run `docker system prune` or
-  delete unrelated clusters/resources, including an earlier day's
-  cluster if it's still running.
+- `make cluster-delete` deletes **only** the current default cluster
+  (`maops-k8s-day5`) - never run `docker system prune` or delete
+  unrelated clusters/resources, including an earlier day's cluster if
+  it happens to be running.
 - After any manual `kubectl port-forward` debugging session, confirm
   nothing was left running: `ps aux | grep port-forward`.
 - Leave the cluster running after validation unless there's a concrete
   safety reason to tear it down - it's expected to be available for
-  independent review.
+  independent review. If host resource pressure requires freeing
+  capacity, stop a superseded earlier-day cluster before stopping the
+  current one.

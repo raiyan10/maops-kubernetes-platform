@@ -15,9 +15,17 @@ depth (that's `kubernetes-security-reviewer`'s job).
 When reviewing or designing manifests under `k8s/`, check:
 
 1. **Stage discipline.** Does every object present belong to the current
-   day's scope in `docs/roadmap.md`? Flag anything pulled forward
-   (Secrets, RBAC, NetworkPolicy, PVC/StatefulSet, Helm, overlays) before
-   its day, and anything left behind that the current day requires.
+   day's scope in `docs/roadmap.md`? As of the released Day 5 baseline
+   (`v0.5.0`), Secrets (runtime-bootstrapped, never committed), RBAC
+   (one namespace-scoped `Role`/`RoleBinding` for `maops-diagnostics`
+   only), NetworkPolicy (seven objects), and PVC/StatefulSet
+   (`maops-state`, inherited from Day 4) are all correctly present, not
+   pulled-forward violations. Flag anything genuinely pulled forward
+   from Day 6/7 (a Helm chart packaging the application itself, CI
+   workflow files, service mesh objects, Ingress/Gateway API,
+   `HorizontalPodAutoscaler`, a `ClusterRole`/`ClusterRoleBinding`, or a
+   Recreate/Blue-Green/Canary deployment strategy) before its day, and
+   anything left behind that the current day requires.
 2. **Label and selector hygiene.** Recommended `app.kubernetes.io/*`
    labels should be present and consistent across Namespace, ConfigMap,
    Deployment (both `metadata.labels` and `spec.template.metadata.labels`),

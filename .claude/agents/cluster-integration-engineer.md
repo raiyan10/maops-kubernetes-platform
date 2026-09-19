@@ -12,39 +12,74 @@ unit tests (`kubernetes-test-engineer`).
 
 Your working context:
 
-- Cluster name: as of Day 3, `maops-k8s-day3`, 1 control-plane + 2 worker
-  nodes (the name/topology changes per day per `docs/roadmap.md` when a
-  later day re-creates it - never assume a hardcoded name/topology without
-  checking the current day's Makefile/`kind/cluster.yaml`). kubeconfig
-  context is `kind-<cluster-name>`. Day 3 tooling must never touch a
-  still-running earlier-day cluster (`maops-k8s-day1`, `maops-k8s-day2`) -
-  leave both alone. Every live script calls `kube.verify_context()` first
-  and fails closed if the live cluster's node identity doesn't actually
-  match the expected cluster - never bypass or weaken that guard.
-- Pinned node image is declared in `kind/cluster.yaml` - never substitute
-  `latest` or a different tag/digest when recreating the cluster.
-- As of Day 3 there are two workloads (`maops-gateway`, `maops-app`), each
-  with its own Deployment (3 replicas, worker-only scheduling, topology
-  spread)/Service/ConfigMap/PodDisruptionBudget - real-cluster evidence
-  must cover both, not just one. Authoritative backend-readiness evidence
-  uses `discovery.k8s.io/v1` EndpointSlice (`scripts/endpointslice.py`),
-  not the legacy `v1 Endpoints` API.
+- Cluster name: current default (Day 5, released `v0.5.0`) is
+  `maops-k8s-day5`, 1 control-plane + 2 worker nodes,
+  `networking.disableDefaultCNI: true` (every node is `NotReady` until
+  `make cni-install` completes) - the name/topology changes per day per
+  `docs/roadmap.md` when a later day re-creates it; never assume a
+  hardcoded name/topology without checking the current day's
+  Makefile/`kind/cluster-day5.yaml`. kubeconfig context is
+  `kind-<cluster-name>` (`kind-maops-k8s-day5` currently), kubeconfig
+  path `$HOME/.kube/maops-k8s-day5.config`. Current tooling must never
+  touch an earlier-day cluster (`maops-k8s-day1` through
+  `maops-k8s-day4`) - leave them alone. As documented in
+  `docs/engineering-reviews/day-05-post-release-verification.md`,
+  running several multi-node kind clusters concurrently can exceed a
+  WSL2 host's available capacity, so Day 1-4's clusters were stopped
+  (not deleted) at Day 5's release; do not start an earlier-day cluster
+  except for an explicit, scoped investigation of that specific day's
+  historical behavior, and never rely on one being up to run the
+  current day's suite. Every live script calls `kube.verify_context()`
+  first and fails closed if the live cluster's node identity doesn't
+  actually match the expected cluster - never bypass or weaken that
+  guard.
+- Pinned node image is declared in `kind/cluster-day5.yaml` (Day 4's
+  `kind/cluster.yaml` is preserved untouched, not edited in place) -
+  never substitute `latest` or a different tag/digest when recreating
+  the cluster.
+- Current default topology is `gateway -> app -> state`: `maops-gateway`
+  and `maops-app` each have their own Deployment (3 replicas,
+  worker-only scheduling, topology spread)/Service/ConfigMap/
+  PodDisruptionBudget/dedicated ServiceAccount; `maops-state` is a
+  single-replica StatefulSet with a PVC-backed `/data` volume and its
+  own dedicated ServiceAccount (inherited unchanged from Day 4) -
+  real-cluster evidence must cover all three, not just gateway/app.
+  Additionally, `maops-diagnostics` (in the separate
+  `maops-day5-validation` namespace) is the one identity with a
+  namespace-scoped RBAC grant (read-only on
+  Pods/Services/EndpointSlices in `maops-platform`), and Cilium
+  `1.20.1` is the enforcing CNI (kube-proxy remains enabled) for seven
+  `networking.k8s.io/v1` NetworkPolicy objects implementing
+  default-deny + narrow explicit allows (DNS,
+  `gateway -> app`, `app -> state`, `validation-client -> gateway`
+  only - `gateway -> state` and `validation-client -> app`/`-> state`
+  must remain denied). Authoritative backend-readiness evidence uses
+  `discovery.k8s.io/v1` EndpointSlice (`scripts/endpointslice.py`), not
+  the legacy `v1 Endpoints` API.
 - The authoritative local commands are Makefile targets
-  (`make cluster-create`, `make context-check`, `make namespace-apply`,
-  `make secret-bootstrap`, `make image-load`, `make deploy`,
-  `make rollout-check`, `make scheduling-check`, `make discovery-check`,
-  `make secret-check`, `make smoke`, `make dependency-check`,
-  `make scaling-check`, `make rolling-update-check`, `make pdb-check`,
+  (`make cluster-create`, `make context-check`, `make cni-install`,
+  `make cni-status`, `make image-load`, `make storage-bootstrap`,
+  `make storage-hardening-check`, `make namespace-apply`,
+  `make secret-bootstrap`, `make deploy`, `make rollout-check`,
+  `make scheduling-check`, `make discovery-check`, `make secret-check`,
+  `make rbac-check`, `make networkpolicy-check`, `make smoke`,
+  `make dependency-check`, `make scaling-check`,
+  `make rolling-update-check`, `make pdb-check`, `make state-check`,
+  `make persistence-check`, `make retention-check`,
   `make final-state-check`, `make controller-check`, `make dayN-check`)
   backed by `scripts/kube.py`, `scripts/context_check.py`,
+  `scripts/cni_check.py`, `scripts/storage_hardening_check.py`,
   `scripts/cluster_check.py`, `scripts/scheduling_check.py`,
-  `scripts/discovery_check.py`, `scripts/secret_check.py`, `scripts/smoke.py`,
-  `scripts/dependency_check.py`, `scripts/scaling_check.py`,
-  `scripts/rollout_check.py`, `scripts/pdb_check.py`,
+  `scripts/discovery_check.py`, `scripts/secret_check.py`,
+  `scripts/rbac_check.py`, `scripts/networkpolicy_check.py`,
+  `scripts/smoke.py`, `scripts/dependency_check.py`,
+  `scripts/scaling_check.py`, `scripts/rollout_check.py`,
+  `scripts/pdb_check.py`, `scripts/state_check.py`,
+  `scripts/persistence_check.py`, `scripts/retention_check.py`,
   `scripts/final_state_check.py`, `scripts/reconcile_check.py`, and
   `scripts/portforward.py`. Prefer running/extending these over ad hoc
   kubectl invocations, so the Makefile stays the single source of truth
-  that later CI will orchestrate.
+  that CI will orchestrate from Day 6 onward.
 
 Operating rules:
 

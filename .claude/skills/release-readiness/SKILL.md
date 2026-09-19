@@ -13,56 +13,74 @@ say so directly.
 
 ## Checklist
 
-1. **VERSION file.** Exact match to the day's target version (e.g.
-   `0.3.0` for Day 3) - `cat VERSION` and compare byte-for-byte (no
-   trailing newline surprises, no `v` prefix). From Day 2 onward, also
-   re-run `make version-check` and confirm it independently passes -
-   don't just eyeball the file.
+1. **VERSION file.** Exact match to the day's target version (current
+   released baseline: `0.5.0` for Day 5; use whatever
+   `docs/roadmap.md` names for the day actually under review) -
+   `cat VERSION` and compare byte-for-byte (no trailing newline
+   surprises, no `v` prefix). Also re-run `make version-check` and
+   confirm it independently passes - don't just eyeball the file.
 2. **Git safety.** `git status` and `git log --oneline -5` should show
    the day's changes present but uncommitted, no new tags
    (`git tag --points-at HEAD`), and no evidence of a push (this is a
    local check, but never assume - report what you actually see). Prior
-   days' tags (`v0.1.0`, `v0.2.0`) are expected to already exist and must
-   never be moved or recreated.
+   days' tags (as of the current baseline: `v0.1.0` through `v0.5.0`)
+   are expected to already exist and must never be moved or recreated.
 3. **Authoritative validation actually ran.** Re-run
-   `make dayN-check` for the current day (e.g. `make day3-check`) yourself
+   `make dayN-check` for the current day (e.g. `make day5-check`) yourself
    and capture its real output - don't accept a prior summary's claimed
    pass count without independent confirmation. Report the exact
    pass/fail counts printed by every script the sequence composes
    (`scripts/manifest_check.py`, `scripts/version_check.py`,
    `scripts/context_check.py`, `scripts/cluster_check.py`,
    `scripts/scheduling_check.py`, `scripts/discovery_check.py`,
-   `scripts/secret_check.py`, `scripts/smoke.py`,
+   `scripts/secret_check.py`, `scripts/rbac_check.py`,
+   `scripts/networkpolicy_check.py`, `scripts/cni_check.py`,
+   `scripts/storage_hardening_check.py`, `scripts/smoke.py`,
    `scripts/dependency_check.py`, `scripts/scaling_check.py`,
    `scripts/rollout_check.py`, `scripts/pdb_check.py`,
-   `scripts/final_state_check.py`, as applicable to the current day).
-   A restoration failure surfaced by any mutating script (scaling,
-   rolling update/rollback, PDB/Eviction, dependency-failure) is more
-   serious than an ordinary check failure and must be called out as such
-   in the report, never buried in an aggregate pass count.
+   `scripts/state_check.py`, `scripts/persistence_check.py`,
+   `scripts/retention_check.py`, `scripts/final_state_check.py`, as
+   applicable to the current day). A restoration failure surfaced by
+   any mutating script (scaling, rolling update/rollback, PDB/Eviction,
+   dependency-failure, persistence/retention) is more serious than an
+   ordinary check failure and must be called out as such in the report,
+   never buried in an aggregate pass count.
 4. **No leaked processes.** `ps aux | grep port-forward` should show
    nothing after validation completes.
 5. **Cluster left running.** Unless there's a concrete safety reason,
    the current day's kind cluster should still exist (`kind get clusters`)
-   for independent review to poke at directly - and any earlier day's
-   cluster that was already running must be untouched (Day 3: verify
-   both `maops-k8s-day1` and `maops-k8s-day2` are still listed).
+   for independent review to poke at directly. An earlier day's cluster
+   that was already running must be untouched by the current day's
+   tooling - but as of Day 5, running several multi-node kind clusters
+   concurrently can exceed a WSL2 host's available capacity
+   (`docs/engineering-reviews/day-05-post-release-verification.md`), so
+   an earlier-day cluster being *stopped* (not deleted) is an accepted,
+   disclosed limitation, not itself a readiness failure - report what
+   you actually observe rather than assuming every earlier cluster must
+   still be listed as running.
 6. **Documentation matches reality.** `README.md` commands actually work
    as written and clearly distinguish the latest *released* version from
-   the current *development target*; `docs/architecture.md` describes
-   the probes/resources/security/scheduling/rollout/PDB fields that are
+   the current *development target* (if any is in progress);
+   `docs/architecture.md` describes the probes/resources/security/
+   identity/network/scheduling/rollout/PDB/storage fields that are
    actually deployed; `docs/roadmap.md` still contains the intact
    seven-stage plan (Day 1 v0.1.0 through Day 7 v1.0.0), with each day's
    status accurately marked (released/frozen, in development, or
    future) - unless the user explicitly asked to change it.
-7. **Scope boundaries.** Nothing from a later day leaked in early:
-   check for RBAC, NetworkPolicy, PVC/StatefulSet, ServiceAccount, Helm
-   files, CI workflow files, observability config, Terraform/Ansible/
-   Argo CD files, cloud-provisioning code, or `HorizontalPodAutoscaler`
-   (Day 3 scaling is deliberate/manual only) that the current day
-   doesn't call for. A *committed Secret object* is still always
-   forbidden at any day - but from Day 2 onward, a runtime-bootstrapped
-   Secret existing live in the cluster is correct, not a violation.
+7. **Scope boundaries.** Nothing from a later day leaked in early. As of
+   the frozen `v0.5.0` baseline (Days 1-5 released), a Day 5 review
+   should find dedicated ServiceAccounts, the `maops-diagnostics`
+   `Role`/`RoleBinding`, seven NetworkPolicy objects, and Cilium as the
+   enforcing CNI - these are now **required**, not scope violations. Nothing
+   from Day 6/7 should appear yet: Helm-packaged application charts
+   (Helm here is used only to install Cilium), GitHub Actions CI
+   workflow files, a service mesh (mTLS/L7 policy), Ingress/Gateway API,
+   `HorizontalPodAutoscaler`, or a Recreate/Blue-Green/Canary deployment
+   strategy demonstration. Generic evergreen exclusions at any day:
+   observability config, Terraform/Ansible/Argo CD files, and
+   cloud-provisioning code. A *committed Secret object* is still always
+   forbidden at any day - a runtime-bootstrapped Secret existing live in
+   the cluster is correct, not a violation.
 8. **Claimed counts are verifiable.** Re-count agents
    (`ls .claude/agents/*.md | wc -l`), skills
    (`ls -d .claude/skills/*/ | wc -l`), and unit tests

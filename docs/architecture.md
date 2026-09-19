@@ -1,25 +1,34 @@
-# Architecture - Day 5 (v0.5.0, in development)
+# Architecture - Day 5 (v0.5.0, released)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
 runtime Secret, Day 3 (`v0.3.0`) added a real multi-node cluster,
 topology-aware scheduling, scaling, rolling-update/rollback behavior,
-and a PodDisruptionBudget per workload, and Day 4 (`v0.4.0`) added a
-third workload, `maops-state` - a single-replica StatefulSet with a
-PVC-backed `/data` volume, proving real Kubernetes persistence - all
-four released and frozen; see the historical evidence under
-`docs/engineering-reviews/day-0[1-4]-*`. Day 5 keeps that entire
+and a PodDisruptionBudget per workload, Day 4 (`v0.4.0`) added a third
+workload, `maops-state` - a single-replica StatefulSet with a
+PVC-backed `/data` volume, proving real Kubernetes persistence - and
+Day 5 (`v0.5.0`) added identity and network boundaries around that
+unchanged architecture: a purpose-built ServiceAccount per workload, a
+namespace-scoped Role/RoleBinding for the one identity that exercises
+real API authorization (`maops-diagnostics`), and standard
+`networking.k8s.io/v1` NetworkPolicy objects enforced by Cilium
+(replacing kind's default kindnet CNI). All five days are released and
+frozen; see the historical evidence under
+`docs/engineering-reviews/day-0[1-5]-*`. Day 5 keeps the entire
 gateway/app/state architecture (security context, probes, Secrets,
 PodDisruptionBudgets, persistence/retention behavior) **entirely
-unchanged** and adds identity and network boundaries around it: a
-purpose-built ServiceAccount per workload, a namespace-scoped Role/
-RoleBinding for the one identity that exercises real API authorization
-(`maops-diagnostics`), and standard `networking.k8s.io/v1` NetworkPolicy
-objects enforced by Cilium (replacing kind's default kindnet CNI). See
-the Day 5 sections below (after the unchanged Day 1-4 material, which
-this file preserves for continuity) for the full security-boundary
-design, trust boundaries, what is proven live, and what is explicitly
-NOT claimed.
+unchanged** from Day 4. See the Day 5 sections below (after the
+unchanged Day 1-4 material, which this file preserves for continuity)
+for the full security-boundary design, trust boundaries, what is
+proven live, and what is explicitly NOT claimed.
+
+Day 6 (`v0.6.0`) is the next milestone: Helm packaging, minimal GitHub
+Actions CI, one cluster-external routing approach (Ingress or Gateway
+API), and a service mesh layered on top of Day 5's NetworkPolicy
+boundaries. Day 7 (`v1.0.0`) is the final milestone: Recreate,
+Blue-Green, and Canary deployment-strategy demonstrations, a final
+hardened validation pass, and portfolio closure. See
+`docs/roadmap.md` for the full plan.
 
 ## Control flow
 
@@ -1037,6 +1046,24 @@ containers) before running Day 5's suite, and may consider
 `--set operator.replicas=1`/`--set envoy.enabled=false` if the
 2-replica HA operator and unused L7 Envoy dataplane's overhead becomes
 a problem on a single-tenant local cluster.
+
+## DAY5: released validation record
+
+The merged `main` branch passed the complete authoritative `make
+day5-check` sequence before release (verified 2026-09-19; full detail
+in
+[`docs/engineering-reviews/day-05-post-release-verification.md`](engineering-reviews/day-05-post-release-verification.md)
+- these figures are that release's record, not results re-run during
+any later documentation pass): 814 unit tests; manifest validation
+267/267; version validation 35/35; CNI status 4/4; storage hardening
+2/2; rollout and security posture 35/35; scheduling 12/12; discovery
+2/2; secret handling 49/49; RBAC 10/10; NetworkPolicy 8/8; smoke 6/6;
+dependency-failure behavior 11/11; scaling 20/20; rolling update and
+rollback 38/38; PodDisruptionBudget behavior 16/16; state behavior
+24/24; persistence 12/12; PVC retention 22/22; final-state restoration
+40/40. `make`, `tee`, and output-filter exit codes were all zero, the
+external state-file hash was unchanged, and the working tree was clean
+afterward.
 
 ## What Day 5 proves, and what it explicitly does not claim
 

@@ -114,12 +114,17 @@ scaling of `maops-state` (single-writer only), and any change to Day
 application code beyond the new `/state`/`/internal/state` proxy hops
 this stage adds.
 
-## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy (this stage)
+## Day 5 / v0.5.0 - Security hardening, RBAC, NetworkPolicy
 
-**IN DEVELOPMENT / current target.** Not yet released or tagged. Keeps
-Day 4's entire gateway/app/state architecture unchanged (security
-contexts, probes, Secrets, PodDisruptionBudgets, persistence/retention
-behavior) and adds identity and network boundaries around it:
+**COMPLETE / RELEASED / EVIDENCE-CLOSED / FROZEN.** Released as
+`v0.5.0` (PR #5, tag `v0.5.0` -> commit
+`a6f6124198e3311023bddb84f2e7fce657ad52b4`); historical engineering
+evidence, remediation log, final adjudication, and post-release
+verification live under `docs/engineering-reviews/day-05-*` and are
+not modified by later days. Keeps Day 4's entire gateway/app/state
+architecture unchanged (security contexts, probes, Secrets,
+PodDisruptionBudgets, persistence/retention behavior) and adds
+identity and network boundaries around it:
 
 - A purpose-built ServiceAccount per workload
   (`maops-gateway`/`maops-app`/`maops-state`, all
@@ -153,6 +158,25 @@ API (Day 6), advanced deployment strategies beyond RollingUpdate
 (Recreate, Blue-Green, Canary - Day 7), `HorizontalPodAutoscaler`, and
 any change to Day 1-4's Distroless base image digest, interpreter
 path, or application code.
+
+Accepted limitations, disclosed at release and carried forward
+unchanged (see `docs/architecture.md` and
+`docs/engineering-reviews/day-05-post-release-verification.md` for the
+full evidence): running several multi-node kind clusters concurrently
+can exceed a WSL2 host's available capacity, so superseded clusters
+should be stopped before validating a later day; Day 1-4's clusters
+were stopped (not deleted) at Day 5 closure and their runtime health
+was not re-claimed by this release; the Cilium operator's leader-
+election instability and the three-node Cilium footprint observed
+under host pressure; `cilium-envoy` is present because the selected
+Helm chart installs it by default, unused by this stage's policies;
+the validation namespace's isolation is intentionally bounded; and the
+`DAY4-SEC-L1` finding is reduced, not closed, by Day 5's NetworkPolicy
+(it cannot govern a `kubectl port-forward` path). The released context
+checker also prints a cosmetic stale "Day 4 context" label while
+correctly validating the Day 5 context - a disclosed, Low-severity
+wording issue, corrected only when the shared checker is next
+advanced for Day 6.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 

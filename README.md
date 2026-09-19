@@ -1,21 +1,81 @@
 # maops-kubernetes-platform
 
 Project 4 of the DevOps portfolio series: a staged, day-by-day
-Kubernetes platform engineering build.
+Kubernetes platform engineering build. It demonstrates a three-workload
+(`gateway -> app -> state`) Kubernetes application secured with
+per-workload ServiceAccounts, least-privilege RBAC, and a default-deny
+NetworkPolicy mesh enforced by Cilium - all proven live against a real
+multi-node kind cluster, not just asserted in YAML.
 
-**Latest RELEASED: `v0.4.0`** (Day 4 - StatefulSet, PVC, persistence,
-frozen - see `docs/engineering-reviews/day-04-*`). `v0.1.0` (Day 1),
-`v0.2.0` (Day 2), and `v0.3.0` (Day 3) are also released and frozen.
+**Latest RELEASED: `v0.5.0`** (Day 5 - ServiceAccounts, RBAC,
+NetworkPolicy, Cilium as the enforcing CNI - evidence-closed and frozen,
+see `docs/engineering-reviews/day-05-*`). `v0.1.0` (Day 1), `v0.2.0`
+(Day 2), `v0.3.0` (Day 3), and `v0.4.0` (Day 4) are also released and
+frozen. **Days 1-5 are complete.**
 
-**Current DEVELOPMENT TARGET: `v0.5.0`** (Day 5 - security context
-hardening, ServiceAccounts, RBAC, NetworkPolicy). Day 5 is **not
-released or tagged** - the work in this README beyond the Day 1-4
-sections describes the in-progress Day 5 build, left uncommitted for
-independent review.
+**Next milestone: `v0.6.0`** (Day 6 - Helm packaging, minimal GitHub
+Actions CI, one cluster-external routing approach, and a service mesh).
+**Final milestone: `v1.0.0`** (Day 7 - Recreate/Blue-Green/Canary
+deployment-strategy demonstrations and final production-readiness
+hardening).
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full seven-day plan and
-[`docs/architecture.md`](docs/architecture.md) for how Day 5's pieces
-fit together.
+[`docs/architecture.md`](docs/architecture.md) for how the released
+pieces fit together.
+
+## What this platform currently demonstrates
+
+- A `gateway -> app -> state` call chain: `maops-gateway` (stateless,
+  3 replicas) fronts `maops-app` (stateless, 3 replicas), which reads/
+  writes through `maops-state` (a single-replica StatefulSet with a
+  PVC-backed `/data` volume) - all reached via Kubernetes DNS and
+  ClusterIP Services, never a Pod IP or hardcoded address.
+- Real scheduling, scaling, rolling-update/rollback, and
+  PodDisruptionBudget behavior across a 2-worker kind cluster (Day 3),
+  and real persistence/PVC-retention behavior across Pod deletion and
+  scale-to-zero cycles (Day 4).
+- **Day 5's security boundaries**, layered on top of that unchanged
+  architecture without modifying it:
+  - A dedicated ServiceAccount per workload (`maops-gateway`,
+    `maops-app`, `maops-state`, `maops-diagnostics`), each with
+    `automountServiceAccountToken` explicitly set - `false` for every
+    application workload, `true` only for the one identity that
+    actually needs to call the Kubernetes API.
+  - A single namespace-scoped `Role`/`RoleBinding` granting
+    `maops-diagnostics` read-only (`get`/`list`/`watch`) access to
+    Pods/Services/EndpointSlices in `maops-platform` only - never
+    Secrets, never a write verb, never another namespace, never a
+    `ClusterRole`.
+  - Cilium `1.20.1` as the enforcing CNI (kube-proxy remains enabled -
+    Cilium is adopted here only for its NetworkPolicy enforcement),
+    with standard `networking.k8s.io/v1` NetworkPolicy objects
+    implementing default-deny ingress and egress for every Pod, plus
+    narrow explicit allows: DNS egress, gateway -> app, app -> state,
+    and a dedicated validation-client identity -> gateway only.
+  - Live negative validation proving the boundaries actually hold: the
+    gateway cannot reach state directly, validation clients cannot
+    bypass the gateway to reach app or state, and unauthorized RBAC
+    writes, cross-namespace reads, and cluster-wide access are all
+    denied.
+- A second namespace, `maops-day5-validation`, isolating diagnostic/
+  validation tooling from the application namespace.
+
+Engineering reviews (architecture, security, cluster-integration, test,
+and release-readiness) and post-release evidence for every day live
+under [`docs/engineering-reviews/`](docs/engineering-reviews/) - see
+[`docs/engineering-reviews/day-05-post-release-verification.md`](docs/engineering-reviews/day-05-post-release-verification.md)
+for the full Day 5 release record
+([PR #5](https://github.com/raiyan10/maops-kubernetes-platform/pull/5),
+[release `v0.5.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.5.0)).
+Only a few purposeful screenshots are kept, under `docs/images/day-05/`
+- the [published GitHub release](docs/images/day-05/01-v050-github-release.png)
+and the [recorded merged-main validation run](docs/images/day-05/02-v050-merged-main-validation.png)
+- deliberately not a full evidence dump.
+
+**Not claimed at this stage:** production cluster high availability,
+node-loss recovery, a production-grade service mesh, or operation on a
+cloud-managed Kubernetes offering - this remains a local, single-tenant
+kind cluster built for staged engineering demonstration.
 
 ## Day 5 topology
 
@@ -364,8 +424,8 @@ kind/cluster-day5.yaml  Day 5's pinned kind config - same topology, networking.d
 scripts/                dependency-free Python validation + cluster tooling, incl. rbac_check.py,
                          networkpolicy_check.py, cni_check.py (new, Day 5)
 tests/                  Docker-free unit tests (incl. negative cases)
-docs/                   architecture.md, roadmap.md, engineering-reviews/ (Days 1-4, frozen)
+docs/                   architecture.md, roadmap.md, engineering-reviews/ (Days 1-5, frozen), images/
 .claude/                CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                authoritative local engineering interface
-VERSION                 0.5.0 (development target - not yet released/tagged)
+VERSION                 0.5.0 (Day 5 - released and frozen)
 ```
