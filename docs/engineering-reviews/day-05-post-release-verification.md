@@ -96,3 +96,10 @@ for Recreate, Blue-Green, and Canary demonstrations.
 
 The central portfolio/profile update remains deferred until the
 Kubernetes project's v1.0.0 closure.
+
+## Screenshots
+
+Added after release; the release tag remains unchanged.
+
+- [Published GitHub Release](../images/day-05/01-v050-github-release.png)
+- [Recorded merged-main validation](../images/day-05/02-v050-merged-main-validation.png)
