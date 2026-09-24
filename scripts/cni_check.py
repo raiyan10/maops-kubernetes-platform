@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 """
-DAY5: read-only verification that Cilium is installed and healthy as
-the Day 5 CNI dataplane, and that kube-proxy was left in place
-(Day 5 does not adopt Cilium's kube-proxy-replacement mode). Never
-mutates anything - this is a status check, not a bootstrap; installing
-Cilium itself is `make cni-install` (Helm), a separate, explicit,
-mutating step.
+DAY5 (carried forward, extended for Day 6): read-only verification
+that Cilium is installed and healthy as the CNI dataplane, and that
+kube-proxy was left in place (neither Day 5 nor Day 6 adopts Cilium's
+kube-proxy-replacement mode). Never mutates anything - this is a status
+check, not a bootstrap; installing Cilium itself is `make cni-install`
+(Helm), a separate, explicit, mutating step.
+
+DAY6: `make cni-install` now installs Cilium 1.20.1 configured for
+Istio ambient coexistence (`ipam.mode=kubernetes`,
+`kubeProxyReplacement=false`, `hubble.enabled=false`, `cni.exclusive=
+false` so the Istio CNI plugin can chain alongside Cilium,
+`socketLB.hostNamespaceOnly=true`, `bpf.masquerade` left at its
+false/default value, `cilium-envoy` disabled where the chart supports
+it since Day 6 uses no Cilium L7 feature, and a single Cilium operator
+replica - see docs/architecture.md's Day 6 CNI/mesh-coexistence section
+for the full rationale and the explicit non-HA disclosure). This
+script's own checks (node readiness, agent-per-node, operator replica
+count, kube-proxy still enabled) are unchanged by that reconfiguration
+- none of the new settings change what "healthy" looks like from this
+read-only vantage point.
 
 Proves, against the live cluster:
   1. Every node is Ready (kind's networking.disableDefaultCNI leaves
@@ -15,9 +29,11 @@ Proves, against the live cluster:
      exactly as many Ready Pods as there are nodes - one agent per
      node, the normal DaemonSet contract.
   3. The Cilium operator Deployment (kube-system) has at least one
-     available replica.
+     available replica (Day 6 runs a single, explicitly non-HA replica
+     - see module docstring above - so "at least one" remains the
+     correct bound, not "at least two").
   4. The kube-proxy DaemonSet (kube-system) still has Ready Pods -
-     confirming it was never disabled, per this project's Day 5 scope
+     confirming it was never disabled, per this project's scope
      (Cilium enforces NetworkPolicy; kube-proxy still does Service
      load-balancing).
 """
@@ -97,12 +113,12 @@ def check_kube_proxy_still_enabled() -> None:
     ready_pods = [p for p in pods if _is_ready(p)]
     record(
         bool(pods) and len(ready_pods) == len(pods),
-        f"kube-proxy DaemonSet: {len(ready_pods)}/{len(pods)} Pods Ready (Day 5 does not disable kube-proxy)",
+        f"kube-proxy DaemonSet: {len(ready_pods)}/{len(pods)} Pods Ready (Day 6 does not disable kube-proxy)",
     )
 
 
 def main() -> int:
-    print(f"# Day 5 CNI status check: Cilium + kube-proxy (context {kube.CONTEXT}) - READ ONLY, never mutates")
+    print(f"# Day 6 CNI status check: Cilium + kube-proxy (context {kube.CONTEXT}) - READ ONLY, never mutates")
     try:
         kube.verify_context()
     except RuntimeError as exc:

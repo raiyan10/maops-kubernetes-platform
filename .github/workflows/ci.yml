@@ -1,0 +1,59 @@
+# Day 6: minimal, cluster-free CI. Orchestrates the SAME `make` targets
+# used locally (see .claude/CLAUDE.md's "Makefile is the authoritative
+# local interface" ground rule) rather than reimplementing any
+# validation logic here - `make ci-check` is the single source of
+# truth for what this workflow proves.
+#
+# Deliberately never creates a kind cluster, never loads/builds a
+# Docker image, and never installs Cilium or Istio - all of that is
+# Day 6's local/manual validation surface (`make day6-check`), out of
+# scope for this minimal workflow. Project 5 (a later portfolio
+# project) is where broader, reusable CI/CD design is explored - this
+# workflow is intentionally small.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only by default, no elevated permissions anywhere in this
+# workflow - it never writes to the repository, opens a PR, or touches
+# any deployment target.
+permissions:
+  contents: read
+
+jobs:
+  static-validation:
+    name: Static validation (cluster-free)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # kubectl ships preinstalled on GitHub-hosted ubuntu-latest
+      # runners - `make manifest-render`/`manifest-check` need only
+      # `kubectl kustomize` (a pure local render, no cluster contact),
+      # never a live API server.
+      - name: Verify kubectl is available
+        run: kubectl version --client
+
+      # The single authoritative cluster-free sequence: unit tests,
+      # VERSION/chart-version/appVersion/image-tag/Day 6 identity/
+      # pinned-infrastructure-version checks, the frozen k8s/base
+      # static manifest check, and Helm lint/template/static-chart-check
+      # (which itself proves the values schema rejects invalid
+      # fixtures - see tests/test_helm_chart_values_schema.py, run as
+      # part of the unit test suite this same target runs first).
+      - name: make ci-check
+        run: make ci-check

@@ -1,0 +1,23 @@
+# DAY6: the release namespace for the Helm-deployed application. This
+# is a cluster/platform support object, not an application workload -
+# applied separately (`make namespace-apply`, before `make deploy`),
+# never templated by the Helm chart itself (see
+# charts/maops-kubernetes-platform/values.yaml's header comment).
+#
+# `istio.io/dataplane-mode: ambient` enrolls every Pod in this
+# namespace into Istio's ambient mesh (ztunnel-mediated mTLS/identity,
+# via ztunnel's CNI-plugin-based per-Pod redirection) - a NAMESPACE
+# label, never a per-Pod sidecar-injection annotation (ambient mode has
+# no sidecar at all). No waypoint proxy is deployed for this namespace
+# (see docs/architecture.md) - L4 identity enforcement only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maops-platform
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+    istio.io/dataplane-mode: ambient

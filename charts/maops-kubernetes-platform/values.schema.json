@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "maops-kubernetes-platform values",
+  "description": "Day 6 chart values schema - rejects invalid image tags, replica counts, ports, and empty required routing/identity values before any template ever renders.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["release", "validation", "routing", "images", "gateway", "app", "state"],
+  "definitions": {
+    "imageTag": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]*$"
+    },
+    "imageRepository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pullPolicy": {
+      "type": "string",
+      "enum": ["Always", "IfNotPresent", "Never"]
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "$ref": "#/definitions/imageRepository" },
+        "tag": { "$ref": "#/definitions/imageTag" },
+        "pullPolicy": { "$ref": "#/definitions/pullPolicy" }
+      }
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dnsSubdomainName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "resourceQuantity": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[0-9]+(\\.[0-9]+)?(m|Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?$"
+    },
+    "resourceSpec": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu": { "$ref": "#/definitions/resourceQuantity" },
+            "memory": { "$ref": "#/definitions/resourceQuantity" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": { "$ref": "#/definitions/resourceQuantity" },
+            "memory": { "$ref": "#/definitions/resourceQuantity" }
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "release": {
+      "type": "object",
+      "required": ["namespace"],
+      "properties": {
+        "namespace": { "$ref": "#/definitions/dnsSubdomainName" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "required": ["namespace", "diagnostics"],
+      "properties": {
+        "namespace": { "$ref": "#/definitions/dnsSubdomainName" },
+        "diagnostics": {
+          "type": "object",
+          "required": ["serviceAccountName"],
+          "properties": {
+            "serviceAccountName": { "$ref": "#/definitions/nonEmptyString" }
+          }
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "required": ["hostname", "gateway"],
+      "properties": {
+        "hostname": { "$ref": "#/definitions/dnsSubdomainName" },
+        "gateway": {
+          "type": "object",
+          "required": ["name", "namespace", "serviceAccountName"],
+          "properties": {
+            "name": { "$ref": "#/definitions/nonEmptyString" },
+            "namespace": { "$ref": "#/definitions/dnsSubdomainName" },
+            "serviceAccountName": { "$ref": "#/definitions/nonEmptyString" }
+          }
+        }
+      }
+    },
+    "images": {
+      "type": "object",
+      "required": ["gateway", "app", "state"],
+      "properties": {
+        "gateway": { "$ref": "#/definitions/image" },
+        "app": { "$ref": "#/definitions/image" },
+        "state": { "$ref": "#/definitions/image" }
+      }
+    },
+    "podSecurityContext": { "type": "object" },
+    "containerSecurityContext": { "type": "object" },
+    "resources": { "$ref": "#/definitions/resourceSpec" },
+    "gateway": {
+      "type": "object",
+      "required": ["replicas", "containerPort"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "containerPort": { "$ref": "#/definitions/port" },
+        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "config": {
+          "type": "object",
+          "properties": {
+            "backendTimeoutSeconds": { "type": "integer", "minimum": 1 },
+            "appName": { "$ref": "#/definitions/nonEmptyString" },
+            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
+            "appMessage": { "type": "string" },
+            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+          }
+        },
+        "pdb": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minAvailable": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "app": {
+      "type": "object",
+      "required": ["replicas", "containerPort"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "containerPort": { "$ref": "#/definitions/port" },
+        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "config": {
+          "type": "object",
+          "properties": {
+            "stateTimeoutSeconds": { "type": "integer", "minimum": 1 },
+            "appName": { "$ref": "#/definitions/nonEmptyString" },
+            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
+            "appMessage": { "type": "string" },
+            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+          }
+        },
+        "pdb": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "minAvailable": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "required": ["replicas", "containerPort", "storage"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
+        "containerPort": { "$ref": "#/definitions/port" },
+        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "config": {
+          "type": "object",
+          "properties": {
+            "stateFilePath": { "$ref": "#/definitions/nonEmptyString" },
+            "stateMaxBodyBytes": { "type": "integer", "minimum": 1 },
+            "appName": { "$ref": "#/definitions/nonEmptyString" },
+            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
+            "appMessage": { "type": "string" },
+            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "required": ["requests"],
+          "properties": {
+            "requests": { "$ref": "#/definitions/resourceQuantity" },
+            "storageClassName": { "type": "string" }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "properties": {
+        "internalAuthName": { "$ref": "#/definitions/nonEmptyString" },
+        "stateAuthName": { "$ref": "#/definitions/nonEmptyString" }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "meshPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

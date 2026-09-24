@@ -1,0 +1,34 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY5 (unchanged for Day 6): state accepts application-port ingress
+# ONLY from app - gateway has no matching egress allow to state, so
+# gateway -> state is denied by the default-deny baseline with no
+# allow rule to override it on either side (this denial DOES hold for
+# the real ambient path too - see networkpolicy-allow-hbone.yaml: the
+# peerless HBONE rule permits transport, but Istio AuthorizationPolicy,
+# which never lists gateway's principal on maops-state-authz, is what
+# actually denies gateway -> state for ambient traffic). DAY6 caveat on
+# the ALLOWED app -> state direction: meaningful for plaintext/non-
+# ambient paths only - see networkpolicy-allow-gateway-egress-app.yaml's
+# header comment for the full explanation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-state-ingress-from-app
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: state
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: {{ .Values.state.containerPort }}
+{{- end }}

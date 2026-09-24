@@ -58,16 +58,30 @@ for how the pieces fit together.
 
 ## Where things live
 
-- `app/` - the stdlib-only HTTP workload and its Dockerfile.
-- `k8s/base/` - the Day 1 Kustomize base (Namespace, ConfigMap,
-  Deployment, Service). No overlays yet.
-- `kind/cluster.yaml` - the single-control-plane kind cluster config,
-  pinned to an exact `kindest/node` digest.
+- `app/`, `gateway/`, `state/` - the three stdlib-only HTTP workloads
+  and their Dockerfiles.
+- `k8s/base/` - the FROZEN Day 1-5 Kustomize source (last advanced for
+  Day 5 / `v0.5.0`). Never modified or applied by any Day 6 target;
+  `git diff` confirms its files are unchanged, and `make manifest-check`
+  validates its rendered manifests.
+- `charts/maops-kubernetes-platform/` - the Day 6 Helm chart, the sole
+  Day 6 application deployment source (`make deploy`); statically
+  validated by `make helm-check`.
+- `k8s/day6/` - Day 6 cluster/platform manifests applied with `kubectl`,
+  never templated by the chart: the three Namespaces, the diagnostics
+  ServiceAccount, the Istio `Gateway` and its infrastructure ConfigMap,
+  and the Cilium ambient health-probe policy.
+- `kind/` - pinned kind cluster configs, one per cluster generation
+  (`cluster.yaml`, `cluster-day5.yaml`, `cluster-day6.yaml`), each pinned
+  to an exact `kindest/node` digest; earlier configs are preserved, never
+  edited in place.
 - `scripts/` - dependency-free Python validation and cluster-interaction
   tooling used by the Makefile.
-- `tests/` - Docker-free unit tests for `scripts/validate_manifests.py`
-  and `scripts/k8s_yaml.py`, including negative cases.
-- `docs/` - architecture explanation and the multi-day roadmap.
+- `tests/` - Docker-free unit tests for the validation and cluster
+  tooling, including negative cases.
+- `docs/` - architecture explanation, the multi-day roadmap, and the
+  per-day engineering reviews (Day 1-5 records are historical and
+  immutable).
 
 ## Agents and skills
 

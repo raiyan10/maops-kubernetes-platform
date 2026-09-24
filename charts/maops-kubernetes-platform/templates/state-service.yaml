@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: maops-state
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 4 }}
+spec:
+  # Normal ClusterIP Service - what app's STATE_HOST ConfigMap value
+  # (maops-state) actually resolves to and load-balances through, kept
+  # separate from the governing headless Service the StatefulSet itself
+  # requires (spec.serviceName).
+  type: ClusterIP
+  selector:
+    {{- include "maops.selectorLabels" (dict "root" $ "component" "state") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.state.containerPort }}
+      targetPort: http
+      protocol: TCP

@@ -180,19 +180,86 @@ advanced for Day 6.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 
-**FUTURE - not yet implemented.** The Kustomize base is packaged as a
-Helm chart (or a Helm chart is introduced alongside it, decision made at
-that stage), and GitHub Actions orchestrates the existing Makefile
-targets against an ephemeral kind cluster in CI - not a reimplementation
-of the local validation logic, just automation of it. Ingress and
-Gateway API are both introduced and compared against each other for
-external access, superseding Day 1-3's `kubectl port-forward`-only
-model. A service mesh is also introduced this stage, layered on top of
-Day 5's NetworkPolicy L3/L4 boundaries with mTLS between workloads and
-request-level (L7/HTTP) traffic policy - Day 5 deliberately implements
-none of this (no Hubble, no L7-aware policy, standard NetworkPolicy
-only), so this is genuinely new capability at Day 6, not merely an
-extension of what Day 5 already has.
+**IMPLEMENTED / RELEASE READY as a local kind reference platform - not
+yet committed, merged, tagged, or published.** The application (gateway/app/state, unchanged since
+Day 4) is packaged as a Helm chart (`charts/maops-kubernetes-platform`)
+- the sole Day 6 application deployment source; `k8s/base` remains the
+frozen, unmodified Day 5 Kustomize source and is never applied by any
+Day 6 target. A minimal, cluster-free GitHub Actions workflow
+(`.github/workflows/ci.yml`) orchestrates the existing Makefile's
+`ci-check` target - unit tests, version/chart-version/appVersion/
+image-tag checks, the frozen k8s/base static manifest check, and Helm
+lint/template/static-chart-check - never a reimplementation of the
+local validation logic, and never a live kind cluster in CI (that stays
+a local/manual `make day6-check` concern; see docs/architecture.md's
+"cluster-free CI limitation").
+
+**Correction to this section's previous draft:** Day 6 uses exactly
+ONE cluster-external routing approach - the Kubernetes Gateway API,
+with Istio as the sole `GatewayClass` controller - superseding Day 1-5's
+`kubectl port-forward`-only model. A second, Ingress-based
+implementation is deliberately NOT also introduced: this project's
+scope discipline (see "Explicitly out of scope for this project" below)
+favors demonstrating one routing mechanism thoroughly - GatewayClass ->
+Gateway -> HTTPRoute -> Service, Istio ambient identity/mTLS layered on
+top - over maintaining two parallel, partially-overlapping ingress
+paths that would each need their own NetworkPolicy/AuthorizationPolicy
+carve-outs for no additional Kubernetes-behavior teaching value this
+stage. (An earlier draft of this roadmap entry said "Ingress and
+Gateway API are both introduced and compared against each other" -
+that was never implemented and is corrected here, not carried forward.)
+
+A service mesh (Istio ambient - no sidecars, no waypoint) is also
+introduced this stage, layered on top of Day 5's NetworkPolicy L3/L4
+boundaries with strict mTLS between workloads and identity-scoped
+(L4-compatible, never L7/HTTP-aware - no waypoint means no L7 east-west
+authorization) `AuthorizationPolicy` objects - Day 5 deliberately
+implements none of this (no Hubble, no L7-aware policy, standard
+NetworkPolicy only), so this is genuinely new capability at Day 6, not
+merely an extension of what Day 5 already has. Cilium remains the CNI
+and the NetworkPolicy enforcer, reconfigured for Istio ambient
+coexistence (`cni.exclusive=false`, `socketLB.hostNamespaceOnly=true`,
+a single non-HA operator replica for this constrained local cluster);
+no Cilium Gateway API controller and no Cilium L7 policy are introduced
+- Istio is the only Gateway API controller and the only mesh policy
+layer. See `docs/architecture.md` for the full design, the Cilium/Istio
+responsibility boundary, and the accepted local-development
+limitations (no HA claim, no TLS/cert-manager, no cloud LoadBalancer,
+no HPA, no observability stack, no Argo Rollouts/Argo CD).
+
+Explicitly out of scope for Day 6 (deferred to Day 7 or never
+introduced at all - see "Explicitly out of scope for this project"
+below): advanced deployment strategies beyond RollingUpdate (Recreate,
+Blue-Green, Canary - Day 7), `HorizontalPodAutoscaler`, Argo Rollouts,
+Argo CD, an observability stack (Hubble, Kiali, Prometheus, Grafana,
+Jaeger/tracing), TLS/cert-manager, a cloud LoadBalancer, a Cilium
+Gateway API controller, a waypoint proxy, and any change to Day 1-5's
+Distroless base image digest, interpreter path, or gateway/app/state
+application code.
+
+**Live validation passed (2026-09-22 to 2026-09-23):** the live
+sequence this stage is written for was run target by target against
+one preserved `maops-k8s-day6` cluster, with each live-discovered
+defect fixed and the affected stage re-run - `networkpolicy-check`
+37/37, `mesh-check` 45/45, `persistence-check` 12/12,
+`retention-check` 22/22, the corrected `helm-lifecycle-check` 24/24,
+and `final-state-check` 43/43. See `docs/architecture.md`'s "DAY6: live
+validation record" for the exact results, Helm revision history, mesh
+denial-evidence tiers, and accepted limitations, and
+`docs/engineering-reviews/day-06-*` for the independent reviews and
+remediation log.
+
+**Independent review and closure (2026-09-24):** five independent
+reviews were adjudicated REMEDIATION REQUIRED; every finding was then
+remediated or explicitly accepted. A post-reboot `final-state-check`
+scored 42/43 because the run's `/tmp` suite baseline had been lost to
+a host reboot (recorded as-is, never recaptured); a fresh
+baseline-bracketed run (`persistence-check` 12/12, `retention-check`
+22/22, `final-state-check` 43/43, baseline kept outside `/tmp`) closed
+that gap, and the final adjudication is **RELEASE READY**. Day 6 is a
+validated local kind reference platform, not a production-ready one;
+commit, merge, tag, and release remain separate, explicit steps
+(`.claude/skills/release-readiness/SKILL.md`).
 
 ## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
 

@@ -1,0 +1,29 @@
+# DAY5-shaped, renamed for Day 6: dedicated namespace for validation/
+# diagnostic tooling. Kept separate from maops-platform for exactly the
+# same reasons as Day 5's maops-day5-validation (see
+# docs/architecture.md's "DAY5: trust boundaries" section, unchanged
+# rationale for Day 6): the maops-platform default-deny NetworkPolicy
+# never has to make an exception for traffic that originates from
+# validation tooling running alongside the application Pods it is
+# testing, and the maops-diagnostics ServiceAccount's namespace-scoped
+# RBAC grant against maops-platform is a cross-namespace RoleBinding
+# subject, not a same-namespace grant.
+#
+# Deliberately NOT labeled istio.io/dataplane-mode: ambient - this
+# namespace is never mesh-enrolled, so the diagnostics/validation-client
+# identity is provable as denied at both the NetworkPolicy layer
+# (scripts/networkpolicy_check.py) and, since it never has a mesh
+# identity ztunnel would recognize as a workload principal in the first
+# place, the mesh identity layer too (scripts/mesh_check.py, not yet
+# executed).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maops-day6-validation
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/component: validation
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl

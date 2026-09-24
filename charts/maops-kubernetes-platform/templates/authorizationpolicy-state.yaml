@@ -1,0 +1,26 @@
+{{- if .Values.meshPolicy.enabled }}
+# DAY6: L4-compatible identity authorization only - see
+# authorizationpolicy-gateway.yaml's header comment for the full
+# rationale (identical here). Only maops-app's ServiceAccount may reach
+# state - maops-gateway is deliberately NOT listed, so
+# maops-gateway -> maops-state is denied at the mesh identity layer too
+# (on top of the NetworkPolicy deny that already covers it - defense in
+# depth, not a replacement for it).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: maops-state-authz
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "state") | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ include "maops.principal" (dict "namespace" .Values.release.namespace "serviceAccount" "maops-app") }}
+{{- end }}

@@ -6,16 +6,20 @@ description: Create/use the project's kind cluster and prove real Kubernetes beh
 # kind cluster validation
 
 Real-cluster validation for the maops-kubernetes-platform project's kind
-cluster. **Current default (Day 5 / `v0.5.0`, released):**
-`maops-k8s-day5` (context `kind-maops-k8s-day5`, kubeconfig
-`$HOME/.kube/maops-k8s-day5.config`), 1 control-plane + 2 worker nodes,
+cluster. **Current default (Day 6 / `v0.6.0`, release ready as a local
+kind reference platform - NOT yet committed, merged, tagged, or
+published):**
+`maops-k8s-day6` (context `kind-maops-k8s-day6`, kubeconfig
+`$HOME/.kube/maops-k8s-day6.config`), 1 control-plane + 2 worker nodes,
 `networking.disableDefaultCNI: true` (every node is `NotReady` until
-`make cni-install` completes) - a separate, independently-created
-cluster from every earlier day's, which this validation never touches.
-This is the live-cluster counterpart to `manifest-validation` (static)
-and `workload-security-validation` (security-specific) - it proves
-runtime behavior via `kubectl -o json` and real HTTP calls, never by
-re-reading the manifest.
+`make cni-install` completes), plus a `127.0.0.1:18080 -> 30080` host
+port mapping for the Istio ingress Gateway - a separate,
+independently-created cluster from every earlier day's, which this
+validation never touches. This is the live-cluster counterpart to
+`manifest-validation` (static, for the frozen `k8s/base`) and
+`workload-security-validation` (security-specific) - it proves runtime
+behavior via `kubectl -o json` and real HTTP calls, never by re-reading
+the manifest.
 
 Every script in this list calls `kube.verify_context()` first and fails
 closed (never proceeds) if the live cluster's node identity doesn't
@@ -25,23 +29,39 @@ assumed from a hardcoded constant.
 ## Sequence (mirrors the Makefile, current default)
 
 ```bash
-make cluster-create           # idempotent: kind create cluster --config kind/cluster-day5.yaml (CNI disabled)
-make context-check            # fail closed unless verified against the isolated Day 5 cluster
-make cni-install               # helm install Cilium 1.20.1 as the CNI (idempotent) - nodes NotReady until this completes
+make image-build                # docker build gateway/, app/, state/ images (before any cluster work)
+make cluster-create           # idempotent: kind create cluster --config kind/cluster-day6.yaml (CNI disabled -
+                                #   nodes NotReady until cni-install; expected)
+make gateway-api-install      # kubectl apply the Gateway API standard CRDs (pinned v1.6.0)
+make cni-install               # helm install Cilium 1.20.1, configured for Istio ambient coexistence (idempotent)
 make cni-status                 # READ-ONLY: Cilium agent/operator + kube-proxy health
-make image-build                # docker build gateway/, app/, state/ images
+make context-check            # fail closed unless verified against the isolated Day 6 cluster (needs Ready nodes,
+                                #   so it runs only after the CNI is up)
+make mesh-install                # helm install Istio ambient: base, istiod (autoscaling disabled - no metrics-server),
+                                   #   cni, ztunnel (pinned 1.31.0) + the Cilium ambient health-probe exception
+make mesh-status                  # READ-ONLY: istiod/istio-cni/ztunnel health
 make image-load                 # kind load docker-image for all three, into every node
 make storage-bootstrap        # harden local-path-provisioner directory permissions (must run before any PVC)
 make storage-hardening-check  # prove the hardening against a disposable scratch PVC
-make namespace-apply          # apply BOTH Namespaces (maops-platform, maops-day5-validation)
+make namespace-apply          # apply the three Namespaces (maops-platform, maops-day6-validation, maops-ingress)
+                                 #   + the diagnostics ServiceAccount
 make secret-bootstrap         # create/preserve BOTH runtime Secrets - never printed
-make deploy                       # kubectl apply -k k8s/base (ServiceAccounts, RBAC, NetworkPolicies, workloads)
+make gateway-apply             # apply the Istio Gateway infrastructure ConfigMap + the Gateway object
+make deploy                       # helm upgrade --install charts/maops-kubernetes-platform - NEVER kubectl apply -k k8s/base
 make rollout-check             # scripts/cluster_check.py - real Deployment/security/Secret-mount state (gateway/app)
 make scheduling-check         # scripts/scheduling_check.py - worker-only scheduling + topology spread (gateway/app)
 make discovery-check          # scripts/discovery_check.py - real DNS + gateway -> app Service HTTP proof
 make secret-check                # scripts/secret_check.py - both Secrets' wiring/auth/non-disclosure
+make gateway-check              # scripts/gateway_check.py - GatewayClass/Gateway/HTTPRoute status + real external
+                                   #   HTTP routing through 127.0.0.1:18080 with Host: maops.local, wrong-Host negative
+make mesh-check                   # scripts/mesh_check.py - ztunnel/istiod/istio-cni health, ambient enrollment (no
+                                    #   sidecars), strict mTLS, live AuthorizationPolicy principals, and a wrong-identity
+                                    #   denial proven by correlated ztunnel log evidence (tiered AUTHORITATIVE/CANDIDATE/
+                                    #   BEST_EFFORT), never by a raw TCP connect
 make rbac-check                    # scripts/rbac_check.py - real maops-diagnostics RBAC: allowed reads, denied everything else
-make networkpolicy-check       # scripts/networkpolicy_check.py - real default-deny + explicit-allow behavior via probe Pods
+make networkpolicy-check       # scripts/networkpolicy_check.py - default-deny + explicit-allow via isolated
+                                    #   NON-ambient probe Pods over direct Pod IPs, incl. the Day 6
+                                    #   validation-client -> gateway DENY (changed from Day 5's allow)
 make smoke                         # scripts/smoke.py - normal HTTP smoke via service/maops-gateway, incl. /state
 make dependency-check           # scripts/dependency_check.py - liveness vs. dependency-aware readiness
 make scaling-check              # scripts/scaling_check.py - real scaling 3 -> 4 -> 3, guaranteed restoration
@@ -50,12 +70,19 @@ make pdb-check                    # scripts/pdb_check.py - real PDB/Eviction-API
 make state-check                  # scripts/state_check.py - maops-state identity, security, storage binding
 make persistence-check          # scripts/persistence_check.py - data survives maops-state-0 deletion/rescheduling
 make retention-check             # scripts/retention_check.py - PVC/PV retention across a 1 -> 0 -> 1 cycle
+make helm-lifecycle-check      # scripts/helm_lifecycle_check.py - bounded real helm upgrade + helm rollback,
+                                    #   state preserved throughout (Helm release rollback, never Day 7's strategies)
 make final-state-check         # scripts/final_state_check.py - proves everything is restored after all of the above
 ```
 
-`make day5-check` runs the full sequence (plus `tool-check`, `test`,
-`version-check`, and `manifest-check`) in the required recipe-sequential
-order and is the authoritative one-shot validation.
+`make day6-check` runs the full sequence (plus `tool-check`, `test`,
+`version-check`, `manifest-check`, `helm-lint`, `helm-template`,
+`helm-check`) in the required recipe-sequential order and is the
+authoritative one-shot validation; `make ci-check` is its cluster-free
+static subset. See `docs/architecture.md`'s "DAY6: live validation
+record" for how the Day 6 live results were actually obtained (staged
+target-by-target against one preserved cluster, with remediation
+between stages) and its restart-recovery limitation.
 
 ## What each real check proves
 
@@ -118,13 +145,19 @@ read all return exactly `403 Forbidden`.
 
 `scripts/networkpolicy_check.py` (`make networkpolicy-check`): real
 in-cluster TCP connection attempts (never only a port-forward, which
-never traverses the pod network as a policy-visible peer) prove
-`validation-client -> gateway` succeeds, `validation-client -> app`/
-`-> state` are blocked, `gateway -> app` and `app -> state` succeed,
-`gateway -> state` is blocked, and DNS still resolves under the
-default-deny egress baseline. A short-lived `validation-client` probe
-Pod is created in `maops-day5-validation` and always deleted
-afterward.
+never traverses the pod network as a policy-visible peer). As of Day
+6 the application-port assertions (`gateway -> app` and `app -> state`
+allowed, `gateway -> state` blocked) use four temporary probe Pods in
+`maops-platform` labelled `istio.io/dataplane-mode: none` (opted out
+of ambient, so ztunnel never intercepts them), each verified isolated
+before use, connecting to each other's direct Pod IPs - a raw connect
+from a real ambient Pod would only prove local ztunnel acceptance. DNS
+is still checked from the real Pods. `validation-client -> gateway`/
+`-> app`/`-> state` are ALL blocked (Day 5's `validation-client ->
+gateway` allow is removed - the Gateway API path is the only way in),
+using a short-lived `validation-client` probe Pod in
+`maops-day6-validation`. Every probe Pod is always deleted and
+verified gone.
 
 `scripts/cni_check.py` (`make cni-status`, READ-ONLY): every node is
 `Ready`, the Cilium agent DaemonSet has exactly one Ready Pod per node,
@@ -195,39 +228,50 @@ pre-outage marker intact.
 the above, independently re-proves the cluster is back at its normal
 healthy baseline for all three workloads (scheduling/skew, both PDBs
 healthy, no leftover rollout-test annotation, both Secrets still valid,
-no leaked `kubectl port-forward` process), and that every other-day
+no leaked `kubectl port-forward` process, no leaked mesh-probe
+namespace or NetworkPolicy probe Pod), and that every other-day
 cluster it can detect (`OTHER_DAY_CLUSTERS` in the script) is checked
 for continued *registration* - not started or assumed healthy if it
 isn't running (see "Legacy/frozen earlier-day clusters" below).
 
+It also verifies the suite-level `/state` value was restored to the
+baseline `state-check` captured - but only when both targets receive
+the same `DAY6_RUN_ID`/`DAY6_SUITE_BASELINE_PATH` (automatic inside
+`make day6-check`; pass both explicitly on every command line
+otherwise). The default baseline path is under `/tmp`, which does not
+survive a host reboot; for runs that must, use a private (0700)
+directory outside the repository. Never recapture a baseline after the
+mutating checks to make this item pass.
+
 `scripts/reconcile_check.py` (`make controller-check` - bonus, not part
-of `day5-check`): records all three `maops-app` pod UIDs, deletes
+of `day6-check`): records all three `maops-app` pod UIDs, deletes
 exactly one pod, waits for the Deployment to reconcile back to 3/3
 Ready, confirms a genuinely new UID appeared while the other two
 survived.
 
 ## Legacy/frozen earlier-day clusters (explicit compatibility path, not the default)
 
-Days 1-4 each have their own frozen, independently-created kind
+Days 1-5 each have their own frozen, independently-created kind
 cluster/context (`maops-k8s-day1`/`kind-maops-k8s-day1` through
-`maops-k8s-day4`/`kind-maops-k8s-day4`, the latter using
-`kind/cluster.yaml`). These are **not** the current validation target -
-only `maops-k8s-day5` is. As documented in
+`maops-k8s-day5`/`kind-maops-k8s-day5`, Day 4 using `kind/cluster.yaml`
+and Day 5 using `kind/cluster-day5.yaml`). These are **not** the
+current validation target - only `maops-k8s-day6` is. As documented in
 `docs/engineering-reviews/day-05-post-release-verification.md`, running
 several multi-node kind clusters concurrently can exceed a WSL2 host's
-available capacity, so Day 1-4's clusters were stopped (not deleted) at
-Day 5's release and their current runtime health is not claimed.
+available capacity, so earlier clusters should be stopped (not
+necessarily deleted) rather than left running alongside the current
+one.
 
-- **Do not start an earlier-day cluster** as part of ordinary Day 5
+- **Do not start an earlier-day cluster** as part of ordinary Day 6
   validation, and never assume one is already running.
 - Only start (or inspect, if already running) an earlier-day cluster
   for an explicit, scoped investigation of that specific day's
   behavior - e.g. reproducing a historical finding referenced in
   `docs/engineering-reviews/day-0N-*`. Treat this as a deliberate,
   explicitly-labeled legacy path, not the default workflow, and stop it
-  again afterward rather than leaving it running alongside Day 5's
+  again afterward rather than leaving it running alongside Day 6's
   cluster.
-- Never run Day 5's authoritative suite while relying on an earlier-day
+- Never run Day 6's authoritative suite while relying on an earlier-day
   cluster also being up - the two are independent and neither's
   tooling touches the other's cluster/kubeconfig/context.
 
@@ -236,16 +280,16 @@ Day 5's release and their current runtime health is not claimed.
 Don't guess - pull real evidence, against the current default context:
 
 ```bash
-kubectl --context kind-maops-k8s-day5 -n maops-platform describe deployment/maops-gateway
-kubectl --context kind-maops-k8s-day5 -n maops-platform describe deployment/maops-app
-kubectl --context kind-maops-k8s-day5 -n maops-platform describe statefulset/maops-state
-kubectl --context kind-maops-k8s-day5 -n maops-platform describe pod <name>
-kubectl --context kind-maops-k8s-day5 -n maops-platform get events --sort-by=.lastTimestamp
-kubectl --context kind-maops-k8s-day5 -n maops-platform logs <pod>
-kubectl --context kind-maops-k8s-day5 -n maops-platform get endpointslices -l kubernetes.io/service-name=maops-app
-kubectl --context kind-maops-k8s-day5 -n maops-platform get poddisruptionbudget
-kubectl --context kind-maops-k8s-day5 -n maops-platform get networkpolicy
-kubectl --context kind-maops-k8s-day5 get nodes -o wide
+kubectl --context kind-maops-k8s-day6 -n maops-platform describe deployment/maops-gateway
+kubectl --context kind-maops-k8s-day6 -n maops-platform describe deployment/maops-app
+kubectl --context kind-maops-k8s-day6 -n maops-platform describe statefulset/maops-state
+kubectl --context kind-maops-k8s-day6 -n maops-platform describe pod <name>
+kubectl --context kind-maops-k8s-day6 -n maops-platform get events --sort-by=.lastTimestamp
+kubectl --context kind-maops-k8s-day6 -n maops-platform logs <pod>
+kubectl --context kind-maops-k8s-day6 -n maops-platform get endpointslices -l kubernetes.io/service-name=maops-app
+kubectl --context kind-maops-k8s-day6 -n maops-platform get poddisruptionbudget
+kubectl --context kind-maops-k8s-day6 -n maops-platform get networkpolicy
+kubectl --context kind-maops-k8s-day6 get nodes -o wide
 ```
 
 Fix the root cause (manifest, image, probe timing, resource sizing,
@@ -257,7 +301,7 @@ assertions to force a pass.
 ## Cleanup discipline
 
 - `make cluster-delete` deletes **only** the current default cluster
-  (`maops-k8s-day5`) - never run `docker system prune` or delete
+  (`maops-k8s-day6`) - never run `docker system prune` or delete
   unrelated clusters/resources, including an earlier day's cluster if
   it happens to be running.
 - After any manual `kubectl port-forward` debugging session, confirm

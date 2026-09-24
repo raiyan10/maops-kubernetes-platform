@@ -1,0 +1,25 @@
+{{- if .Values.meshPolicy.enabled }}
+# DAY6: L4-compatible identity authorization only - see
+# authorizationpolicy-gateway.yaml's header comment for the full
+# rationale (identical here). Only maops-gateway's ServiceAccount may
+# reach app - neither the Istio ingress Gateway identity nor the
+# diagnostics/validation-client identity are listed, so both are
+# implicitly denied by Istio's ALLOW-only-listed-principals semantics.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: maops-app-authz
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "app") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "app") | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ include "maops.principal" (dict "namespace" .Values.release.namespace "serviceAccount" "maops-gateway") }}
+{{- end }}

@@ -1,23 +1,41 @@
 ---
 name: workload-security-validation
-description: Verify the security baseline of this project's workload container and pod - non-root UID/GID, capability drops, seccomp, read-only root filesystem, no privilege escalation, per-workload ServiceAccount/automountServiceAccountToken, RBAC scope, and NetworkPolicy allow/deny paths - against both the manifest and, when a cluster is live, real runtime evidence. Use whenever the Dockerfile or deployment/statefulset securityContext changes, or when asked to confirm the security posture.
+description: Verify the security baseline of this project's workload container and pod - non-root UID/GID, capability drops, seccomp, read-only root filesystem, no privilege escalation, per-workload ServiceAccount/automountServiceAccountToken, RBAC scope, NetworkPolicy allow/deny paths, and (as of Day 6) Istio ambient mesh mTLS/AuthorizationPolicy identity - against both the manifest/Helm chart and, when a cluster is live, real runtime evidence. Use whenever the Dockerfile, deployment/statefulset securityContext, or the Helm chart's PeerAuthentication/AuthorizationPolicy templates change, or when asked to confirm the security posture.
 ---
 
 # Workload security validation
 
 Security-baseline checklist for the maops-kubernetes-platform workload,
 covering the container image, the Kubernetes securityContext, and (as
-of the released Day 5 / `v0.5.0` baseline) identity and network
-boundaries. This is the security-specific companion to
-`manifest-validation` (which checks presence/shape of fields) and to
-the `kubernetes-security-reviewer` agent (which owns judgment calls and
-RBAC/NetworkPolicy review).
+of the released Day 5 / `v0.5.0` baseline, extended by Day 6's
+`v0.6.0`) identity, network, and mesh boundaries. This is the
+security-specific companion to `manifest-validation` (which checks
+presence/shape of fields in the frozen `k8s/base` source) and to the
+`kubernetes-security-reviewer` agent (which owns judgment calls and
+RBAC/NetworkPolicy/mesh review).
 
-Days 1-5 (`v0.1.0`-`v0.5.0`) are released and frozen; current version
-is `v0.5.0`. Service mesh (mTLS, request-level/L7 policy) is Day 6
-scope, not yet implemented. Recreate, Blue-Green, and Canary deployment
-strategy demonstrations belong to Day 7, not yet implemented. Nothing
-below should be read as expecting either.
+Days 1-5 (`v0.1.0`-`v0.5.0`) are released and frozen. Day 6 (`v0.6.0`)
+is **release ready as a local kind reference platform** but **not yet
+committed, merged, tagged, or published**
+- Helm packaging, the Gateway API (Istio as the sole controller), and
+Istio ambient service mesh (strict mTLS, identity-scoped
+`AuthorizationPolicy`, no sidecars, no waypoint - so still no
+request-level/L7 policy, that remains architecturally unavailable
+without a waypoint this project never deploys) are now in scope below,
+not future content. Recreate, Blue-Green, and Canary deployment
+strategy demonstrations belong to Day 7, not yet implemented - nothing
+below should be read as expecting those.
+
+**As of Day 6, the static-check target moves from `k8s/base` to
+`charts/maops-kubernetes-platform`** (rendered via `helm template`, not
+`kubectl kustomize`) - `k8s/base` is frozen and no longer the live
+application source. Everything below that says "render with `kubectl
+kustomize k8s/base`" describes the still-valid frozen-source check;
+prefer `helm template maops-kubernetes-platform-day6
+charts/maops-kubernetes-platform --namespace maops-platform` (or `make
+helm-template`) when checking the active Day 6 posture, and the
+validation namespace is `maops-day6-validation` (was
+`maops-day5-validation`).
 
 ## Static checks (no cluster required)
 
@@ -107,9 +125,62 @@ namespaced to `maops-platform`. Confirm the shape matches exactly:
   Kubernetes API server.
 
 `scripts/validate_manifests.py` enforces all of the above statically
-(`rbac.*`, `networkpolicy.*` checks) and runs via `make manifest-check`.
+(`rbac.*`, `networkpolicy.*` checks) and runs via `make manifest-check`
+against the frozen `k8s/base` source.
+
+### Day 6 delta (static) - eight NetworkPolicies, plus mesh identity
+
+`scripts/validate_helm_chart.py` enforces the equivalent for the ACTIVE
+Day 6 Helm chart (`make helm-check`), with two topology changes from
+the k8s/base shape above:
+
+- `validation-client -> gateway` is REMOVED (flag its presence as a
+  regression - `networkpolicy.no_day5_validation_shortcut` exists
+  specifically to catch this).
+- Replaced by: a deliberately PEER-LESS HBONE allow (TCP 15008, no
+  `from`/`to` selector at all) and an ingress allow scoped to the
+  Istio ingress Gateway (`maops-ingress` namespace +
+  `istio.io/gateway-name: maops-edge` Pod label) - the one path into
+  `maops-platform` from outside it as of Day 6. **Corrected after
+  independent review:** an earlier revision scoped the HBONE rule's
+  peer to `namespaceSelector: istio-system`, wrongly treating ztunnel
+  (a per-node `hostNetwork: true` DaemonSet) as an ordinary namespaced
+  Pod peer Cilium could match by namespace+label - it cannot; HBONE
+  traffic carries the NODE's own identity, not a routable, namespaced
+  Pod identity. The corrected rule is scoped by port alone, and never
+  opens any application port more broadly - flag a reintroduced
+  `namespaceSelector`/`podSelector` peer on this one rule as a
+  regression (`networkpolicy.hbone.ingress_is_peerless`/
+  `egress_is_peerless`).
+
+**NetworkPolicy cannot see workload identity inside HBONE - this is
+the load-bearing fact, not a footnote.** Cilium/Kubernetes
+NetworkPolicy (including every rule above) controls network
+reachability only; it has no visibility into which workload
+originated a HBONE-encapsulated flow. Layered on top (new in Day 6,
+also checked statically) is what ACTUALLY enforces the
+`gateway -> app -> state` identity chain: a namespace-wide
+`PeerAuthentication` with `mtls.mode: STRICT`, and three
+`AuthorizationPolicy` objects (one per workload, `action: ALLOW`,
+L4-compatible `source.principals` matching only - never `to.operation`,
+which would require a waypoint this project does not deploy) naming
+exactly: Istio ingress Gateway SA (`maops-edge-istio`, Istio's own
+deterministic naming) -> `maops-gateway`; `maops-gateway` SA ->
+`maops-app`; `maops-app` SA -> `maops-state`. The diagnostics/
+validation-client identity must never appear as a principal anywhere,
+and `maops-gateway`'s principal must never appear on the state policy -
+both checked negatively (`mesh.authz.*` checks). Application-layer
+Secret authentication (`maops-internal-auth`/`maops-state-auth`)
+remains a third, independent layer on top of both.
 
 ## Runtime checks (require a live kind cluster)
+
+The example commands below use Day 5's context/namespace strings
+(`kind-maops-k8s-day5`) to illustrate the technique against the frozen
+source - substitute `kind-maops-k8s-day6`/`maops-day6-validation` when
+running the equivalent proof against the Day 6 cluster (see
+`docs/architecture.md`'s "DAY6: live validation record" for the
+recorded Day 6 run).
 
 These prove the security posture actually holds at runtime, not just in
 the manifest - the API server can normalize/default fields, and the
@@ -172,7 +243,10 @@ port-forward, which never traverses the pod network as a
 policy-visible peer):
 
 - `validation-client -> gateway` succeeds; `validation-client -> app`
-  and `validation-client -> state` are blocked.
+  and `validation-client -> state` are blocked. **Day 6 change:** as of
+  the Day 6 Helm chart, `validation-client -> gateway` is now ALSO
+  blocked (the script is updated to assert this) - the Gateway API
+  path is the only way in.
 - `gateway -> app` and `app -> state` succeed; `gateway -> state` is
   blocked.
 - DNS resolution still works under the default-deny egress baseline.
@@ -180,6 +254,27 @@ policy-visible peer):
 A policy-blocked connection is typically dropped silently rather than
 actively refused - every probe uses a short, explicit client-side
 timeout as the only reliable "genuinely blocked" signal.
+
+### Mesh identity/mTLS (runtime, Day 6)
+
+`scripts/mesh_check.py` (`make mesh-check`) and `scripts/gateway_check.py`
+(`make gateway-check`) prove, against a live cluster:
+ztunnel/istiod/istio-cni health; application Pods carry no
+`istio-proxy` sidecar container and DO carry the ambient CNI's
+redirection-enabled annotation; the live `PeerAuthentication` is
+STRICT; the live `AuthorizationPolicy` objects carry exactly the
+intended principals (never the diagnostics/validation-client identity,
+never `gateway -> state`); and the external Gateway API path reaches
+`maops-gateway` while a wrong `Host` header does not. Every `kubectl`
+call these scripts make distinguishes a genuine API/HTTP failure
+(INCONCLUSIVE, its own explicit finding) from a genuine policy
+denial - never conflate a `kubectl`/HTTP timeout with proof of denial.
+A raw TCP `connect()` from an ambient-enrolled Pod proves only that
+the source node's local ztunnel accepted the socket - identity denial
+is proven only by correlated ztunnel access-log evidence (AUTHORITATIVE
+/ CANDIDATE / BEST_EFFORT tiers, reported separately) plus an HTTP-layer
+leak check. See `docs/architecture.md`'s "DAY6: live validation record"
+for the recorded run and its tier breakdown.
 
 ### CNI (runtime)
 
@@ -219,34 +314,52 @@ Day 5 security boundary - they are independent, still-enforced
 properties of this workload, not superseded by ServiceAccounts/RBAC/
 NetworkPolicy.
 
-## Scope boundaries (as of the released Day 5 baseline)
+## Scope boundaries (as of the Day 6 implementation, `v0.6.0`)
 
-Expected and correct as of `v0.5.0`:
+Expected and correct as of `v0.5.0` (frozen `k8s/base`) and unchanged
+in design for Day 6:
 
 - A dedicated ServiceAccount per workload
-  (`maops-gateway`/`maops-app`/`maops-state`/`maops-diagnostics`), a
+  (`maops-gateway`/`maops-app`/`maops-state`/`maops-diagnostics`) and a
   single namespace-scoped `Role`/`RoleBinding` for `maops-diagnostics`
-  only, and seven `networking.k8s.io/v1` NetworkPolicy objects
-  implementing default-deny + the narrow explicit allows listed above.
+  only.
 - Runtime-bootstrapped Secrets (`maops-internal-auth` since Day 2,
   `maops-state-auth` since Day 4) live in the cluster - correct, not a
   violation, as long as neither is ever a *committed* Secret object in
-  `k8s/base`.
+  `k8s/base` OR the Helm chart's rendered output/`values.yaml`.
 - Cilium `1.20.1` as the enforcing CNI dataplane, kube-proxy left
   enabled.
+
+Newly expected and correct as of Day 6 (`v0.6.0`, not yet a scope
+violation - these are required Day 6 deliverables):
+
+- Eight `networking.k8s.io/v1` NetworkPolicy objects (the Day 5 seven,
+  minus `validation-client -> gateway`, plus the HBONE allow and the
+  Istio-ingress-Gateway-scoped allow - see "Day 6 delta" above).
+- Istio ambient mesh: a namespace-wide STRICT `PeerAuthentication` and
+  three identity-scoped `AuthorizationPolicy` objects, no sidecars, no
+  waypoint.
+- Cilium reconfigured for ambient coexistence (`cni.exclusive=false`,
+  `socketLB.hostNamespaceOnly=true`, `envoy.enabled=false`, a single
+  non-HA operator replica).
+- The application packaged as a Helm chart, with `k8s/base` frozen and
+  untouched.
 
 Still explicitly **not** expected, and a scope violation if found:
 
 - Any `ClusterRole`/`ClusterRoleBinding` anywhere.
 - Any RBAC grant, RoleBinding subject, or mounted API token for
   `maops-gateway`, `maops-app`, or `maops-state`.
-- Any `gateway -> state` or `validation-client -> app`/`-> state`
-  NetworkPolicy allow.
-- Hubble, L7/HTTP-aware `CiliumNetworkPolicy` rules, kube-proxy
-  replacement, or any service mesh construct (mTLS, request-level
-  policy) - all Day 6 scope, not yet implemented.
-- `HorizontalPodAutoscaler`, or a Recreate/Blue-Green/Canary deployment
-  strategy - Day 7 scope, not yet implemented.
+- Any `gateway -> state` or `validation-client -> app`/`-> gateway`/
+  `-> state` NetworkPolicy or AuthorizationPolicy allow.
+- Hubble, any `to.operation` (L7/HTTP-aware) `AuthorizationPolicy` rule
+  or waypoint proxy, L7/HTTP-aware `CiliumNetworkPolicy` rules, a
+  Cilium Gateway API controller, kube-proxy replacement, TLS/
+  cert-manager, or a cloud LoadBalancer.
+- A second, Ingress-based routing implementation alongside the Gateway
+  API.
+- `HorizontalPodAutoscaler`, Argo Rollouts, or a Recreate/Blue-Green/
+  Canary deployment strategy - Day 7 scope, not yet implemented.
 
 Flag any of the still-not-expected items above as a scope violation,
 not just a style note.

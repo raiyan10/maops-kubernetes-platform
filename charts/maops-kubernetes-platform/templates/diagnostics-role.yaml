@@ -1,0 +1,33 @@
+# DAY5 (unchanged design for Day 6): namespace-scoped (never
+# ClusterRole) least-privilege grant for maops-diagnostics. Read-only,
+# and scoped to exactly the resources validation needs to observe: Pod/
+# Service/EndpointSlice state. No Secrets, no write/update/patch/delete
+# verbs, no Deployment/StatefulSet access at all, and - because this is
+# a Role, not a ClusterRole - no way for any rule inside it to ever
+# reach a namespace other than this release's own
+# ({{ .Values.release.namespace }}).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: maops-diagnostics-reader
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "diagnostics") | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+      - watch

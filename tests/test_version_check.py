@@ -13,10 +13,11 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from version_check import run_version_checks
+from version_check import run_version_checks, run_day6_release_checks
 
 
 def _deployment(name: str, image: str, version_label: str) -> dict:
@@ -160,6 +161,90 @@ class LabelDriftTests(unittest.TestCase):
                 for name in failed
             )
         )
+
+
+def _day6_chart_yaml(version: str = "0.6.0", app_version: str = "0.6.0") -> dict:
+    return {"apiVersion": "v2", "name": "maops-kubernetes-platform", "version": version, "appVersion": app_version}
+
+
+def _day6_values_yaml(gateway_tag: str = "0.6.0", app_tag: str = "0.6.0", state_tag: str = "0.6.0") -> dict:
+    return {
+        "images": {
+            "gateway": {"repository": "maops-kubernetes-gateway", "tag": gateway_tag, "pullPolicy": "IfNotPresent"},
+            "app": {"repository": "maops-kubernetes-app", "tag": app_tag, "pullPolicy": "IfNotPresent"},
+            "state": {"repository": "maops-kubernetes-state", "tag": state_tag, "pullPolicy": "IfNotPresent"},
+        }
+    }
+
+
+_DAY6_MAKEFILE_TEXT = "helm upgrade --install cilium cilium/cilium --version 1.20.1\nkubectl apply -f https://...v1.6.0/standard-install.yaml\nistioVersion=1.31.0\n"
+
+
+class Day6ReleaseChecksBaselineTests(unittest.TestCase):
+    def test_baseline_passes_every_check(self):
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        failed = _failed_names(findings)
+        self.assertEqual(failed, set(), f"unexpected failures: {failed}")
+        self.assertGreaterEqual(len(findings), 15)
+
+
+class Day6VersionFileDriftTests(unittest.TestCase):
+    def test_stale_version_file_fails(self):
+        findings = run_day6_release_checks("0.5.0", _day6_chart_yaml(), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.version_file_matches_target", _failed_names(findings))
+
+
+class Day6ChartVersionDriftTests(unittest.TestCase):
+    def test_stale_chart_version_fails(self):
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(version="0.5.0"), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.chart_version_matches_target", _failed_names(findings))
+
+    def test_stale_app_version_fails(self):
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(app_version="0.5.0"), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.chart_appVersion_matches_target", _failed_names(findings))
+
+
+class Day6ImageTagDriftTests(unittest.TestCase):
+    def test_stale_gateway_tag_fails(self):
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(gateway_tag="0.5.0"), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.values.images.gateway.tag_matches_target", _failed_names(findings))
+
+    def test_stale_state_tag_fails(self):
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(state_tag="latest"), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.values.images.state.tag_matches_target", _failed_names(findings))
+
+
+class Day6PinnedInfraDriftTests(unittest.TestCase):
+    def test_missing_cilium_pin_fails(self):
+        makefile_text = _DAY6_MAKEFILE_TEXT.replace("1.20.1", "1.19.0")
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), makefile_text)
+        self.assertIn("day6.pinned_infra[Cilium]", _failed_names(findings))
+
+    def test_missing_istio_pin_fails(self):
+        makefile_text = _DAY6_MAKEFILE_TEXT.replace("1.31.0", "1.30.0")
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), makefile_text)
+        self.assertIn("day6.pinned_infra[Istio]", _failed_names(findings))
+
+    def test_missing_gateway_api_crds_pin_fails(self):
+        makefile_text = _DAY6_MAKEFILE_TEXT.replace("v1.6.0", "v1.5.0")
+        findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), makefile_text)
+        self.assertIn("day6.pinned_infra[Gateway API CRDs]", _failed_names(findings))
+
+
+class Day6IdentityDriftTests(unittest.TestCase):
+    def test_wrong_cluster_name_fails(self):
+        import version_check
+
+        with mock.patch.object(version_check.kube, "CLUSTER_NAME", "maops-k8s-day5"):
+            findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.identity[kube.CLUSTER_NAME]", _failed_names(findings))
+
+    def test_wrong_validation_namespace_fails(self):
+        import version_check
+
+        with mock.patch.object(version_check.kube, "VALIDATION_NAMESPACE", "maops-day5-validation"):
+            findings = run_day6_release_checks("0.6.0", _day6_chart_yaml(), _day6_values_yaml(), _DAY6_MAKEFILE_TEXT)
+        self.assertIn("day6.identity[kube.VALIDATION_NAMESPACE]", _failed_names(findings))
 
 
 if __name__ == "__main__":

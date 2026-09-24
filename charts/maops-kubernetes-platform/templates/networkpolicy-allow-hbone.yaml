@@ -1,0 +1,105 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.meshPolicy.enabled }}
+# DAY6 (corrected after independent review): permits the HBONE
+# transport (mTLS-over-TCP, port 15008) Istio ambient's per-node
+# ztunnel uses to move every mesh connection, without which this
+# namespace's default-deny baseline would silently block ambient
+# traffic before it ever reaches an application container.
+#
+# CORRECTION: an earlier revision of this rule scoped its peer to
+# `namespaceSelector: {kubernetes.io/metadata.name: istio-system}`,
+# treating ztunnel as an ordinary namespaced Pod peer Cilium's
+# NetworkPolicy identity model could match by namespace+label the same
+# way it matches any other workload Pod. That assumption does not hold
+# for ztunnel: it is a per-node, `hostNetwork: true` DaemonSet - on the
+# wire, HBONE traffic to/from a node's ztunnel carries that NODE's own
+# identity (Cilium's "remote-node"/"host" identity classes), not a
+# routable, namespace-scoped Pod identity a `namespaceSelector` +
+# `podSelector` peer can reliably resolve. A rule that assumed
+# otherwise could silently fail to match live traffic (or match only
+# by coincidence on a given CNI/cluster configuration) - either way,
+# not a rule this project can honestly claim proves what it says.
+#
+# FIX: rather than assert a peer-identity restriction this project
+# cannot actually verify against ztunnel's real network identity, this
+# rule is deliberately peer-less (no `from`/`to` selector) and scoped
+# ONLY by port - TCP 15008, nothing else - permitting the HBONE
+# transport itself, not any specific peer on it.
+#
+# CORRECTED CLAIM (fourth-batch review): an earlier revision of this
+# comment claimed gateway/app/state's own application-port NetworkPolicy
+# allows (`maops-allow-gateway-egress-to-app`, etc.) "still govern which
+# peer may reach which workload's actual application traffic" for the
+# real ambient mesh path. That overclaims what those rules can actually
+# see: every workload in this namespace is ambient-enrolled
+# (namespace-wide `istio.io/dataplane-mode: ambient`), so
+# gateway -> app and app -> state traffic is REDIRECTED to HBONE before
+# it ever appears to Cilium as ordinary pod-to-pod traffic on port
+# 8080 - the application-port rules' `podSelector`-matched peers
+# (`app.kubernetes.io/component: gateway`, etc.) are simply never the
+# traffic Cilium actually evaluates for that path once ambient
+# redirection is in effect.
+#
+# THE IDENTITY BOUNDARY THIS PROJECT ACTUALLY RELIES ON (read this,
+# not the NetworkPolicy alone, to understand what enforces what):
+#   - Cilium/Kubernetes NetworkPolicy - THIS rule (peerless TCP 15008)
+#     is what permits the ambient TRANSPORT itself; it controls
+#     reachability only, and has no visibility into which original
+#     workload originated a given HBONE-encapsulated flow, or which
+#     specific destination workload it is ultimately bound for. The
+#     application-port allows elsewhere in this chart
+#     (`maops-allow-gateway-egress-to-app`, `maops-allow-app-ingress-
+#     from-gateway`, `maops-allow-app-egress-to-state`,
+#     `maops-allow-state-ingress-from-app`) remain meaningful ONLY for
+#     PLAINTEXT or NON-AMBIENT paths where the original peer identity
+#     is actually visible to Cilium on the wire - e.g. if ambient
+#     enrollment were ever disabled for a workload, or for any direct,
+#     non-redirected connection attempt that bypasses ztunnel. They are
+#     kept, unweakened, specifically to cover that case (see
+#     `docs/architecture.md`'s HBONE section for the full explanation)
+#     - not because they are the enforcement mechanism for the actual
+#     ambient-mesh-tunneled traffic path today.
+#   - Istio `AuthorizationPolicy` (this chart's
+#     authorizationpolicy-*.yaml templates) is what actually enforces
+#     the gateway -> app -> state AUTHENTICATED WORKLOAD IDENTITY chain
+#     for the real ambient path, INSIDE the mTLS tunnel HBONE provides -
+#     it authenticates the real workload ServiceAccount identity (via
+#     the mTLS client certificate ztunnel presents on that workload's
+#     behalf) after decapsulation, which is exactly the layer Cilium
+#     cannot reach into. This is why strict mTLS + AuthorizationPolicy
+#     is a REQUIRED complement to this rule for the ambient path, not a
+#     defense-in-depth nicety on top of an already-sufficient
+#     NetworkPolicy.
+#   - Application-layer Secret authentication
+#     (`maops-internal-auth`/`maops-state-auth`, unchanged since Day
+#     2/4) remains a THIRD, independent layer on top of both - mesh
+#     mTLS/identity never replaces it.
+#
+# Both directions are genuinely required under this namespace's
+# default-deny EGRESS policy (not just ingress): a local ambient-
+# enrolled Pod's own outbound traffic is redirected to its node's
+# ztunnel over this same port before HBONE-encapsulation ever leaves
+# the node, so the default-deny egress baseline would block that local
+# hop too without an explicit egress allow here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-hbone-ztunnel
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 15008
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 15008
+{{- end }}
+{{- end }}

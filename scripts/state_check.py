@@ -234,14 +234,14 @@ def _namespace_uid() -> str | None:
 def capture_suite_baseline(pvc_uid: str | None, pv_uid: str | None) -> None:
     """DAY4: run-specific suite-level baseline (see scripts/suite_baseline.py
     for the full design and its "why not a per-cluster file" rationale).
-    Only active when both DAY5_RUN_ID and DAY5_SUITE_BASELINE_PATH are
-    set (the Makefile sets both, once per `make day5-check` invocation,
+    Only active when both DAY6_RUN_ID and DAY6_SUITE_BASELINE_PATH are
+    set (the Makefile sets both, once per `make day6-check` invocation,
     and exports them to every child recipe line). A standalone
     `make state-check` run - neither var set - intentionally skips this
     non-fatally: state-check's other checks remain fully meaningful on
     their own, but no suite-level baseline claim is made. This authenticated
     GET is the first (and only) touch of `/state`'s VALUE in the entire
-    day5-check sequence up to and including this script - state-check
+    day6-check sequence up to and including this script - state-check
     itself performs no PUT anywhere - so this capture point is always
     strictly before the first step capable of mutating application
     state (persistence-check)."""

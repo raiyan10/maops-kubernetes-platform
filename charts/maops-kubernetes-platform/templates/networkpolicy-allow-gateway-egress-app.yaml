@@ -1,0 +1,34 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY5 (unchanged for Day 6): gateway -> app is the only application
+# egress maops-gateway Pods are allowed (besides DNS/HBONE) - explicitly
+# does NOT include maops-state, so gateway can never reach state
+# directly. DAY6 caveat: since maops-platform is ambient-enrolled, the
+# REAL gateway -> app traffic is HBONE-tunneled and this rule's
+# podSelector-matched peer is not what Cilium evaluates for that path -
+# this rule remains meaningful for plaintext/non-ambient paths only.
+# Istio AuthorizationPolicy (maops-app-authz) is what enforces workload
+# identity for the actual ambient path - see
+# networkpolicy-allow-hbone.yaml and docs/architecture.md's HBONE
+# section for the full explanation.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-gateway-egress-to-app
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.containerPort }}
+{{- end }}

@@ -9,6 +9,18 @@ place a version should agree with it (both Deployment image tags, every
 rendered app.kubernetes.io/version label - including pod template
 labels) is checked against that single value, not re-typed by hand.
 
+DAY6: extended, additively, with a second, independent set of checks
+(`run_day6_release_checks`) covering the live VERSION file, the Helm
+chart's own version/appVersion, all three image tags at their Day 6
+values, Day 6 cluster/kubeconfig/context/release identities, and pinned
+infrastructure versions (Cilium, Gateway API CRDs, Istio) - all cross-
+checked against the SAME 0.6.0 target. `run_version_checks` itself
+(and its permanently-frozen `EXPECTED_TARGET_VERSION`) is completely
+unchanged: it still validates k8s/base's OWN rendered labels against
+Day 5's frozen 0.5.0 target, independent of whatever the live VERSION
+file says - see `main()`'s wiring below, which calls it with the frozen
+constant rather than `read_version()`.
+
 Usage:
     python3 scripts/version_check.py [path/to/base]
 
@@ -27,13 +39,38 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import k8s_yaml
+import kube
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "VERSION"
+CHART_DIR = REPO_ROOT / "charts" / "maops-kubernetes-platform"
+CHART_YAML = CHART_DIR / "Chart.yaml"
+VALUES_YAML = CHART_DIR / "values.yaml"
+MAKEFILE = REPO_ROOT / "Makefile"
 
 # Day 5's pinned target - VERSION itself must have actually been bumped,
-# not just left agreeing with whatever it already said.
+# not just left agreeing with whatever it already said. Permanently
+# frozen: k8s/base is the frozen Day 5 Kustomize source and this
+# constant must never be advanced past it (see
+# scripts/helm_check.py's own check_k8s_base_still_frozen(), which
+# reads this exact constant).
 EXPECTED_TARGET_VERSION = "0.5.0"
+
+# DAY6: the live release target - VERSION, the Helm chart's own
+# version/appVersion, and all three image tags must all agree with
+# this.
+DAY6_TARGET_VERSION = "0.6.0"
+
+# DAY6: pinned infrastructure versions - installed out-of-band by Make
+# targets (cni-install, gateway-api-install, mesh-install), never
+# floated to "latest". Checked here as a plain substring match against
+# the Makefile's own recipe text, the single source of truth for what
+# actually gets installed - never re-typed as a second, independently
+# maintained constant that could drift from what the Makefile really
+# runs.
+CILIUM_VERSION = "1.20.1"
+GATEWAY_API_CRDS_VERSION = "v1.6.0"
+ISTIO_VERSION = "1.31.0"
 
 GATEWAY_DEPLOYMENT = "maops-gateway"
 APP_DEPLOYMENT = "maops-app"
@@ -142,6 +179,86 @@ def run_version_checks(version: str, docs: list[dict]) -> list[Finding]:
     return findings
 
 
+def run_day6_release_checks(
+    version_file_content: str,
+    chart_yaml: dict,
+    values_yaml: dict,
+    makefile_text: str,
+) -> list[Finding]:
+    """DAY6: pure, unit-testable checking logic - takes already-read/
+    already-parsed inputs (never reads a file itself), same pattern as
+    `run_version_checks` above."""
+    findings: list[Finding] = []
+
+    findings.append(
+        Finding(
+            ok=version_file_content == DAY6_TARGET_VERSION,
+            name="day6.version_file_matches_target",
+            detail=f"expected VERSION == {DAY6_TARGET_VERSION!r}, found {version_file_content!r}",
+        )
+    )
+
+    chart_version = chart_yaml.get("version")
+    findings.append(
+        Finding(
+            ok=chart_version == DAY6_TARGET_VERSION,
+            name="day6.chart_version_matches_target",
+            detail=f"expected Chart.yaml version == {DAY6_TARGET_VERSION!r}, found {chart_version!r}",
+        )
+    )
+    app_version = chart_yaml.get("appVersion")
+    findings.append(
+        Finding(
+            ok=app_version == DAY6_TARGET_VERSION,
+            name="day6.chart_appVersion_matches_target",
+            detail=f"expected Chart.yaml appVersion == {DAY6_TARGET_VERSION!r}, found {app_version!r}",
+        )
+    )
+
+    images = values_yaml.get("images", {})
+    for workload in ("gateway", "app", "state"):
+        tag = (images.get(workload) or {}).get("tag")
+        findings.append(
+            Finding(
+                ok=tag == DAY6_TARGET_VERSION,
+                name=f"day6.values.images.{workload}.tag_matches_target",
+                detail=f"expected values.yaml images.{workload}.tag == {DAY6_TARGET_VERSION!r}, found {tag!r}",
+            )
+        )
+
+    day6_identities = (
+        ("kube.CLUSTER_NAME", kube.CLUSTER_NAME, "maops-k8s-day6"),
+        ("kube.CONTEXT", kube.CONTEXT, "kind-maops-k8s-day6"),
+        ("kube.VALIDATION_NAMESPACE", kube.VALIDATION_NAMESPACE, "maops-day6-validation"),
+        ("kube.INGRESS_NAMESPACE", kube.INGRESS_NAMESPACE, "maops-ingress"),
+        ("kube.INSTANCE_LABEL", kube.INSTANCE_LABEL, "maops-kubernetes-platform-day6"),
+        ("kube.HELM_RELEASE_NAME", kube.HELM_RELEASE_NAME, "maops-kubernetes-platform-day6"),
+    )
+    for label, actual, expected in day6_identities:
+        findings.append(
+            Finding(
+                ok=actual == expected,
+                name=f"day6.identity[{label}]",
+                detail=f"expected {label} == {expected!r}, found {actual!r}",
+            )
+        )
+
+    for label, expected_version in (
+        ("Cilium", CILIUM_VERSION),
+        ("Gateway API CRDs", GATEWAY_API_CRDS_VERSION),
+        ("Istio", ISTIO_VERSION),
+    ):
+        findings.append(
+            Finding(
+                ok=expected_version in makefile_text,
+                name=f"day6.pinned_infra[{label}]",
+                detail=f"expected the Makefile to pin {label} at {expected_version!r}",
+            )
+        )
+
+    return findings
+
+
 def render(base_dir: str) -> str:
     result = subprocess.run(
         ["kubectl", "kustomize", base_dir],
@@ -173,10 +290,24 @@ def main() -> int:
         print("FAIL: no documents parsed from rendered manifests", file=sys.stderr)
         return 1
 
-    findings = run_version_checks(version, docs)
+    # DAY6: k8s/base is checked against its OWN permanently-frozen Day 5
+    # target (EXPECTED_TARGET_VERSION), never against whatever the live
+    # VERSION file currently says - k8s/base is not part of the Day 6
+    # Helm deploy and must never be silently advanced.
+    findings = run_version_checks(EXPECTED_TARGET_VERSION, docs)
+
+    try:
+        chart_yaml = k8s_yaml.load_all(CHART_YAML.read_text())[0]
+        values_yaml = k8s_yaml.load_all(VALUES_YAML.read_text())[0]
+    except (OSError, IndexError, ValueError) as exc:
+        print(f"FAIL: could not read/parse the Helm chart's Chart.yaml/values.yaml: {exc}", file=sys.stderr)
+        return 1
+    makefile_text = MAKEFILE.read_text()
+
+    findings += run_day6_release_checks(version, chart_yaml, values_yaml, makefile_text)
     failures = [f for f in findings if not f.ok]
 
-    print(f"# Version consistency check (VERSION file == {version!r})")
+    print(f"# Version consistency check (live VERSION file == {version!r}; k8s/base frozen at {EXPECTED_TARGET_VERSION!r})")
     for finding in findings:
         print(finding.render())
 

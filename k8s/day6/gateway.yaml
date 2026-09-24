@@ -1,0 +1,51 @@
+# DAY6: the Kubernetes Gateway API `Gateway` object - the sole Day 6
+# cluster-external routing entry point (see docs/architecture.md's
+# "Why Ingress/Gateway API remain deferred" -> Day 6 section for why no
+# second, Ingress-based implementation is also introduced). Istio is
+# the only GatewayClass controller this project installs
+# (`gatewayClassName: istio`) - Istio provisions the `istio`
+# GatewayClass itself once istiod is installed with Gateway API support
+# (`make mesh-install`); this project never creates a GatewayClass
+# object directly.
+#
+# `allowedRoutes` is scoped to exactly the maops-platform namespace
+# (selected by its automatic `kubernetes.io/metadata.name` label - the
+# same "never a hand-maintained label" convention Day 5's NetworkPolicy
+# objects already used) - no other namespace's HTTPRoute may ever
+# attach to this Gateway.
+#
+# `infrastructure.parametersRef` points at the ConfigMap
+# (gateway-values-configmap.yaml, same namespace) that customizes the
+# generated proxy Deployment/Service/ServiceAccount - see that file's
+# own comments for the full rationale and its flagged live-verification
+# assumption.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maops-edge
+  namespace: maops-ingress
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  gatewayClassName: istio
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: maops-edge-gateway-values
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: maops.local
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: maops-platform

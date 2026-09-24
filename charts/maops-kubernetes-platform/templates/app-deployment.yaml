@@ -1,0 +1,125 @@
+# DAY6: ambient mesh enrollment is namespace-level, not per-Pod - see
+# gateway-deployment.yaml's header comment.
+#
+# DAY6 (live rollout remediation): `fsGroup`/`fsGroupChangePolicy` were
+# added after a live `maops-k8s-day6` rollout showed this container
+# getting `PermissionError [Errno 13]` reading
+# `/var/run/secrets/maops-state/state-token`. `runAsGroup` only sets the
+# PROCESS's primary group - it does not by itself change the group
+# ownership of a projected Secret volume's files, which the kubelet
+# writes at `defaultMode: 288` (0440, owner+group read-only, deliberately
+# unchanged here). `fsGroup` is the field that makes the kubelet apply
+# that group to the volume; `fsGroupChangePolicy: OnRootMismatch` avoids
+# an unconditional recursive chown/chmod on every Pod start once it is
+# already correct. maops-state already carried this (see
+# state-statefulset.yaml) for its own Secret mount and was never
+# affected - this brings maops-app/maops-gateway to the same contract,
+# for the same reason. See docs/architecture.md's "DAY6: live rollout
+# remediation - fsGroup for projected Secret volumes" section.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maops-app
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "app") | nindent 4 }}
+spec:
+  replicas: {{ .Values.app.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "app") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # DAY6 (live-discovered Helm ConfigMap rollout remediation) -
+        # see gateway-deployment.yaml's identical addition for the full
+        # rationale. Scoped to app-configmap.yaml specifically - never
+        # affected by gateway/state config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/app-configmap.yaml") . | sha256sum | quote }}
+      labels:
+        {{- include "maops.componentLabels" (dict "root" $ "component" "app") | nindent 8 }}
+    spec:
+      serviceAccountName: maops-app
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        fsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              {{- include "maops.selectorLabels" (dict "root" $ "component" "app") | nindent 14 }}
+      containers:
+        - name: maops-app
+          image: "{{ .Values.images.app.repository }}:{{ .Values.images.app.tag }}"
+          imagePullPolicy: {{ .Values.images.app.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: maops-app-config
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.app.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            - name: internal-auth
+              mountPath: /var/run/secrets/maops
+              readOnly: true
+            - name: state-auth
+              mountPath: /var/run/secrets/maops-state
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+      volumes:
+        - name: internal-auth
+          secret:
+            secretName: {{ .Values.secrets.internalAuthName }}
+            defaultMode: 288
+        - name: state-auth
+          secret:
+            secretName: {{ .Values.secrets.stateAuthName }}
+            defaultMode: 288

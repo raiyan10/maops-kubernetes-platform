@@ -1,4 +1,4 @@
-# Architecture - Day 5 (v0.5.0, released)
+# Architecture - Day 6 (v0.6.0, release ready as a local kind reference platform - not yet committed, merged, tagged, or published)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -22,15 +22,38 @@ unchanged Day 1-4 material, which this file preserves for continuity)
 for the full security-boundary design, trust boundaries, what is
 proven live, and what is explicitly NOT claimed.
 
-Day 6 (`v0.6.0`) is the next milestone: Helm packaging, minimal GitHub
-Actions CI, one cluster-external routing approach (Ingress or Gateway
-API), and a service mesh layered on top of Day 5's NetworkPolicy
-boundaries. Day 7 (`v1.0.0`) is the final milestone: Recreate,
+Day 6 (`v0.6.0`) adds Helm packaging (the application chart,
+`charts/maops-kubernetes-platform`, is the sole Day 6 application
+deployment source - `k8s/base` stays frozen at Day 5 and is never
+applied this stage), a minimal cluster-free GitHub Actions CI workflow,
+one cluster-external routing approach (the Kubernetes Gateway API, with
+Istio as the sole controller - never a second, Ingress-based
+implementation), and Istio ambient service mesh layered on top of Day
+5's NetworkPolicy boundaries. See the Day 6 sections below (after the
+unchanged Day 1-5 material) for the full design. **Day 6 is release
+ready as a local kind reference platform** - it has passed its
+cluster-free static validation, its live validation against the local
+`maops-k8s-day6` kind cluster, and an independent five-reviewer round
+whose findings are closed - **but it has not yet been committed,
+merged, tagged, or published.** See "DAY6: live validation record"
+below for the exact results, dates, and accepted limitations, and
+`docs/engineering-reviews/day-06-*` for the independent reviews,
+adjudication, and remediation log. This is a validated local kind
+reference platform, not a production-ready platform. Day 7 (`v1.0.0`) is the final milestone: Recreate,
 Blue-Green, and Canary deployment-strategy demonstrations, a final
 hardened validation pass, and portfolio closure. See
 `docs/roadmap.md` for the full plan.
 
 ## Control flow
+
+> **Days 1-5 baseline.** This diagram and the paragraph below it show
+> the pre-Day 6 access model (the gateway reached only through a
+> bounded `kubectl port-forward`). Day 6 adds the Gateway API ingress
+> path (Istio ingress Gateway, NodePort 30080 mapped to host
+> `127.0.0.1:18080`) and the Istio ambient mesh - see "DAY6: Gateway
+> API - one routing approach, not two" and the README's "Day 6
+> topology" for the current picture. Port-forward remains in use for
+> bounded validation and debugging.
 
 ```
 Docker
@@ -77,7 +100,9 @@ Secret: maops-internal-auth (bootstrapped out-of-band, never committed)
 Only `maops-gateway` is reached from outside the cluster (via
 `kubectl port-forward`) in the normal architecture; `maops-app` is
 reached exclusively through the gateway, over the `maops-app` Service.
-No NodePort, LoadBalancer, or Ingress exists - see
+Through Day 5, no NodePort, LoadBalancer, or Ingress existed (Day 6
+adds exactly one NodePort, for the Istio ingress Gateway; still no
+LoadBalancer or Ingress) - see
 [Why port-forward instead of NodePort/Ingress](#why-port-forward-instead-of-nodeportingress)
 below (carried forward unchanged from Day 1/2's rationale).
 
@@ -1105,26 +1130,33 @@ separate, short-lived, and cleanup-guaranteed - but it means the
 validation namespace's own egress is currently unrestricted, a Day 6/7
 candidate.
 
-## Why Ingress/Gateway API remain deferred
+## Why Ingress/Gateway API remained deferred through Day 5
 
-Day 5 still reaches `maops-gateway` only via `kubectl port-forward` -
+Day 5 still reached `maops-gateway` only via `kubectl port-forward` -
 see
 [Why port-forward instead of NodePort/Ingress](#why-port-forward-instead-of-nodeportingress)
-below. Cluster-external routing (Ingress and Gateway API, compared
-against each other) is Day 6 scope.
+below (that rationale is unchanged for the internal/validation port-
+forward paths scripts/smoke.py and friends still use - Day 6 adds a
+cluster-external path alongside it, it does not remove port-forward
+entirely). Cluster-external routing is Day 6 scope - see
+[DAY6: Gateway API - one routing approach, not two](#day6-gateway-api---one-routing-approach-not-two)
+below for what was actually implemented and why a second,
+Ingress-based path was deliberately not also introduced.
 
-## Why Service Mesh remains deferred to Day 6
+## Why Service Mesh remained deferred through Day 5
 
 Day 5's NetworkPolicy governs L3/L4 reachability between Pods - it has
 no concept of mutual TLS, request-level (L7/HTTP) policy, or traffic
-shaping between workloads, none of which are implemented, referenced
-as available, or claimed to exist at this stage. Per `docs/roadmap.md`,
-a service mesh is Day 6 scope, alongside Helm packaging for the
+shaping between workloads, none of which were implemented, referenced
+as available, or claimed to exist at that stage. Per `docs/roadmap.md`,
+a service mesh was Day 6 scope, alongside Helm packaging for the
 application itself (distinct from Day 5's use of Helm solely to install
-Cilium), GitHub Actions CI, and Ingress/Gateway API - not Day 7, which
-is reserved for Recreate/Blue-Green/Canary deployment-strategy
+Cilium), GitHub Actions CI, and the Gateway API - not Day 7, which is
+reserved for Recreate/Blue-Green/Canary deployment-strategy
 demonstrations compared against Day 3's RollingUpdate, built on top of
-the mesh Day 6 introduces rather than introducing it.
+the mesh Day 6 introduces rather than introducing it. See
+[DAY6: Istio ambient service mesh](#day6-istio-ambient-service-mesh)
+below for what was actually implemented.
 
 ## Why port-forward instead of NodePort/Ingress
 
@@ -1139,3 +1171,1434 @@ rollout validation scripts temporarily port-forward directly to
 `service/maops-app` or a specific gateway Pod - never exposed
 externally, only ever local, bounded, and auto-cleaned-up - to prove
 behavior independent of the normal gateway-fronted path.)
+
+**Day 6 change:** the normal external entry point is now the Gateway API
+path, which does open one NodePort (30080, on the Istio-generated
+ingress Gateway Service, mapped to host `127.0.0.1:18080` by
+`kind/cluster-day6.yaml`). Bounded port-forwards remain in use by the
+validation scripts (`make smoke`, and the port-forward-based checks)
+and for debugging, exactly as described above.
+
+## DAY6: Helm chart ownership boundary
+
+`charts/maops-kubernetes-platform` is the **sole** Day 6 application
+deployment source. It owns every mutable application object: the three
+ConfigMaps, the three application ServiceAccounts, the namespace-scoped
+diagnostics Role/RoleBinding, the two Deployments, the StatefulSet, the
+four Services, the two PodDisruptionBudgets, the eight NetworkPolicies,
+the PeerAuthentication, the three AuthorizationPolicies, and the
+HTTPRoute - 30 rendered objects total (`scripts/helm_check.py`'s
+`inventory.total_object_count` check). `k8s/base` (Day 5's frozen
+Kustomize source) is never modified and never applied by any Day 6
+Make target - `deploy` runs `helm upgrade --install` only.
+`scripts/helm_check.py`'s own `scope.k8s_base_still_frozen_at_day5`
+check independently proves this by reading `scripts/validate_manifests.py`'s
+own `EXPECTED_VERSION`/`EXPECTED_INSTANCE` constants (still `0.5.0`/
+`maops-kubernetes-platform-day5`), not by re-rendering k8s/base.
+
+Cluster/platform support objects that are NOT application workloads -
+things that exist once per cluster/environment rather than once per
+release, and that a real operator would provision before ever running
+`helm install` - live under `k8s/day6/` instead, applied via plain
+`kubectl apply -f` (`make namespace-apply`, `make gateway-apply`),
+never templated by the chart and never expressed as a Helm chart
+dependency of it:
+
+- `platform-namespace.yaml` (`maops-platform`, labeled
+  `istio.io/dataplane-mode: ambient`)
+- `validation-namespace.yaml` (`maops-day6-validation`)
+- `ingress-namespace.yaml` (`maops-ingress`)
+- `diagnostics-serviceaccount.yaml` (`maops-diagnostics`, in
+  `maops-day6-validation`)
+- `gateway-values-configmap.yaml` (the Istio Gateway infrastructure
+  `parametersRef` ConfigMap, in `maops-ingress`)
+- `gateway.yaml` (the Gateway API `Gateway` object, `maops-edge`, in
+  `maops-ingress`)
+- `cilium-ambient-probe-policy.yaml` (the `CiliumClusterwideNetworkPolicy`
+  ambient health-probe exception)
+
+Infrastructure Helm charts (Cilium, Istio's `base`/`istiod`/`cni`/
+`ztunnel`) are installed separately through their own pinned Make
+targets (`cni-install`, `mesh-install`) and are never declared as
+`dependencies:` of `charts/maops-kubernetes-platform`'s `Chart.yaml` -
+the application chart has zero infrastructure coupling, matching Day
+5's own precedent of installing Cilium via a separate, explicit `helm`
+invocation rather than folding it into anything the application owns.
+
+## DAY6: Gateway API - one routing approach, not two
+
+`k8s/day6/gateway.yaml` declares a single Kubernetes Gateway API
+`Gateway` object, `maops-edge`, in `maops-ingress`, with
+`gatewayClassName: istio` - Istio is the **only** `GatewayClass`
+controller this project ever installs; Istio provisions the `istio`
+`GatewayClass` itself once istiod is installed with Gateway API support
+(`make mesh-install`), never created directly by this project. No
+`Ingress` object exists anywhere in this project (checked statically:
+`scripts/helm_check.py`'s `inventory.no_ingress`), and no second
+ingress controller is introduced - see `docs/roadmap.md`'s corrected
+Day 6 section for why a second, Ingress-based implementation was
+deliberately not also built.
+
+The relationship, four objects deep:
+
+```
+GatewayClass: istio (cluster-scoped, provisioned by istiod)
+   |
+   v
+Gateway: maops-edge (maops-ingress)
+   - listener: HTTP, port 80, hostname maops.local
+   - allowedRoutes: namespaces selected by kubernetes.io/metadata.name=maops-platform
+   - infrastructure.parametersRef -> ConfigMap maops-edge-gateway-values
+   |
+   v  (Istio's Gateway API deployment controller provisions, patched by
+   |   that ConfigMap's per-resource-kind strategic-merge patches:
+   |   Deployment replicas 1, Service type NodePort/port 30080,
+   |   ServiceAccount automountServiceAccountToken false - the
+   |   ServiceAccount's own NAME, "maops-edge-istio", is Istio's
+   |   deterministic "<gateway-name>-istio" convention, not a patch)
+   v
+HTTPRoute: maops-gateway-route (maops-platform, owned by the Helm chart)
+   - parentRefs: [{name: maops-edge, namespace: maops-ingress}]
+   - hostnames: [maops.local]
+   - rules: PathPrefix "/" -> backendRefs: [{name: maops-gateway, port: 8080}]
+   |
+   v
+Service: maops-gateway (ClusterIP, maops-platform)
+   |
+   v
+Deployment: maops-gateway Pods
+```
+
+The application chart owns the `HTTPRoute` (application routing
+configuration, changes with the release); the platform layer owns the
+`Gateway` and its infrastructure ConfigMap (cluster/environment
+configuration, provisioned once). `allowedRoutes.namespaces` uses a
+`Selector` matching the automatic `kubernetes.io/metadata.name` label -
+the same "never a hand-maintained label" convention Day 5's
+NetworkPolicy objects already used - so only `maops-platform`'s
+HTTPRoutes may ever attach to this Gateway.
+
+**Local NodePort/host mapping:** `k8s/day6/gateway-values-configmap.yaml`
+pins the Istio-provisioned Gateway proxy's Service to `type: NodePort`
+with the HTTP listener bound to `nodePort: 30080` - the local-
+development substitute for a cloud LoadBalancer (explicitly out of
+scope, see below). `kind/cluster-day6.yaml`'s `extraPortMappings` maps
+host `127.0.0.1:18080` to the control-plane container's port `30080`,
+so `curl -H "Host: maops.local" http://127.0.0.1:18080/` reaches
+`maops-gateway` from outside the `kind` Docker network entirely -
+`scripts/gateway_check.py` proves this live (see "DAY6: live
+validation record" below), including the negative case (an
+unconfigured `Host` header receives no `maops-gateway` route).
+
+**Deterministic Gateway proxy identity (corrected after independent
+review):** an earlier revision of this design tried to override the
+generated ServiceAccount's own NAME to a bare `maops-edge` via the
+`infrastructure.parametersRef` ConfigMap. That is not how the
+mechanism works - the ConfigMap's `data` keys are per-resource-kind
+strategic-merge patches (`deployment`, `service`, `serviceAccount`,
+each shaped like the target resource itself, e.g. starting from
+`spec:` for Deployment/Service), which can adjust fields ON a
+generated object but do not control the object's own name, owned by
+the controller's fixed naming template. Istio names the generated
+ServiceAccount for a Gateway deterministically as
+`<gateway-name>-istio` - for `maops-edge`, `maops-edge-istio`. Every
+`AuthorizationPolicy`/constant/test/doc in this project is written
+against `cluster.local/ns/maops-ingress/sa/maops-edge-istio` exactly,
+matching Istio's real naming convention rather than an unverified
+override. See `k8s/day6/gateway-values-configmap.yaml`'s own header
+comment for the full corrected schema - the per-resource-kind
+(`deployment`/`service`/`serviceAccount`) `parametersRef` mechanism it
+uses is Istio's documented behavior, not an unresolved assumption.
+**What live validation confirms:** `make gateway-apply` + `make
+mesh-install`, verified by `make gateway-check`/`make mesh-check`,
+confirm the RENDERED CONTROLLER BEHAVIOR on this project's pinned Istio
+1.31.0 - the generated Service's `targetPort`/`nodePort`, the generated
+ServiceAccount's token-projection behavior and its `maops-edge-istio`
+name, and that the NodePort is actually reachable - confirming behavior
+against a known schema, not discovering the schema itself. The
+generated proxy binds port 80 without any added Linux capability: its
+`istio-proxy` container drops ALL capabilities and runs non-root as
+1337:1337, and Istio's gateway template sets the Pod-level
+`net.ipv4.ip_unprivileged_port_start=0` sysctl instead (observed live;
+see `k8s/day6/gateway-values-configmap.yaml`). Any field that renders differently than expected is scoped to
+that one ConfigMap and the identity constants that reference it, not
+the surrounding routing/AuthorizationPolicy design.
+
+## DAY6: Istio ambient service mesh
+
+Istio is installed in **ambient** mode - no sidecar proxy is ever
+injected into an application Pod, and no waypoint proxy is deployed for
+`maops-platform` (checked statically: `scripts/helm_check.py`'s
+`inventory.no_waypoint`). Instead, each node runs exactly one `ztunnel`
+DaemonSet Pod, and Istio's CNI plugin (`istio-cni`, chained alongside
+Cilium via `cni.exclusive=false` - see below) transparently redirects
+an ambient-enrolled Pod's traffic to its local node's `ztunnel`. Mesh
+enrollment is a **namespace-level** label
+(`istio.io/dataplane-mode: ambient`, set on `maops-platform` in
+`k8s/day6/platform-namespace.yaml`), never a per-Pod sidecar-injection
+annotation - `maops-day6-validation` and `maops-ingress` are
+deliberately NOT labeled this way, so the diagnostics/validation-client
+identity and the ingress Gateway proxy are never ambient-redirected
+workloads themselves.
+
+**HBONE (port 15008):** every mesh connection between two ztunnels
+(cross-node) is tunneled as mTLS-over-TCP on port 15008 - the "HTTP-
+Based Overlay Network Encapsulation" Istio ambient uses. Under
+`maops-platform`'s default-deny NetworkPolicy baseline, this transport
+hop would otherwise be silently blocked by Cilium before ever reaching
+an application container; `maops-allow-hbone-ztunnel` (one of the
+chart's eight NetworkPolicies) is the fix, both ingress and egress
+(genuinely required under default-deny EGRESS too - a local
+ambient-enrolled Pod's own outbound traffic is redirected to its
+node's ztunnel over this same port before HBONE-encapsulation ever
+leaves the node).
+
+**Corrected after independent review (twice): this rule is deliberately
+peer-less (no `from`/`to` selector), scoped by port alone.** An earlier
+revision scoped the peer to
+`namespaceSelector: {kubernetes.io/metadata.name: istio-system}`,
+treating ztunnel as an ordinary namespaced Pod peer. That does not
+hold: ztunnel is a per-node, `hostNetwork: true` DaemonSet, so HBONE
+traffic to/from a node's ztunnel carries that NODE's own identity
+(Cilium's "remote-node"/"host" identity classes), not a routable,
+namespace-scoped Pod identity a `namespaceSelector`/`podSelector` peer
+can reliably resolve - a rule that assumed otherwise could silently
+fail to match live traffic, or appear to work only by coincidence of a
+given cluster's configuration. Rather than assert a peer restriction
+this project cannot actually verify against ztunnel's real network
+identity, the rule is scoped ONLY by port (TCP 15008) - permitting the
+ambient TRANSPORT itself, not any specific peer on it.
+
+**Corrected claim, fourth review batch:** a still-earlier revision of
+this section additionally claimed the application-port allows
+(`maops-allow-gateway-egress-to-app`, etc.) "still govern which peer
+may reach which workload's actual application traffic" for the real
+ambient mesh path. That overclaims what those rules can actually see:
+every workload in `maops-platform` is ambient-enrolled (namespace-wide
+`istio.io/dataplane-mode: ambient`), so `gateway -> app` and
+`app -> state` traffic is REDIRECTED to HBONE before it ever appears
+to Cilium as ordinary pod-to-pod traffic on port 8080 - the
+application-port rules' `podSelector`-matched peers are simply never
+the traffic Cilium actually evaluates for that path once ambient
+redirection is in effect. The corrected framing:
+
+**The identity boundary this project actually relies on** (this is the
+load-bearing explanation, not the NetworkPolicy rules alone):
+
+- **Cilium/Kubernetes NetworkPolicy** - the peerless HBONE rule above
+  is what permits the ambient TRANSPORT itself; it controls
+  reachability only, and has **no visibility into the original
+  workload identity once traffic is HBONE-encapsulated** by ztunnel -
+  from Cilium's perspective, HBONE traffic on port 15008 is
+  indistinguishable node-to-node transport, never attributable to "the
+  gateway Pod talking to the app Pod." The application-port allows
+  elsewhere in the chart (`maops-allow-gateway-egress-to-app`,
+  `maops-allow-app-ingress-from-gateway`, `maops-allow-app-egress-to-state`,
+  `maops-allow-state-ingress-from-app`) remain meaningful ONLY for
+  **plaintext or non-ambient paths** where the original peer identity
+  is actually visible to Cilium on the wire - e.g. if ambient
+  enrollment were ever disabled for a workload, or for a direct,
+  non-redirected connection attempt that bypasses ztunnel. They are
+  kept, unweakened, specifically to cover that case - not because they
+  are the enforcement mechanism for the actual ambient-mesh-tunneled
+  traffic path today.
+- **Istio `AuthorizationPolicy`** (see "strict mTLS and identity
+  authorization" below) is what actually enforces the
+  `gateway -> app -> state` AUTHENTICATED WORKLOAD IDENTITY chain for
+  the real ambient path - it authenticates the real workload
+  ServiceAccount identity via the mTLS client certificate ztunnel
+  presents on that workload's behalf, INSIDE the tunnel, after
+  decapsulation - exactly the layer Cilium cannot reach into. This
+  makes strict mTLS + `AuthorizationPolicy` a **required complement**
+  to the NetworkPolicy layer for the ambient path, not defense-in-depth
+  on top of an already-sufficient NetworkPolicy.
+- **Application-layer Secret authentication**
+  (`maops-internal-auth`/`maops-state-auth`, unchanged since Day 2/4)
+  remains a third, independent layer on top of both.
+
+**Accepted trust boundary: peerless TCP 15008 (DAY6 review SEC-2).**
+`maops-allow-hbone-ztunnel` permits TCP 15008 to and from every
+`maops-platform` Pod with no peer selector. This is intentional, not an
+accidental cluster-wide application allow:
+
+- ztunnel is host-networked, so it cannot be reliably selected as an
+  ordinary namespaced Pod peer - a `namespaceSelector`/`podSelector`
+  peer would either silently fail to match live HBONE traffic or match
+  only by coincidence of one cluster's identity allocation.
+- At this layer Cilium provides **transport reachability only**: it
+  lets the ambient HBONE tunnel exist, on that one port.
+- **Authenticated workload identity** is enforced inside the tunnel by
+  STRICT `PeerAuthentication` plus the three exact-principal
+  `AuthorizationPolicy` objects - a peer that can reach port 15008 but
+  cannot present an allowed SPIFFE identity is rejected by the
+  destination ztunnel (proven live by `make mesh-check`'s correlated
+  denial evidence).
+- The application-port NetworkPolicies remain in force and relevant
+  for **plaintext/non-ambient paths** (proven live by `make
+  networkpolicy-check`'s isolated, non-ambient probe Pods).
+
+This is an accepted defense-in-depth design boundary for ambient mode
+on this Cilium/Istio combination: port-level reachability from Cilium,
+workload identity from Istio, and application credentials from the
+workloads themselves.
+
+**The Istio ingress Gateway path is adapted, not carried forward
+unchanged from Day 5.** Day 5's `maops-allow-gateway-ingress-from-validation`
+NetworkPolicy (allowing a `validation-client`-labelled probe Pod direct
+access to `maops-gateway`) is deliberately NOT reproduced in the Day 6
+chart - `scripts/helm_check.py`'s `networkpolicy.no_day5_validation_shortcut`
+checks this negatively. In its place,
+`maops-allow-gateway-ingress-from-istio-ingress-gateway` allows ingress
+to `maops-gateway` only from Pods labeled `istio.io/gateway-name:
+maops-edge` in the `maops-ingress` namespace - the Istio-generated
+ingress Gateway proxy Deployment, identified the same
+`namespaceSelector` + `podSelector` combined-AND pattern Day 5's own
+validation-client allow used. `scripts/networkpolicy_check.py` is
+updated to match: it now asserts `validation-client -> gateway` is
+DENIED (a Day 6 behavior change from Day 5's ALLOWED), same as
+`-> app`/`-> state` always were.
+
+## DAY6: Cilium and Istio responsibility boundary
+
+Cilium remains the CNI and the sole `networking.k8s.io/v1`
+`NetworkPolicy` enforcer - unchanged from Day 5's design. `make
+cni-install` reconfigures it specifically for Istio ambient
+coexistence, all `helm --set` flags on the pinned 1.20.1 chart:
+
+- `ipam.mode=kubernetes` / `kubeProxyReplacement=false` /
+  `hubble.enabled=false` - unchanged from Day 5.
+- `cni.exclusive=false` - lets Istio's own CNI plugin chain alongside
+  Cilium's, rather than Cilium refusing to coexist with a second CNI
+  plugin in the chain (the default `cni.exclusive=true` is specifically
+  a single-CNI assumption Day 6 must relax).
+- `socketLB.hostNamespaceOnly=true` - keeps Cilium's socket-level
+  load-balancing (an eBPF optimization that intercepts connect() calls
+  in-process) scoped to the host network namespace only, so it does not
+  compete with or shadow ztunnel's own per-Pod-netns socket redirection
+  - a documented Cilium/ambient interoperability setting.
+- `bpf.masquerade` left at its false/default value - unchanged, never
+  enabled this stage.
+- `envoy.enabled=false` - Day 6 uses no Cilium L7 feature (no
+  `CiliumNetworkPolicy` L7 rule, no Cilium Gateway API controller), so
+  the standalone `cilium-envoy` L7 dataplane component - present but
+  unused since Day 5 (`DAY5-ARCH-L1`) - is disabled outright rather than
+  carried forward as more unused footprint.
+- `operator.replicas=1` - **explicitly NOT an HA topology.** A single
+  Cilium operator replica for this constrained local kind cluster,
+  matching Day 5's own architecture review's suggestion for exactly
+  this resource-pressure scenario (`DAY5-ARCH-M2/M3`). A production
+  deployment would run the default 2-replica operator; this local,
+  single-tenant development cluster deliberately does not.
+
+Istio is the **only** Gateway API controller and the **only** mesh
+policy layer - no Cilium Gateway API controller and no Cilium L7 policy
+are introduced. The division of labor is exact: Cilium enforces
+L3/L4 `NetworkPolicy` (which Pod/namespace may reach which Pod/
+namespace, on which port) exactly as it has since Day 5; Istio ambient
+enforces mesh identity (mTLS, `AuthorizationPolicy` source-principal
+matching) on top of that, never instead of it. Both layers deny the
+same disallowed paths (`gateway -> state`, the diagnostics/validation-
+client identity reaching any application workload) - deliberate
+defense in depth, not redundant duplication of a single concern.
+
+## DAY6: strict mTLS and identity authorization
+
+A namespace-wide `PeerAuthentication` (`maops-platform-strict-mtls`, no
+selector) sets `mtls.mode: STRICT` for every workload in
+`maops-platform`. Three `AuthorizationPolicy` objects (`security.istio.io/v1`,
+`action: ALLOW`), one per workload, each naming exactly one allowed
+source principal - Istio's semantics mean once ANY `ALLOW`
+`AuthorizationPolicy` selects a workload, every request that matches no
+such policy is denied, so a single ALLOW-only policy per workload is
+also what denies every other identity:
+
+| Selected workload | Allowed source principal |
+|---|---|
+| `maops-gateway` | `cluster.local/ns/maops-ingress/sa/maops-edge-istio` (the Istio ingress Gateway, Istio's own deterministic naming) |
+| `maops-app` | `cluster.local/ns/maops-platform/sa/maops-gateway` |
+| `maops-state` | `cluster.local/ns/maops-platform/sa/maops-app` |
+
+Required denied paths hold by the same construction, never by a
+separate DENY policy: the diagnostics/validation-client identity
+(`cluster.local/ns/maops-day6-validation/sa/maops-diagnostics`) is
+never listed as a principal anywhere, and `maops-gateway`'s own
+principal is never listed on `maops-state-authz` - `gateway -> state`
+stays denied at the mesh identity layer, on top of the NetworkPolicy
+deny that already covers it. `scripts/validate_helm_chart.py`'s
+`mesh.authz.*` checks assert every one of these exactly, both the
+positive principals and the two negative non-memberships.
+
+**L4-compatible identity authorization only, never L7.** Every
+`AuthorizationPolicy` rule here uses `source.principals` matching
+alone - never a `to.operation` (HTTP method/path) rule, which requires
+a waypoint proxy Day 6 does not deploy. This project does not claim
+request-level (L7/HTTP) east-west authorization at this stage - the
+same `DAY5-SEC-M1`-shaped gap Day 5's own review named (a standard
+NetworkPolicy/AuthorizationPolicy pair can restrict WHO may reach a
+workload's port, not WHICH HTTP method/path they may call) remains
+open, now narrowed to "no waypoint is deployed to close it" rather than
+"no mesh exists at all."
+
+**Existing application-layer Secret authentication is unchanged and
+still required.** `maops-internal-auth`/`maops-state-auth` (Day 2/4)
+remain the application's own credential checks
+(`X-MAOPS-Internal-Token`/`X-MAOPS-State-Token`, `hmac.compare_digest`)
+- mesh mTLS is a transport-layer identity/confidentiality guarantee
+layered underneath, never a replacement for them. A caller with a valid
+mesh identity but the wrong (or no) application token still gets `HTTP
+403` from the application itself, exactly as in every earlier day.
+
+## DAY6: resource-conscious, explicitly non-HA local development
+
+Every infrastructure Helm invocation this stage adds (`istiod`,
+`istio-cni`, `ztunnel`) sets conservative `resources.requests`/`limits`
+appropriate for a single-tenant local kind cluster, and the Cilium
+operator is pinned to a single, explicitly non-HA replica (see above).
+No HPA, no cloud LoadBalancer, no TLS/cert-manager, no observability
+stack (Hubble, Kiali, Prometheus, Grafana, Jaeger/tracing - all
+explicitly out of Day 6 scope, matching Day 5's own Hubble exclusion),
+and no Argo Rollouts/Argo CD are introduced. This project makes no
+production-readiness claim at any day, and Day 6 does not change that -
+see `docs/roadmap.md`'s "Explicitly out of scope for this project."
+
+**istiod autoscaling is explicitly disabled (DAY6 review INT-2).** The
+pinned istiod 1.31.0 chart defaults to `autoscaleEnabled: true` and
+renders a `HorizontalPodAutoscaler` (min 1, max 5, CPU target). This
+local kind platform installs no metrics-server, so that HPA could only
+ever report `<unknown>` metrics and emit `FailedGetResourceMetric`
+events. `make mesh-install` therefore passes
+`--set pilot.autoscaleEnabled=false` - verified against the pinned
+chart itself, whose `zzy_descope_legacy.yaml` merges `pilot.*` onto
+the top-level values (the same mechanism the existing
+`pilot.resources.*` flags rely on); with the flag the chart renders no
+HPA and a fixed `replicas: 1`. Application autoscaling remains outside
+Day 6 scope, metrics-server is not installed, and a single,
+non-autoscaled istiod replica is a deliberate local-kind choice - **not**
+a recommended production Istio availability configuration.
+
+## DAY6: cluster-free CI limitation
+
+`.github/workflows/ci.yml` runs `make ci-check` only - unit tests,
+version/chart-version/appVersion/image-tag/Day 6 identity/pinned-
+infrastructure-version checks, the frozen k8s/base static manifest
+check, and Helm lint/template/static-chart-check (including the values
+schema's rejection of controlled invalid fixtures, proven by
+`tests/test_helm_chart_values_schema.py`, part of the same unit test
+suite `ci-check` runs first). It never creates a kind cluster, never
+builds or loads a Docker image, and never installs Cilium or Istio -
+every live-cluster proof this stage's implementation is written to
+support (`gateway-check`, `mesh-check`, `helm-lifecycle-check`, and the
+inherited Day 3-5 live checks) stays a local, manual `make day6-check`
+concern, deliberately never automated in GitHub Actions at this stage.
+A later portfolio project (Project 5) is where broader, reusable CI/CD
+design - potentially including ephemeral-cluster CI - is explored; this
+workflow is intentionally minimal.
+
+## DAY6: Day 7 exclusions
+
+Advanced deployment strategies (Recreate, Blue-Green, Canary) are Day 7
+scope, built on top of the mesh/routing layer Day 6 introduces rather
+than introduced here.
+`scripts/helm_lifecycle_check.py`'s bounded `helm upgrade` + `helm
+rollback` proof is **Helm release rollback** (returning the SAME
+release to a previous Helm revision's config) - a materially different
+thing from a Day 7 deployment-strategy demonstration (which compares
+how NEW code reaches production: all-at-once with downtime, two full
+environments swapped, or a gradually-shifted traffic split) and must
+never be conflated with one. Argo Rollouts is never introduced in this
+project at any day - Day 7's advanced-strategy demonstrations use
+native Kubernetes primitives only, per `docs/roadmap.md`.
+
+## DAY6: live validation sequence
+
+`make day6-check` is the authoritative one-shot Day 6 sequence. Day 6's
+actual live results were obtained target-by-target against one
+preserved `maops-k8s-day6` cluster, with the remediations recorded in
+the sections below applied between stages - see "DAY6: live validation
+record" for exactly which results were obtained how, and when (no live
+result is claimed there that wasn't actually observed). The order
+`make day6-check`'s recipe runs the targets in:
+
+```
+tool-check -> test -> version-check -> manifest-check -> helm-lint ->
+helm-template -> helm-check -> image-build -> cluster-create ->
+gateway-api-install -> cni-install -> cni-status -> context-check ->
+mesh-install -> mesh-status -> image-load -> storage-bootstrap ->
+storage-hardening-check -> namespace-apply -> secret-bootstrap ->
+gateway-apply -> deploy -> rollout-check -> scheduling-check ->
+discovery-check -> secret-check -> gateway-check -> mesh-check ->
+rbac-check -> networkpolicy-check -> smoke -> dependency-check ->
+scaling-check -> rolling-update-check -> pdb-check -> state-check ->
+persistence-check -> retention-check -> helm-lifecycle-check ->
+final-state-check
+```
+
+Images are built and loaded before Helm installation, exactly as Day
+4/5 required for their own manifest-based deploys; `final-state-check`
+is the last step, independently proving every mutating experiment
+(scaling, rolling update, PDB/Eviction, persistence, retention, and the
+new Helm upgrade/rollback lifecycle check) left the cluster in its
+normal healthy baseline before the sequence is considered to have
+passed.
+
+## DAY6: live-discovered orchestration remediation
+
+Once `make day6-check` was actually begun against a live
+`maops-k8s-day6` cluster, the ordering the previous section documented
+turned out to be wrong in one concrete way, and two install steps
+lacked a bounded readiness gate of their own. Both are fixed here,
+without recreating or otherwise mutating the already-healthy live
+infrastructure this pass validates against statically.
+
+**Pre-CNI `NotReady` nodes are expected, not a fault.**
+`kind/cluster-day6.yaml` sets `networking.disableDefaultCNI: true` (see
+"DAY5: Cilium as the enforcing CNI dataplane" above, carried forward
+unchanged for Day 6) - every node comes up genuinely `NotReady`, with
+no pod network at all, until Cilium is actually installed via `make
+cni-install`. This is the intended, documented behavior of this kind
+configuration, not a cluster or bootstrap defect.
+
+**`context-check` must not run immediately after `cluster-create`.**
+`scripts/context_check.py` calls `scheduling_check.check_node_topology()`,
+which requires all 3 nodes to be `Ready` - so running it directly after
+`cluster-create`, before any CNI exists, was guaranteed to fail on a
+freshly created cluster purely because of the expected pre-CNI
+`NotReady` state above, not because of any real context/topology
+problem. `context-check` now runs AFTER `cni-install`/`cni-status` in
+both `make day6-check`'s recipe and the documented sequence (see "DAY6:
+live validation sequence" above): `cluster-create ->
+gateway-api-install -> cni-install -> cni-status -> context-check ->
+mesh-install -> mesh-status`. `gateway-api-install` (installing the
+Gateway API CRDs via `kubectl apply`) stays BEFORE `cni-install` - CRD
+registration is an API-server-level operation that does not require pod
+networking, so it does not share `context-check`'s dependency on node
+readiness.
+
+**Install submission is distinct from rollout readiness.** A `helm
+upgrade --install` call returning 0 proves only that the Kubernetes API
+server accepted the release manifests - it does not prove the resulting
+DaemonSet/Deployment ever became Ready (image pulls, scheduling,
+container startup, and - for Cilium specifically - the CNI actually
+attaching to every node all happen asynchronously afterward). `make
+cni-install` and `make mesh-install` now each submit their Helm
+install(s) and then explicitly wait, with a finite `kubectl rollout
+status --timeout=<n>s` per workload, before the recipe is allowed to
+report success:
+
+  - `cni-install`: `daemonset/cilium` (180s), then
+    `deployment/cilium-operator` (120s), both in `kube-system`.
+  - `mesh-install`: `deployment/istiod` (120s), then
+    `daemonset/istio-cni-node` (120s), then `daemonset/ztunnel` (120s),
+    all in `istio-system` - each wait runs immediately after that
+    component's own `helm upgrade --install`, matching Istio's
+    documented install order (istiod before istio-cni/ztunnel) rather
+    than deferring all three waits to the end.
+
+Every wait uses the explicit Day 6 `--kubeconfig`/`--context` (never an
+ambient current-context), exactly as every other kubectl/helm
+invocation in this Makefile already does. On timeout, the recipe prints
+read-only diagnostics - node status, the specific workload object, its
+Pods (queried as their own separate `kubectl get pods -l ...` call,
+never mixed into the same `kubectl get` invocation as the named
+workload), a `kubectl describe` of the workload, and the namespace's
+most recent Events - and then exits nonzero; a rollout failure can never
+produce a downstream `PASS` message, and no diagnostic command's own
+possible failure (wrapped in a narrowly-scoped `|| true`, never applied
+to the actual rollout-status check itself) can suppress that nonzero
+exit. `make mesh-status` (`scripts/mesh_status.py`) remains the
+authoritative, independent, read-only post-install verification of
+istiod/istio-cni/ztunnel health - these install-time waits exist to fail
+fast and loud at the point of the actual problem, not to replace it.
+
+**Shell failure semantics.** Both `cni-install`'s and `mesh-install`'s
+recipes now begin with `set -euo pipefail` (invoked via `bash -c`,
+matching this Makefile's own top-level `SHELL := /bin/bash` /
+`.SHELLFLAGS := -eu -o pipefail -c`, rather than the portable-but-
+weaker `sh -c` these two recipes previously used, which had neither
+`errexit` nor `pipefail` and could silently continue past a failed
+`helm repo update`). This closes a real gap: `.SHELLFLAGS` only governs
+the shell Make itself invokes for a recipe LINE, not a nested `bash -c`/
+`sh -c` sub-invocation inside that line's own text, so every such nested
+wrapper needs its own explicit strict-mode declaration to get the same
+guarantee.
+
+Static validation was re-run and passed after this fix (the
+intermediate figures were reported in that pass's working session and
+are superseded by "DAY6: live validation record" below). The fix was
+a Makefile/orchestration-text and mocked-unit-test correction; the
+corrected install-and-readiness order was then exercised live on the
+preserved cluster (`make cni-status`, `make context-check`, `make
+mesh-install`, `make mesh-status` - see the record below).
+
+## DAY6: live rollout remediation - fsGroup for projected Secret volumes
+
+With the application actually deployed to the live `maops-k8s-day6`
+cluster for the first time, `maops-app` came up with every dependency
+otherwise healthy - DNS and TCP connectivity to `maops-state` both
+worked, Cilium recorded no drops, and the live AuthorizationPolicy
+objects were correct with ztunnel reporting the workload's identity as
+accepted - but the application process itself failed reading its own
+mounted Secret file:
+
+```
+PermissionError: [Errno 13] Permission denied: '/var/run/secrets/maops-state/state-token'
+```
+
+**Root cause: `runAsGroup` sets the process's primary group; it does
+not by itself change who owns a projected Secret volume's files.**
+Both runtime Secrets (`maops-internal-auth`, `maops-state-auth`) are
+mounted with `defaultMode: 288` (0440 octal - owner and group
+read-only, deliberately unchanged by this remediation and every
+workload's own securityContext already ran as `runAsUser: 10001,
+runAsGroup: 10001`). The missing piece is that a projected Secret
+volume's files are written by the kubelet, and by default they are
+owned by `root:root` (or, more precisely, whatever the volume plugin's
+own default is) - **`fsGroup` is the specific Pod-level field that
+tells the kubelet to change the mounted volume's group ownership to
+match**, which is what actually makes a 0440 file readable by a
+non-root process whose primary group is `10001`. Setting `runAsGroup:
+10001` alone (which every workload already had) proves only that the
+*process* believes its own primary group is `10001` - it has no effect
+on what group the kubelet actually wrote the volume's files as. This is
+precisely why `maops-state`, which already carried `fsGroup: 10001` (see
+`state-statefulset.yaml`, present since it was first written) could
+already read its own `state-token` mount, while `maops-app` and
+`maops-gateway` - which had `runAsGroup: 10001` but no `fsGroup` at all
+- could not.
+
+A secondary, structural reason this was not caught statically: the
+application loads its Secret-backed tokens once, at process startup
+(see `app/server.py`) - so a Pod that already existed before a chart fix
+lands does not self-heal by simply having its Secret re-synced; the fix
+requires an actual Pod replacement (a new `helm upgrade --install`
+triggering the Deployment's own `RollingUpdate` strategy), never a
+live in-place file-permission patch.
+
+**Fix**: `fsGroup: 10001` and `fsGroupChangePolicy: OnRootMismatch` were
+added to `maops-app`'s and `maops-gateway`'s Pod-level `securityContext`
+in `charts/maops-kubernetes-platform/templates/app-deployment.yaml` and
+`gateway-deployment.yaml`, matching exactly what `maops-state` already
+had - never a hardcoded literal, but `{{ .Values.podSecurityContext.runAsGroup }}`,
+the same single source of truth `state-statefulset.yaml` already used.
+`fsGroupChangePolicy: OnRootMismatch` (rather than the default `Always`)
+avoids an unconditional recursive chown/chmod of the volume on every Pod
+start once it is already correct - a real, if usually small, cost on a
+Secret volume that is otherwise unnecessary after the first correct
+mount. Nothing else changed: `runAsNonRoot`/`runAsUser`/`runAsGroup`/
+`seccompProfile` are preserved exactly as they were; the Secret objects,
+their token values, `defaultMode: 288`, every NetworkPolicy/
+AuthorizationPolicy/PeerAuthentication/Gateway/HTTPRoute object, and the
+Cilium/Istio installation are all untouched.
+
+`scripts/validate_helm_chart.py`'s `_check_security_context()` now also
+asserts, for every one of gateway/app/state (the chart's complete set of
+Secret-mounting workloads): `fsGroup == 10001`, `fsGroupChangePolicy ==
+'OnRootMismatch'`, that each workload actually mounts at least one of
+`maops-internal-auth`/`maops-state-auth` as a Secret volume, and that
+every such volume's `defaultMode` is still exactly `288` (0440) - a
+regression that weakened the Secret's own file mode, not just a missing
+`fsGroup`, is caught by the same check. `container UID/GID remain
+10001` was already covered by the pre-existing `runAsUser`/`runAsGroup`
+checks (unaffected by this remediation, and now explicitly re-asserted
+by `FsGroupSecretProjectionTests` in `tests/test_validate_helm_chart.py`
+to prove `fsGroup`'s addition never drifted them).
+
+Live rollout, `make deploy` + `make rollout-check` against the existing
+`maops-k8s-day6` cluster (no cluster recreation, no image rebuild/reload
+- the fix is Pod-spec-only, and the application's own code is
+unchanged) brought every workload Pod Ready with the Secret files still
+mode 0440 and now group-readable by GID 10001 (checked via `os.stat`,
+never token contents). In the release history, revision 1
+(2026-09-22) is recorded as failed with `maops-app` exceeding its
+progress deadline - consistent with this pre-fix failure - and
+revision 2 (2026-09-22) is the first healthy deployment and the stable
+baseline used by every later live check; see "DAY6: live validation
+record" below.
+
+## DAY6: second remediation after independent review
+
+A second independent review of this implementation pass found and this
+batch fixed eight issues, none requiring live cluster contact to
+correct (this remains a static-only remediation pass):
+
+1. **Istio Gateway `parametersRef` schema was wrong.** The ConfigMap
+   used a single `data["values.yaml"]` wrapper - not the schema Istio's
+   Gateway API deployment controller actually reads. Corrected to the
+   real per-resource-kind strategic-merge-patch keys (`deployment`,
+   `service`, `serviceAccount`) - see
+   `k8s/day6/gateway-values-configmap.yaml`'s own header comment. This
+   also corrected the generated proxy's ServiceAccount identity: Istio
+   names it deterministically as `<gateway-name>-istio`
+   (`maops-edge-istio`), never a bare override - every
+   AuthorizationPolicy/constant/test/doc now agrees on this one name
+   (`scripts/kube.py`'s `GATEWAY_PROXY_SERVICE_ACCOUNT`). A new static
+   checker (`scripts/validate_gateway_values_configmap.py`, wired into
+   `make helm-check`) asserts the exact corrected schema and explicitly
+   rejects the old wrapper if it ever reappears.
+2. **The HBONE NetworkPolicy assumed ztunnel could be matched as an
+   ordinary namespaced Pod peer.** It cannot - ztunnel is a per-node
+   `hostNetwork: true` DaemonSet, so its traffic carries the NODE's
+   identity, not a routable Pod identity a `namespaceSelector` can
+   resolve. The rule is now deliberately peer-less (port 15008 only) -
+   see "HBONE (port 15008)" above for the corrected design and the
+   identity-boundary explanation (Cilium/NetworkPolicy controls
+   reachability only; Istio `AuthorizationPolicy` is what actually
+   enforces the `gateway -> app -> state` identity chain).
+3. **The Cilium ambient health-probe policy was too broad and
+   over-claimed IP-family coverage.** `endpointSelector` is now
+   narrowed to `maops-platform` (via Cilium's reserved
+   `k8s:io.kubernetes.pod.namespace` label) AND this project's own
+   workload label. The policy is documented as IPv4-only, matching
+   this project's kind clusters (no `networking.ipFamily` override
+   anywhere - kind's own IPv4 default) - no IPv6 rule is claimed or
+   added.
+4. **NetworkPolicy probe results were two-state (connected/not),
+   which could manufacture a false DENIED result.**
+   `scripts/networkpolicy_check.py` now classifies every probe into
+   exactly one of `CONNECTED` (any completed HTTP response, regardless
+   of status - a non-2xx is never a NetworkPolicy signal),
+   `BLOCKED` (a genuine bounded connection TIMEOUT - the real
+   silently-dropped-packet signature), or `INCONCLUSIVE` (a `kubectl
+   exec` failure/timeout, unparseable output, or a non-timeout
+   connection error such as `ConnectionRefusedError` - never treated as
+   denial proof). Only `BLOCKED` satisfies a DENIED assertion.
+5-6. **No live proof existed that an ambient-enrolled but unauthorized
+   identity is actually denied** (as opposed to merely rejected for
+   being unencrypted - a materially weaker, different proof).
+   `scripts/mesh_check.py` now creates a temporary, dedicated,
+   ambient-enrolled namespace/ServiceAccount/Pod (`maops-day6-mesh-
+   probe`, never the normal `maops-day6-validation` namespace, which
+   stays deliberately non-ambient), proves it is genuinely
+   ambient-enrolled (no sidecar, the redirection annotation present),
+   then proves it is denied reaching gateway/app/state while the real
+   production identity paths (gateway -> app, app -> state) still
+   succeed - with guaranteed namespace cleanup and the same
+   INCONCLUSIVE-is-never-denial-proof discipline as (4). Documented
+   scope boundary: because this project's NetworkPolicy peers are
+   same-namespace/specific-label scoped, this test proves the COMBINED
+   NetworkPolicy + AuthorizationPolicy denial outcome, not an isolated
+   AuthorizationPolicy-only signal - attributing the denial to one
+   specific layer would need tooling (`istioctl`, packet capture)
+   outside this project's ground rules.
+7. **The wrong-Host Gateway check accepted too weak a "no route"
+   signal.** It used to treat "anything other than a 200-with-gateway-
+   body" as proof of no route - including an unrelated 5xx or an empty
+   200. `scripts/gateway_check.py` now requires the definite, documented
+   Envoy/Istio no-route signal (HTTP 404) specifically; unreachability
+   (connection refused/timeout reaching the NodePort) is its own
+   explicit INCONCLUSIVE outcome, never counted as "no route" either.
+8. **Documentation corrected** wherever it implied Cilium/NetworkPolicy
+   can see workload identity through HBONE, or that the ambient
+   redirection annotation was an unverified guess rather than Istio's
+   own documented mechanism - see "HBONE (port 15008)" above and
+   `scripts/mesh_check.py`'s module docstring.
+
+## DAY6: third remediation after independent review
+
+A third independent review found and this batch fixed six further
+issues, again all correctable without live cluster contact:
+
+1. **Probe classification still conflated TCP-connect and HTTP-read
+   timeouts.** The second remediation's CONNECTED/BLOCKED/INCONCLUSIVE
+   model still wrapped TCP connect, HTTP request, and response read
+   into one undifferentiated try/except, so an HTTP-layer read timeout
+   after a successful TCP handshake could still be misread as
+   `BLOCKED`. `scripts/networkpolicy_check.py` now distinguishes seven
+   phase-attributed states - `TCP_CONNECT_TIMEOUT`, `TCP_CONNECTED`,
+   `HTTP_RESPONSE`, `HTTP_READ_TIMEOUT`, `CONNECTION_REFUSED_OR_RESET`,
+   `EXEC_INCONCLUSIVE`, `OUTPUT_INCONCLUSIVE` - via two purpose-built
+   probes: a TCP-connect-only probe (used for every NetworkPolicy
+   reachability assertion) and a separate, phase-separated HTTP health
+   probe (`conn.connect()` in its own try/except, distinct from the
+   request/read try/except) reserved for positive-path application
+   validation. Only `TCP_CONNECT_TIMEOUT` satisfies a DENIED assertion.
+   Verified against real local sockets/servers (connection refused,
+   connect timeout to an RFC 5737 TEST-NET address, a real HTTP
+   response, and a real read-timeout-after-connect scenario), not just
+   hand-constructed strings.
+2. **The wrong-identity mesh check described a combined Cilium+Istio
+   denial as proof AuthorizationPolicy works.** It could not isolate
+   which layer produced the denial (this project's NetworkPolicy peers
+   are same-namespace-scoped, so a probe outside those namespaces is
+   denied by NetworkPolicy regardless of mesh identity).
+   `scripts/mesh_check.py`'s `check_authorization_denial_isolated()`
+   now temporarily raises the ztunnel DaemonSet's log level (`kubectl
+   set env daemonset/ztunnel RUST_LOG=info,access_log=info`, captured
+   and restored in a guaranteed `finally`, with the rollout verified
+   both ways), re-runs the wrong-identity connection attempts within
+   that window, and correlates ztunnel's own logs against BOTH the
+   probe's real principal and each destination workload - separately
+   checking for evidence the HBONE/mTLS transport was ALLOWED and
+   evidence Istio's RBAC/AuthorizationPolicy layer then denied the
+   authenticated principal. Only when both are found does the script
+   claim AuthorizationPolicy-specific isolation; anything less is its
+   own distinct, un-overclaimed finding. No `istioctl` dependency was
+   added - `kubectl set env`/`kubectl logs` only.
+3. **Probe/namespace cleanup trusted `--wait=false` alone.**
+   `scripts/networkpolicy_check.py`'s `delete_pod_and_verify_gone()`
+   and `scripts/mesh_check.py`'s `delete_namespace_and_verify_gone()`
+   now submit deletion, then POLL `kubectl get pod`/`kubectl get
+   namespace` until it actually returns NotFound (bounded, with a
+   stuck-Terminating timeout reported as a restoration failure, never
+   silently treated as success); the namespace variant additionally
+   re-checks the specific probe Pod/ServiceAccount names directly.
+   `scripts/final_state_check.py`'s
+   `check_no_leaked_mesh_probe_namespace()` is the new whole-suite-level
+   backstop confirming the temporary mesh-probe namespace never leaks
+   past a full `day6-check` run.
+4. **HBONE documentation still implied application-port NetworkPolicy
+   selectors govern the real ambient traffic path.** Corrected,
+   precisely: the peerless HBONE rule permits ambient TRANSPORT; Cilium
+   controls reachability only and cannot see workload identity once
+   traffic is HBONE-encapsulated; Istio `AuthorizationPolicy` is what
+   controls authenticated workload identity for the real ambient path;
+   the application-port NetworkPolicies remain meaningful only for
+   plaintext/non-ambient paths where the original peer is actually
+   visible to Cilium (kept, unweakened, to cover that case - not
+   because they enforce the real ambient-tunneled path today);
+   application Secrets remain a third, independent layer. See "HBONE
+   (port 15008)" above and every application-port NetworkPolicy
+   template's own header comment.
+5. **Gateway `parametersRef` wording overstated uncertainty about the
+   schema itself.** The per-resource-kind `deployment`/`service`/
+   `serviceAccount` schema (corrected in the second remediation) is
+   Istio's documented mechanism, not an unresolved assumption - wording
+   implying otherwise is removed. What the first live run actually
+   confirms is narrower: the RENDERED CONTROLLER BEHAVIOR (exact
+   `targetPort`/`nodePort`, token-projection behavior, the generated
+   `maops-edge-istio` ServiceAccount name) on this project's pinned
+   Istio 1.31.0 - confirming behavior against a known schema, not
+   discovering the schema itself.
+6. **Static validation re-run and passing** after all of the above
+   (intermediate figures, superseded by "DAY6: live validation record"
+   below).
+
+## DAY6: fourth remediation after independent review
+
+A fourth independent review found and this batch fixed four further
+issues in `scripts/mesh_check.py` (plus the matching tri-state fix
+carried into `scripts/networkpolicy_check.py` and
+`scripts/final_state_check.py`), again all correctable without live
+cluster contact:
+
+1. **The ztunnel `RUST_LOG` diagnostic mutation was not actually
+   transactional.** The third remediation's `_set_ztunnel_env()`
+   combined "submit the `kubectl set env` change" and "wait for the
+   resulting rollout" into one function with one return value - and its
+   caller returned early, skipping restoration entirely, whenever that
+   combined call reported failure. That is a real gap: a diagnostic
+   rollout that timed out happened strictly AFTER the mutation was
+   already accepted by the API, so returning early on that failure could
+   leave ztunnel's log level mutated indefinitely. Mutation submission,
+   rollout completion, diagnostic work, and restoration are now four
+   distinct steps (`_submit_ztunnel_env_literal`/
+   `_submit_ztunnel_env_unset`, `_wait_ztunnel_rollout`, the diagnostic
+   probe/log-correlation block, and `_restore_ztunnel_log_env`). Once
+   submission succeeds, restoration runs in a guaranteed `finally` no
+   matter what happens next - a diagnostic rollout timeout, a failed
+   diagnostic Pod, a log-retrieval failure, a parsing failure, a probe
+   raising, or any later step returning early. The original state is now
+   captured completely (`ZtunnelLogEnvState`: was the env var absent, did
+   it carry a literal `value`, or did it use `valueFrom`) rather than
+   just a `.value` string. Because `kubectl set env` can only set a
+   literal or remove an entry - never restore a `valueFrom` reference
+   exactly - the script refuses to mutate `RUST_LOG` at all when the
+   original entry uses `valueFrom` (fail BEFORE mutation, the simpler and
+   safer of the two options available here, since a `kubectl
+   patch`-based exact restore was never live-tested). After restoration, the script waits for that rollout too,
+   REREADS the DaemonSet, verifies `RUST_LOG` exactly matches its
+   original representation (present/value/`valueFrom` all compared), and
+   verifies every ztunnel Pod is Ready - any uncertainty at any of those
+   steps is its own explicit RESTORATION FAILURE finding, never silently
+   treated as success.
+2. **Cleanup verification conflated "confirmed NotFound" with "the API
+   call itself failed for some other reason."** The third remediation's
+   `_namespace_exists()`/`_resource_exists()` (in `mesh_check.py`) and
+   `_pod_exists()` (in `networkpolicy_check.py`) were bare booleans keyed
+   off `returncode == 0` - so a connection refusal, timeout, Forbidden,
+   or authentication failure while polling looked identical to "the
+   resource genuinely doesn't exist," and a cleanup loop built on that
+   boolean could either falsely declare success or spin forever unable
+   to tell the two apart. All three are now a tri-state
+   `_resource_state()`/`_pod_state()` result - `EXISTS`, `NOT_FOUND`, or
+   `API_ERROR` - built on `kubectl get ... --ignore-not-found`, which is
+   documented specifically to make this distinction (exit 0 with EMPTY
+   stdout means genuinely absent; exit 0 with stdout means present; any
+   other nonzero exit is some other, unresolved API error). Only an
+   explicit `NOT_FOUND` proves deletion; an `API_ERROR` immediately fails
+   the cleanup it was checked from, never silently retried-through as if
+   it might still resolve to "gone." This applies to
+   `delete_namespace_and_verify_gone()`, the validation probe Pod's
+   `delete_pod_and_verify_gone()`, and `final_state_check.py`'s
+   `check_no_leaked_mesh_probe_namespace()` whole-suite backstop - a
+   connection failure checking for the leaked namespace is now its own
+   distinct failure, never silently read as "not leaked."
+3. **The wrong-identity denial's log correlation used GUESSED marker
+   words, not documented ztunnel fields.** The third remediation's
+   `ALLOW_TRANSPORT_LOG_MARKERS`/`DENY_LOG_MARKERS` ("mtls",
+   "established", "accept", "handshake" for transport; "rbac", "deny",
+   ... for denial) had no claim to match ztunnel's actual log format.
+   `_parse_access_log_fields()` now extracts real `key=value`/
+   `key="value"` pairs, and transport proof
+   (`_find_transport_evidence()`) is built entirely on ztunnel's
+   documented structured access-log shape: the literal markers `access`
+   and `connection complete`, and the fields `src.identity`,
+   `dst.identity`, `dst.hbone_addr`, `dst.service`, and `direction`. The
+   probe's identity is now represented in both forms this project uses -
+   the AuthorizationPolicy principal form
+   (`cluster.local/ns/.../sa/...`, `MESH_PROBE_PRINCIPAL`, unchanged) and
+   the SPIFFE log form (`spiffe://cluster.local/ns/.../sa/...`,
+   `MESH_PROBE_SPIFFE_IDENTITY`) - and transport correlation matches
+   `src.identity` against the SPIFFE form specifically, since that is the
+   form ztunnel's own logs actually carry, never the bare principal form.
+   For denial evidence specifically, this (pre-live) batch had not yet
+   observed Istio 1.31's exact deny-log format - superseded by "DAY6:
+   live mesh-check remediation" below, which added the AUTHORITATIVE
+   tier and dropped the `connection complete` filter - so at the time
+   `_find_denial_evidence()` deliberately did not claim one:
+   it first looks for a `CANDIDATE` - a field-parseable line correlated
+   by identity and destination that never reached `connection complete`,
+   built entirely from the documented fields above - and only falls back
+   to an explicitly-labeled `BEST_EFFORT` free-text token search if that
+   fails. Finding neither is `NONE`, recorded as INCONCLUSIVE, never as a
+   confident "not denied." **This repository does not promote the
+   `BEST_EFFORT` parser to a pinned, authoritative deny-log format until
+   the first live `make mesh-check` run has actually observed Istio
+   1.31.0's real deny-log output on this cluster** - until then, any
+   `BEST_EFFORT` or `NONE` finding is exactly what it says: an unverified
+   guess or an absence of correlated evidence, never an Istio contract.
+   Per this remediation's explicit preference, `check_authorization_denial_isolated()`
+   now tries the ztunnel DaemonSet's CURRENT (default, unmutated) log
+   level FIRST - if it already contains identity/HBONE transport evidence
+   for every target, the `RUST_LOG` mutation described in item 1 above is
+   skipped entirely and never attempted; the mutation path is retained
+   only as a fallback for when the default level does not already
+   suffice.
+4. **A client-side connection timeout was the only accepted signal for
+   an Istio AuthorizationPolicy denial, but ztunnel may legitimately
+   reset/close a denied connection instead of silently timing it out.**
+   `networkpolicy_check.assert_denied()` stays strict and UNCHANGED
+   (`TCP_CONNECT_TIMEOUT` only) for its own NetworkPolicy-specific
+   callers - that remains the correct, narrow signature of a silently
+   dropped packet. But `mesh_check.py`'s wrong-identity client-side probe
+   now uses a SEPARATE mesh-authorization outcome model,
+   `_record_client_side_supporting_evidence()`: both
+   `TCP_CONNECT_TIMEOUT` and `CONNECTION_REFUSED_OR_RESET` are recorded
+   as non-gating SUPPORTING evidence only - neither, alone, proves the
+   identity was denied specifically by AuthorizationPolicy (a
+   NetworkPolicy-level drop, or an unrelated connectivity problem, could
+   produce either symptom too). The identity-denial assertion itself is
+   now made EXCLUSIVELY by `check_authorization_denial_isolated()`'s
+   correlated ztunnel log evidence (item 3 above) - client-side behavior
+   alone can never satisfy it. The one exception: if the wrong identity's
+   connection actually SUCCEEDS at the client layer
+   (`TCP_CONNECTED`/`HTTP_RESPONSE`), that directly contradicts the
+   test's premise and is still recorded as a genuine, gating failure.
+
+Static validation was re-run and passed after all four fixes - that
+batch's intermediate figures, superseded by "DAY6: live validation
+record" below, were (1028 unit tests,
+`version-check` 50/50, `manifest-check` 267/267, `helm-lint`/
+`helm-template` clean, `helm-check`/`ci-check` 177/177, `git diff
+--check` clean, k8s/base and `docs/engineering-reviews/` untouched, no
+live cluster/API contact, nothing staged/committed/pushed/tagged).
+
+## DAY6: live mesh-check remediation - ambient TCP-connect vs AuthorizationPolicy denial
+
+The first actual live `make mesh-check` run against `maops-k8s-day6`
+(with scheduling-check, discovery-check, secret-check, and gateway-check
+all already passing) reported 39/42 - not because the mesh was
+misconfigured, but because the checker's own client-side model was
+wrong about what a raw TCP `connect()` proves in ambient mode.
+
+**Observed behavior**: all three wrong-identity raw TCP `connect()`
+probes (against gateway, app, and state) reported `TCP_CONNECTED`.
+Despite that, ztunnel's own access logs contained correlated denial
+records for all three destinations - the exact wrong SPIFFE source
+identity, the correct destination, `bytes_sent=0`/`bytes_recv=0`, and
+one of two exact errors:
+
+```
+error="http status: 401 Unauthorized"
+error="connection closed due to policy rejection: allow policies exist, but none allowed"
+```
+
+The temporary probe namespace was confirmed `NOT_FOUND` on cleanup,
+default (unmutated) ztunnel logs already contained sufficient evidence
+(so `RUST_LOG` was never mutated), and all workloads/mesh components
+stayed Ready throughout.
+
+**Root cause: a completed source-side TCP `connect()` is not equivalent
+to destination-side AuthorizationPolicy acceptance in ambient mode.**
+Istio ambient's transparent interception means a source Pod's raw
+`connect()` completes against its OWN NODE-LOCAL ztunnel (which accepts
+the client socket as part of redirecting it into the mesh) BEFORE the
+destination-side HBONE tunnel is established and evaluated against
+AuthorizationPolicy. `TCP_CONNECTED` therefore proves only that the
+local ztunnel accepted the client socket - never that the request
+reached, or was authorized to reach, the destination application. The
+previous revision of `scripts/mesh_check.py` treated a client-side
+`TCP_CONNECTED` on the wrong-identity probe as a hard, gating failure
+("the connection unexpectedly succeeded") - live, this was simply wrong
+for ambient mode, and hard-failed a check that was actually working
+correctly.
+
+**Fix, `scripts/mesh_check.py` only** (`networkpolicy_check.assert_denied()`
+and its NetworkPolicy semantics are UNCHANGED - this remediation is
+specific to mesh identity validation):
+
+  - `_record_client_side_supporting_evidence()` no longer hard-fails on
+    any raw-TCP outcome. `TCP_CONNECTED` is relabeled
+    `LOCAL_ZTUNNEL_CONNECT_ACCEPTED` in this script's own output and
+    recorded as non-gating SUPPORTING evidence, exactly like
+    `TCP_CONNECT_TIMEOUT`/`CONNECTION_REFUSED_OR_RESET`/an INCONCLUSIVE
+    probe already were - none of them, alone, ever satisfies OR
+    refutes the identity-denial assertion.
+  - The actual application-reachability leak check moved to the HTTP
+    layer: `_record_client_side_http_leak_check()` reuses the existing
+    phase-separated HTTP probe building block
+    (`networkpolicy_check._http_probe_snippet()`) against each
+    destination's `/livez` path. HTTP 200 is the one hard, gating
+    failure it reports - proof the unauthorized request was actually
+    served. A ztunnel-generated HTTP 401 (or any other non-200 status),
+    a reset/closed connection, a read timeout, or an INCONCLUSIVE probe
+    are all non-gating supporting evidence only.
+  - The identity-denial assertion itself is, as before, made EXCLUSIVELY
+    by `check_authorization_denial_isolated()`'s correlated ztunnel log
+    evidence - this boundary is unchanged and, if anything, more
+    load-bearing now that BOTH client-side layers (TCP and HTTP) are
+    non-gating.
+  - The two exact denial error strings above are now AUTHORITATIVE
+    denial evidence in `_find_denial_evidence()` - never an unverified
+    guess, an exact match against what this project's own pinned Istio
+    1.31.0/Cilium 1.20.1 combination has actually been observed to emit
+    on this cluster: the explicit policy-rejection error is
+    authoritative correlated on its own; the HBONE 401 error is
+    authoritative ONLY when also correlated with `bytes_sent=0`/
+    `bytes_recv=0` (proving no application data was ever exchanged - a
+    401 that DID exchange bytes is a materially different, unverified
+    situation and stays at `CANDIDATE`). Any other error string, or an
+    uncorrelated generic "401"/"denied" substring, remains exactly what
+    it already was - `CANDIDATE` or `BEST_EFFORT`, never silently
+    upgraded.
+  - **Correction to a prior assumption**: earlier revisions treated
+    ztunnel's `connection complete` access-log marker as evidence a
+    connection was ALLOWED, and excluded any line carrying it from
+    denial-evidence consideration. Live output proved that wrong -
+    ztunnel emits `connection complete` for REJECTED connections too,
+    carrying an `error=` field describing why. `_find_denial_evidence()`
+    no longer filters on that marker at all; the actual signal is the
+    presence and content of the `error=` field. This is also why the
+    live run's default (unmutated) logs already satisfied
+    `_find_transport_evidence()`'s "connection complete" check for a
+    REJECTED wrong-identity connection - that check proves local
+    ztunnel activity occurred, never an authorization outcome either
+    way (its own docstring is corrected to say so).
+
+`scripts/networkpolicy_check.py` was not modified by this remediation -
+its `assert_denied()` stays strict (`TCP_CONNECT_TIMEOUT` only) for its
+own NetworkPolicy-specific callers, exactly as the fourth remediation
+already established.
+
+Regression tests added to `tests/test_mesh_check.py` cover, using the
+exact live Istio 1.31 log shapes observed: `TCP_CONNECTED` plus a
+correlated 401 denial passing; `TCP_CONNECTED` plus a correlated
+explicit policy-rejection passing; `TCP_CONNECTED` with no correlated
+denial evidence still failing/INCONCLUSIVE; an HTTP `/livez` 200 hard-
+failing even alongside an unrelated correlated denial record; an HTTP
+401 alone never satisfying denial without correlated ztunnel fields;
+wrong source identity and wrong destination both failing to match; and
+nonzero application bytes never qualifying for the structured 401 form.
+The pre-existing transactional `RUST_LOG`/cleanup tests and the allowed
+gateway->app/app->state positive-control tests were left intact and
+re-verified passing.
+
+Static validation was re-run and passed after this fix. After static
+validation, `make mesh-check`, `make mesh-status`, and `make
+rollout-check` were re-run against the live, preserved
+`maops-k8s-day6` cluster (no cluster recreation, no Cilium/Istio/
+Gateway API reinstall); the corrected `mesh-check` passed 45/45 with
+its probe namespace confirmed removed - see "DAY6: live validation
+record" below for the result and its denial-evidence tier breakdown.
+
+## DAY6: live networkpolicy-check remediation - isolated non-ambient probes
+
+The next live `make networkpolicy-check` run (after `mesh-status`,
+`rollout-check`, and `rbac-check` all passed) reported `gateway ->
+state DENIED` as `TCP_CONNECTED` - the same fundamental ambient-mode
+observation error already corrected in `scripts/mesh_check.py`'s fifth
+remediation and `networkpolicy_check.py`'s own third remediation (see
+above), now discovered in this script's OWN previous design. A second,
+independent finding in the same run - a probe Pod reported as "did not
+disappear within 30 seconds" when the very next diagnostic read already
+showed it gone - was a cleanup deadline boundary race, not a real leak.
+
+**Why a raw `connect()` from an ambient Pod proves only local ztunnel
+socket acceptance.** The previous revision of `networkpolicy_check.py`
+ran its `gateway -> app`/`gateway -> state`/`app -> state` application-
+port assertions directly from the REAL, ambient-enrolled `maops-gateway`/
+`maops-app` Pods. In ambient mode, a source Pod's outbound `connect()`
+is transparently redirected to its own NODE-LOCAL ztunnel before the
+destination is ever reached - so a completed TCP handshake proves only
+that the local ztunnel accepted the client socket, never that the
+destination workload was reached or that Cilium's NetworkPolicy allowed
+the raw path through in the way this script's classification model
+assumed. This was never a valid test for either the ALLOWED or the
+DENIED direction, once maops-platform became ambient-enrolled.
+
+**Why application-port NetworkPolicy checks now require non-ambient
+isolated probes, and why `istio.io/dataplane-mode: none`.** The fix,
+`check_application_port_networkpolicy_isolated()`, creates four
+temporary Pods directly in `maops-platform` - two sources (gateway-
+labeled, app-labeled) kept alive for `kubectl exec`, two targets (app-
+labeled, state-labeled) each running a small Python TCP listener on
+port 8080 - each carrying `istio.io/dataplane-mode: none`, Istio's own
+documented PER-POD override of a namespace's `istio.io/dataplane-mode:
+ambient` label (maops-platform carries the ambient label at the
+namespace level - see "DAY6: Istio ambient service mesh" above). This
+opts each probe Pod OUT of ambient redirection, so its raw `connect()`
+is genuinely unredirected and isolates Cilium's NetworkPolicy
+enforcement exactly the way the (unaffected, never-ambient)
+`validation-client` probe already did. Each probe Pod carries ONLY the
+single `app.kubernetes.io/component` label the applicable NetworkPolicy
+selector actually keys on - never the complete live Deployment/
+StatefulSet/Service label set, which risks accidentally matching an
+unrelated selector or Service. Before any assertion runs, every probe
+Pod is independently verified Running, carrying that label, carrying NO
+`ambient.istio.io/redirection` annotation, no `istio-proxy` sidecar,
+no `ownerReferences` (never adopted by a controller), and absent from
+every live application Service's EndpointSlice - never assumed from how
+the Pod was created.
+
+**Why direct temporary Pod IPs are used.** Every assertion connects
+directly to a target probe Pod's own `status.podIP`, never a Service -
+so the probe can never alter or depend on live Service endpoint
+selection, and the direct-IP safety check above has something concrete
+to verify against.
+
+**Why ambient identity enforcement remains `mesh_check.py`'s
+responsibility.** `networkpolicy_check.py` now verifies Cilium/
+Kubernetes NetworkPolicy using isolated, non-ambient plaintext probes
+only; `mesh_check.py` verifies ambient mTLS and identity-scoped Istio
+AuthorizationPolicy, live, against the REAL ambient-enrolled Pods.
+Neither script claims to be able to attribute a real ambient Pod's
+combined-path result to the other layer specifically - that combined-
+path ambiguity is exactly why `networkpolicy_check.py` no longer uses
+real ambient Pods for its own raw-TCP assertions at all.
+`networkpolicy_check.assert_denied()` itself is UNCHANGED and stays
+strict (`TCP_CONNECT_TIMEOUT` only, for an isolated non-ambient probe) -
+this remediation fixed WHICH Pods call it, never what it accepts.
+
+**Why the cleanup verifier performs a final boundary read.**
+`delete_pod_and_verify_gone()`'s bounded polling window widened from
+30s to 75s, and - if the normal polling loop never observes an explicit
+`NOT_FOUND` before that deadline - performs exactly ONE final, fresh
+tri-state read before deciding failure: `NOT_FOUND` there still passes
+(labeled as a boundary-read pass, for transparency), `EXISTS` still
+fails, and `API_ERROR` still fails immediately. This directly addresses
+the observed race (a Pod disappearing right around the polling
+deadline) without ever using forced deletion to manufacture a pass -
+the same tri-state EXISTS/NOT_FOUND/API_ERROR model is unchanged, only
+given one more genuinely fresh look before giving up.
+`final_state_check.py` gained a matching whole-suite-level backstop,
+`check_no_leaked_networkpolicy_probe_pods()` (this protection was
+genuinely absent before - the four new probe Pods had no independent
+leak check), matching the existing `check_no_leaked_mesh_probe_namespace()`
+pattern but as a label-key list query (there is no single fixed name to
+check against).
+
+**What was NOT changed:** no NetworkPolicy, AuthorizationPolicy,
+PeerAuthentication, Cilium, Istio, Gateway, HTTPRoute, Secret,
+application code, or workload configuration was weakened or modified to
+make any assertion pass - every fix here is confined to which Pods
+`networkpolicy_check.py` uses to observe the (unchanged) enforcement
+and how bounded cleanup verification tolerates a genuine deadline
+boundary race.
+
+Static validation was re-run and passed after this fix. After static
+validation, `make mesh-status`, `make rollout-check`,
+`make networkpolicy-check`, `make rollout-check`, and `make mesh-status`
+were re-run against the live, preserved `maops-k8s-day6` cluster (no
+cluster recreation, no Cilium/Istio/Gateway API reinstall, no image
+rebuild/reload, no Secret rotation, no redeploy); the corrected
+`networkpolicy-check` passed 37/37 with every probe Pod confirmed gone
+- see "DAY6: live validation record" below.
+
+## DAY6: live-discovered Helm ConfigMap rollout remediation
+
+The final Day 6 live-validation stage reached `make helm-lifecycle-check`,
+which probes a real `helm upgrade` + `helm rollback` cycle against a
+purely cosmetic value (`gateway.config.appMessage`). The upgrade and
+rollback both reported success, and rollback correctly restored the
+original state - but the externally-routed `/config` never showed the
+probe's new message during the upgrade window at all. The cluster was
+left fully restored; this was never a restoration failure.
+
+**Root cause, confirmed read-only via `helm get manifest --revision`
+before any fix was written**: the probe revision's `maops-gateway-config`
+ConfigMap DID contain the new message - the values/template mapping was
+never wrong - but the gateway Deployment's rendered Pod template was
+byte-for-byte IDENTICAL between the baseline and probe revisions, and
+the live gateway Pods (same UIDs, same ReplicaSet, unchanged since the
+very first successful deploy) were never replaced across either
+revision. **Helm updating a ConfigMap does not automatically restart
+Pods that consume it as environment variables** - `envFrom`-sourced
+ConfigMap data is read only once, at container startup, and Kubernetes
+only creates a new ReplicaSet/rolls Pods when the Pod template ITSELF
+changes. Since nothing in the Deployment's Pod template referenced the
+ConfigMap's content, no new rollout was ever triggered - **`kubectl
+rollout status` reported success because it was trivially, instantly
+true: an already-healthy, completely unchanged Deployment is by
+definition "successfully rolled out"**, not because a new rollout had
+actually happened.
+
+**Fix (chart)**: every workload that consumes a ConfigMap through
+environment variables (`maops-gateway`, `maops-app`, `maops-state`) now
+carries a deterministic `checksum/config` annotation - a sha256 digest
+of that workload's OWN ConfigMap template's rendered content - under
+`spec.template.metadata.annotations` (the Pod template specifically,
+never the workload's own top-level `metadata.annotations`, which does
+not influence rollout behavior at all). **A deterministic Pod-template
+checksum turns a config-only change into a declarative rollout
+trigger**: any change to a ConfigMap's rendered content now changes the
+consuming workload's checksum too, which changes the Pod template,
+which is exactly what makes `helm upgrade` create a new ReplicaSet.
+Each workload's checksum is scoped to its own ConfigMap template only
+(via `$.Template.BasePath`) - changing `gateway.config.appMessage`
+changes only the gateway checksum, never app's or state's, and
+likewise for the other two.
+
+**Fix (validation)**: `scripts/validate_helm_chart.py` now statically
+rejects a missing, empty, malformed, or cross-referenced (a workload
+accidentally hashing another component's ConfigMap - caught via
+pairwise checksum distinctness) checksum, and rejects one placed on the
+wrong metadata level. Render-level tests (`tests/test_validate_helm_chart.py`)
+prove reproducibility and per-workload scoping directly against the
+real chart via repeated `helm template` renders, never a live cluster.
+
+**Fix (lifecycle validation)**: **live validation now proves actual Pod
+replacement and per-Pod config convergence, never accepting
+`kubectl rollout status` alone.** `scripts/helm_lifecycle_check.py`'s
+upgrade proof now requires ALL of: the live ConfigMap actually contains
+the new message, the Deployment's `observedGeneration` reached the new
+`generation`, the Pod-template checksum actually changed, a DIFFERENT
+ReplicaSet became the active one, every expected Pod is Ready, NONE of
+the pre-upgrade Pod UIDs remain, EVERY Ready Pod's own `/config`
+endpoint (queried directly inside that specific Pod over loopback,
+never through the Service) reports the new message, and the
+externally-routed Gateway API path (bounded polling) agrees too. The
+guaranteed rollback path applies the identical, symmetric proof in
+reverse - including that the checksum returns to the EXACT pre-upgrade
+value, not merely "a different" one, and that none of the upgrade's own
+Pod UIDs remain either. PVC/PV identity is verified unchanged at both
+stages, exactly as before.
+
+**The live failure itself rolled back successfully and did not alter
+persistent storage** - `helm rollback` restored the release to its
+baseline revision, the live `APP_MESSAGE` was confirmed back to its
+original value, and the state PVC/PV identity was confirmed unchanged
+throughout this remediation's own diagnosis (read-only `helm get
+manifest`/`kubectl get replicaset`/`kubectl get pods` inspection only -
+the release was never mutated to produce this diagnosis).
+
+**The corrected live runs then passed:** `helm-lifecycle-check` 24/24
+(Helm revisions 5-7, 2026-09-23) and `final-state-check` 43/43 - see
+"DAY6: live validation record" below for the full revision history and
+what each property proves.
+
+## DAY6: live validation record
+
+This is the Day 6 evidence record - the Day 6 counterpart of "DAY5:
+released validation record" above. Day 6 is **release ready as a local
+kind reference platform** (final adjudication: RELEASE READY,
+2026-09-24) but **not yet committed, merged, tagged, or published**;
+this record describes a validated local kind reference platform, not a
+production-ready platform. The independent reviews, their adjudication,
+and the review-remediation log are under
+[`docs/engineering-reviews/day-06-*`](engineering-reviews/) (see
+[`day-06-final-adjudication.md`](engineering-reviews/day-06-final-adjudication.md)
+and [`day-06-remediation-log.md`](engineering-reviews/day-06-remediation-log.md)).
+
+**How the live results were obtained.** Not as one uninterrupted `make
+day6-check` invocation: the live targets were run stage by stage
+against one preserved cluster between 2026-09-22 and 2026-09-23, and
+each live-discovered defect (the sections above) was fixed and the
+affected stage re-run - never by recreating the cluster, rotating
+Secrets, or weakening a check. The figures below are the final result
+of each stage as recorded by the operator during that run.
+
+**Static results (before the 2026-09-24 review remediation):** 1161
+unit tests passed; `version-check` 50/50; `manifest-check` 267/267
+(frozen k8s/base); `helm-lint` and `helm-template` passed; `helm-check`
+202/202; `ci-check` passed; the chart renders exactly 30 objects, with
+zero Secret, Ingress, ClusterRole, or waypoint objects. (The review
+remediation adds tests and one static validator - see "Review
+remediation re-validation" below for the post-remediation figures.)
+
+**Live results (2026-09-22 to 2026-09-23):**
+
+| Check | Result |
+|---|---|
+| `networkpolicy-check` (isolated non-ambient probes) | 37/37 |
+| `mesh-check` | 45/45 |
+| `persistence-check` | 12/12 |
+| `retention-check` | 22/22 |
+| `helm-lifecycle-check` (corrected, checksum-driven) | 24/24 |
+| `final-state-check` | 43/43 |
+
+At the end of that run: nodes 3/3 Ready; Cilium 3/3; istio-cni-node
+3/3; ztunnel 3/3; istiod available; gateway 3/3, app 3/3, state 1/1;
+`Gateway/maops-edge` `Accepted=True`, `Programmed=True`;
+`HTTPRoute/maops-gateway-route` `Accepted=True`, `ResolvedRefs=True`;
+the state PVC and its bound PV kept the same UIDs throughout every
+mutating experiment; the suite-level `/state` value was restored to its
+captured run baseline; and no mesh-probe namespace or NetworkPolicy
+probe Pod was left behind.
+
+**Mesh identity-denial evidence tiers.** `mesh-check`'s 45/45 is the
+complete tally (ztunnel/istiod/istio-cni health, ambient enrollment
+with no sidecars, STRICT mTLS, live AuthorizationPolicy principals,
+allowed-path positive controls, HTTP-layer leak checks, cleanup). Within
+it, the **three gating wrong-identity denial assertions** (against
+gateway, app, and state) were each supported by **AUTHORITATIVE**
+correlated ztunnel policy-rejection evidence - the exact wrong SPIFFE
+source identity, the correct destination, and one of the two exact
+denial strings documented in "DAY6: live mesh-check remediation" above.
+For those three assertions, CANDIDATE = 0 and BEST_EFFORT = 0.
+
+**Helm release history** (`maops-kubernetes-platform-day6`, all
+chart/app version 0.6.0):
+
+| Revision | Date | What it is |
+|---|---|---|
+| 1 | 2026-09-22 | First install; recorded as failed (`maops-app` progress deadline exceeded) - consistent with the pre-`fsGroup` projected-Secret failure |
+| 2 | 2026-09-22 | First healthy deployment - the original stable baseline |
+| 3 | 2026-09-23 | Failed lifecycle probe: changed the ConfigMap but not the Pod template, so no rollout happened (the defect behind "DAY6: live-discovered Helm ConfigMap rollout remediation") |
+| 4 | 2026-09-23 | Successful rollback to revision 2 |
+| 5 | 2026-09-23 | Checksum-corrected deployment (`checksum/config` Pod-template annotations) |
+| 6 | 2026-09-23 | Successful lifecycle probe upgrade (genuine ReplicaSet/Pod replacement) |
+| 7 | 2026-09-23 | Successful rollback to revision 5 - the current deployed release |
+
+The corrected `helm-lifecycle-check` (revisions 6-7) proved:
+`observedGeneration` convergence; checksum divergence on upgrade and
+exact restoration on rollback; ReplicaSet replacement; zero overlap
+with the prior Pod UIDs; every Ready Pod directly observing the
+expected configuration; the external Gateway API path observing it
+too; unchanged PVC/PV identity; and rollback always executing once an
+upgrade was submitted.
+
+**Host/Docker restart recovery (local-environment limitation).** Two
+host/Docker restarts were observed on this local Kind-on-Docker-on-WSL2
+environment, with different outcomes:
+
+1. During the staged live run, one restart left one older,
+   ambient-enrolled `maops-app` Pod unable to reach `maops-state`
+   through ztunnel: its local, redirected TCP connection was accepted,
+   but traffic went no further. Replacing only that already-unready,
+   stateless Pod restored connectivity - including when the
+   replacement was scheduled on the same worker node.
+2. A later restart (the WSL host rebooted at 09:05 on 2026-09-24)
+   briefly produced Pods in `Unknown` state,
+   `FailedCreatePodSandBox` events (`no ztunnel connection`), and
+   Cilium API rate-limit responses (HTTP 429). It then recovered
+   without any Pod replacement, through kubelet sandbox re-creation
+   alone.
+
+Neither incident proves an internal ztunnel defect - the evidence
+supports only "restart recovery in this environment varies." Before any
+validation after a host or Docker restart, run the bounded readiness
+gates first (`make cni-status`, `make context-check`, `make
+mesh-status`, `make rollout-check`); never assume the previous run's
+state survived. The same reboot also cleared `/tmp`, which is where
+the suite-level state baseline file lives
+(`DAY6_SUITE_BASELINE_PATH`, by default under `/tmp`) - a run's
+baseline does not survive a host reboot, by design, and is never
+recaptured to make a later check pass. A bracketed run that must
+survive a reboot passes an explicit `DAY6_SUITE_BASELINE_PATH` in a
+private directory outside the repository and `/tmp`, as the "Fresh
+baseline-bracketed state run" below did.
+
+**Review remediation re-validation (2026-09-24).** After the
+independent review round: static validation passed again (1197 unit
+tests, `helm-check` 215/215 with the new ambient-probe policy
+validator); `make mesh-install` removed the istiod HPA; `cni-status`,
+`context-check`, `mesh-status`, `rollout-check`, `gateway-check`,
+`smoke`, and `mesh-check` (45/45; the same three AUTHORITATIVE denial
+assertions, CANDIDATE 0, BEST_EFFORT 0) all passed. The post-reboot
+`final-state-check` reached 42/43: the run's suite baseline file had
+been cleared from `/tmp` by the 09:05 host reboot, so that one item
+failed closed and was deliberately not recaptured. That 42/43 stands as
+the honest result of that attempt.
+
+**Fresh baseline-bracketed state run (2026-09-24, 11:47-11:51 +06).**
+To re-establish suite-level restoration evidence without recreating
+the lost file, an uninterrupted `state-check` -> `persistence-check` ->
+`retention-check` -> `final-state-check` bracket was run with one fresh
+run ID (`979a1e7e72e9418199b0486cf81a920e`) passed explicitly to every
+step, and its baseline kept in a persistent, private location outside
+the repository and outside `/tmp`
+(`$HOME/.local/state/maops-k8s-day6/`, directory 0700, file 0600).
+Results: `state-check` 24/24 (baseline captured and verified - mode,
+run ID, context, namespace, PVC and PV UIDs - before any mutation);
+`persistence-check` 12/12; `retention-check` 22/22; `final-state-check`
+**43/43**, including the suite-level `/state` value matching the
+pre-mutation baseline; PVC/PV UIDs unchanged; the read-only
+`cni-status`/`context-check`/`mesh-status`/`rollout-check`/
+`gateway-check`/`smoke` gates all passed afterwards with no leaked
+probe resources. Scaling, rolling-update, PDB, Helm lifecycle, and
+NetworkPolicy checks were not re-run; their results above stand. See
+[`day-06-remediation-log.md`](engineering-reviews/day-06-remediation-log.md)
+and [`day-06-final-adjudication.md`](engineering-reviews/day-06-final-adjudication.md)
+for the exact commands, results, and final verdict.
+
+## What Day 6 proves, and what it explicitly does not claim
+
+**Proven statically** (`make ci-check` and its constituent targets):
+the chart renders exactly the intended 30-object inventory with no
+Ingress/waypoint/Secret/ClusterRole objects; every version/image-tag/
+chart-version/appVersion is `0.6.0`; workload `securityContext`
+requirements (including `fsGroup` 10001 with 0440 Secret files) are
+intact; ServiceAccounts/RBAC remain least-privilege and
+namespace-scoped; the NetworkPolicy topology is exact (including the
+Day 5 validation-client shortcut's absence and the peerless HBONE
+rule); PeerAuthentication is STRICT; every AuthorizationPolicy
+principal/target is exact (against `maops-edge-istio`, Istio's real
+deterministic identity); Gateway/HTTPRoute references are exact; the
+Istio Gateway `parametersRef` ConfigMap and the ambient health-probe
+CiliumClusterwideNetworkPolicy both have their exact shapes pinned;
+per-workload `checksum/config` annotations are deterministic and
+isolated; the values schema rejects controlled invalid fixtures; and
+k8s/base remains untouched and frozen at Day 5.
+
+**Proven live on the local kind cluster** (see "DAY6: live validation
+record" above): Istio's Gateway API controller generates the expected
+Deployment/Service/ServiceAccount for `maops-edge`, with GatewayClass/
+Gateway/HTTPRoute conditions Accepted/Programmed/Resolved; the rendered
+`parametersRef` behavior (NodePort 30080 reachable at
+`127.0.0.1:18080`, target port 80, `maops-edge-istio` with token
+automount disabled); Cilium 1.20.1 and Istio 1.31.0 ambient coexist
+(ztunnel healthy on every node, HBONE on 15008, STRICT mTLS in effect,
+no sidecars); allowed identity paths work and an authenticated but
+unauthorized identity is denied at the AuthorizationPolicy layer,
+proven by AUTHORITATIVE correlated ztunnel evidence rather than a raw
+TCP connect; NetworkPolicy allow/deny behavior on plaintext,
+non-ambient paths, isolated from ambient interception; the transactional
+ztunnel `RUST_LOG` handling and probe cleanup leave nothing behind;
+persistence and PVC retention against the Helm-deployed `maops-state`;
+a real Helm upgrade/rollback with genuine Pod replacement and preserved
+storage identity; and full restoration to the normal baseline
+afterward (`final-state-check`). The other inherited Day 3-5 live
+checks were re-run in the same staged run, but only the counts tabled
+above are recorded here.
+
+**Explicitly NOT claimed:** production readiness at any level - this
+is a validated local kind reference platform (no HA: single istiod
+replica with autoscaling deliberately disabled, single Cilium operator;
+no TLS/cert-manager, cloud LoadBalancer, or observability stack); any
+Istio 1.31 ztunnel denial shape other than the two observed
+AUTHORITATIVE strings (other shapes stay CANDIDATE/BEST_EFFORT, never
+promoted without live evidence); uniform recovery after host/Docker
+restarts (see above); L7/HTTP-aware east-west authorization (no
+waypoint), or HTTP-method-level authorization from the NetworkPolicy/
+AuthorizationPolicy layer; and live-cluster validation in GitHub
+Actions (CI is cluster-free by design).
