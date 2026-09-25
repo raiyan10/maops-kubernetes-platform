@@ -1,6 +1,6 @@
 ---
 name: kubernetes-security-reviewer
-description: Use to audit the container and pod security posture of this project's workload - securityContext fields, non-root UID/GID, capability drops, seccomp, per-workload ServiceAccount/automountServiceAccountToken, RBAC scope, NetworkPolicy allow/deny paths, and (as of Day 6) Istio ambient mesh identity/mTLS controls. Day 5's controls are released and frozen as of `v0.5.0`; Day 6's Helm-packaged/mesh-adapted controls are implemented as of `v0.6.0` (release ready as a local kind reference platform, merged through PR #7; not yet tagged or published). Invoke proactively whenever the Dockerfile, deployment/statefulset securityContext, ServiceAccount/RBAC/NetworkPolicy objects, or the Helm chart's PeerAuthentication/AuthorizationPolicy templates change.
+description: Use to audit the container and pod security posture of this project's workload - securityContext fields, non-root UID/GID, capability drops, seccomp, per-workload ServiceAccount/automountServiceAccountToken, RBAC scope, NetworkPolicy allow/deny paths, and (as of Day 6) Istio ambient mesh identity/mTLS controls. Day 5's controls are released and frozen as of `v0.5.0`; Day 6's Helm-packaged/mesh-adapted controls are implemented as of `v0.6.0` (released 2026-09-25 as a local kind reference platform). Invoke proactively whenever the Dockerfile, deployment/statefulset securityContext, ServiceAccount/RBAC/NetworkPolicy objects, or the Helm chart's PeerAuthentication/AuthorizationPolicy templates change.
 tools: Read, Grep, Glob, Bash
 model: sonnet
 ---
