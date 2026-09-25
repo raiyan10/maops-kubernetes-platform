@@ -251,3 +251,32 @@ no-action), NEW-1 closed by the fresh bracketed run, static and targeted live va
 This is readiness of a validated **local kind reference platform**, not a production-readiness
 claim. Staging, commit, tag, and release remain the operator's explicit decisions; nothing has
 been staged, committed, pushed, or tagged.
+
+---
+---
+
+## Post-merge addendum (2026-09-25) — release gate re-opened
+
+> Appended; the 2026-09-24 verdict above is preserved as the historical adjudication of that
+> evidence.
+
+PR #6 was merged to `main` (`ca729f2`). After a later WSL/Kind component restart,
+`maops-state-0` was Kubernetes Ready without its ambient in-Pod listeners (15001/15006/15008),
+and one gateway Pod (`maops-gateway-7d59b678df-f88mj`) was unready without them, while
+`mesh-status` passed and `rollout-check` failed 25/35. Recreating only
+those two Pods, with storage identity preserved, restored service. On merged `main` the gate
+then passed, including `final-state-check` 43/43 against run `979a1e7e…`'s preserved baseline.
+The missing listeners are confirmed; the mechanism is not proven.
+
+The incident exposed a validation gap: no existing check verified per-Pod ambient listeners.
+Branch `fix/day-6-ambient-listener-check` adds the read-only `make ambient-workload-check` (see
+`day-06-remediation-log.md`, 2026-09-25 entry). It verifies expected in-Pod listeners plus
+Pod/namespace metadata only. It does not by itself prove redirection rules, HBONE/mTLS traffic,
+or AuthorizationPolicy behavior; the existing live traffic tests, led by `make mesh-check`,
+remain the evidence for those. On 2026-09-25 it passed 67/67 live and
+`make ci-check` passed with 1228 tests (after the review follow-up recorded in the remediation
+log).
+
+**Current release status: GATE PENDING.** `v0.6.0` should not be tagged or published until this
+remediation passes GitHub CI and a live recheck on merged `main` passes, including
+`make ambient-workload-check`.

@@ -298,6 +298,9 @@ deploy: ## Apply the Day 6 Helm chart (`helm upgrade --install`) - the SOLE Day 
 		--kube-context $(KCONTEXT) \
 		--wait
 
+ambient-workload-check: ## Read-only: verify every deployed gateway (3), app (3), and state (1) Pod has its expected identity/ambient-enrollment metadata and ztunnel LISTEN sockets on 15001/15006/15008 in its own network namespace (Ready or the redirection annotation alone never pass; sockets and metadata only - not redirection rules, HBONE/mTLS traffic, or AuthorizationPolicy behavior, which mesh-check proves) - run after deploy and after any host/Docker restart, before rollout-check; mesh-status remains the infrastructure-only check
+	python3 scripts/ambient_workload_check.py
+
 rollout-check: ## Wait for and verify real Deployment/Service/EndpointSlice/ConfigMap/security runtime state for gateway/app (unchanged Day 3-5 behavior, now against the Helm-deployed workloads)
 	python3 scripts/cluster_check.py
 
@@ -389,6 +392,7 @@ day6-check: ## Authoritative Day 6 validation sequence - explicitly sequential v
 		$(MAKE) secret-bootstrap && \
 		$(MAKE) gateway-apply && \
 		$(MAKE) deploy && \
+		$(MAKE) ambient-workload-check && \
 		$(MAKE) rollout-check && \
 		$(MAKE) scheduling-check && \
 		$(MAKE) discovery-check && \

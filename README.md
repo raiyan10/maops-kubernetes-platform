@@ -18,10 +18,11 @@ frozen. **Days 1-5 are complete.**
 **Active implementation: `v0.6.0`** (Day 6 - Helm packaging, minimal
 cluster-free GitHub Actions CI, the Kubernetes Gateway API through
 Istio as the sole cluster-external routing approach, and an Istio
-ambient service mesh). **Release ready as a local Kind reference
-platform** - static and live validation passed and the independent
-review findings are closed - but **not yet committed, merged, tagged,
-or published**. See [Day 6 status](#day-6-status-release-ready-local-kind-not-yet-committed-or-released)
+ambient service mesh). **Merged to `main` via PR #6** as a local Kind
+reference platform - static and live validation passed and the
+independent review findings are closed - but **`v0.6.0` is not yet
+tagged or published**, and the release gate is pending the 2026-09-25
+post-restart remediation. See [Day 6 status](#day-6-status-merged-local-kind-not-yet-tagged-or-released)
 below.
 
 **Final milestone: `v1.0.0`** (Day 7 - Recreate/Blue-Green/Canary
@@ -50,8 +51,8 @@ together, including the full Day 6 design.
   exercises real API authorization (`maops-diagnostics`), and standard
   `networking.k8s.io/v1` NetworkPolicy objects enforced by Cilium.
 - **Day 6's Helm packaging, Gateway API routing, and Istio ambient
-  mesh** (implemented and release ready on the local kind cluster; not
-  yet committed, merged, tagged, or published - see below):
+  mesh** (implemented and merged on the local kind cluster; not yet
+  tagged or published - see below):
   - The application is packaged as a Helm chart
     (`charts/maops-kubernetes-platform`) - the sole Day 6 application
     deployment source. `k8s/base` (Day 5's Kustomize source) stays
@@ -89,12 +90,13 @@ operation on a cloud-managed Kubernetes offering - this remains a
 local, single-tenant kind cluster built for staged engineering
 demonstration.
 
-## Day 6 status: release ready (local kind), not yet committed or released
+## Day 6 status: merged (local kind), not yet tagged or released
 
-Day 6 is **release ready as a local Kind reference platform**. It has
-**not** yet been committed, merged, tagged (`v0.6.0`), or published -
-those remain explicit, separate steps. It is not a production-ready
-platform.
+Day 6 is **merged to `main` (PR #6)** as a local Kind reference
+platform. It has **not** been tagged (`v0.6.0`) or published - those
+remain explicit, separate steps, and the release gate is pending the
+2026-09-25 post-restart remediation described below. It is not a
+production-ready platform.
 
 - **Static** (`make ci-check`, the same cluster-free sequence GitHub
   Actions runs): 1197 unit tests; `version-check` 50/50;
@@ -121,7 +123,18 @@ platform.
   baseline-bracketed run** (`state-check` -> `persistence-check` 12/12
   -> `retention-check` 22/22 -> `final-state-check`, with the baseline
   kept outside `/tmp`) then passed **43/43**, closing that gap. Final
-  adjudication: **RELEASE READY**.
+  adjudication (2026-09-24): **RELEASE READY**.
+- **Post-restart incident (2026-09-25):** after a WSL/Kind component
+  restart, `context-check`, `cni-status`, and `mesh-status` passed but
+  `rollout-check` failed 25/35. `maops-state-0` was Kubernetes Ready
+  yet had no ambient in-Pod listeners on 15001/15006/15008, and one
+  gateway Pod was unready without them; recreating only those two Pods
+  (storage identity preserved) restored the chain, and the gate then
+  passed on merged `main` (`rollout-check` 35/35, `gateway-check` 8/8,
+  `smoke` 6/6, `final-state-check` 43/43). The new read-only
+  `make ambient-workload-check` now catches missing listeners directly.
+  The release gate stays pending until this remediation passes CI and
+  a merged-`main` live recheck.
 
 The exact results, dates, Helm revision history, mesh denial-evidence
 tiers, and accepted limitations (including host/Docker restart
@@ -276,6 +289,7 @@ make namespace-apply          # apply the three Day 6 Namespaces + the diagnosti
 make secret-bootstrap         # create/preserve BOTH runtime Secrets - never printed
 make gateway-apply             # apply the Istio Gateway infrastructure ConfigMap + the Gateway object
 make deploy                      # helm upgrade --install the Day 6 application chart (never k8s/base)
+make ambient-workload-check     # READ-ONLY: every gateway/app/state Pod has ztunnel listeners on 15001/15006/15008
 make rollout-check              # real Deployment/Service/EndpointSlice/ConfigMap/security state
 make scheduling-check           # real worker-only scheduling + topology spread proof (gateway/app)
 make discovery-check            # real Kubernetes DNS + gateway -> app Service HTTP proof
@@ -388,9 +402,10 @@ make namespace-apply          # 12. apply the three Namespaces + diagnostics Ser
 make secret-bootstrap         # 13. create/preserve BOTH runtime Secrets (needs maops-platform to exist)
 make gateway-apply             # 14. apply the Istio Gateway infra ConfigMap + the Gateway object
 make deploy                       # 15. helm upgrade --install the application chart
+make ambient-workload-check     # 16. READ-ONLY: per-Pod ztunnel listeners before rollout validation
+```
 
 This is the same order `make day6-check` runs.
-```
 
 `make deploy` applies `charts/maops-kubernetes-platform` in full - 30
 rendered objects (3 ConfigMaps, 3 ServiceAccounts, 1 Role, 1
@@ -403,6 +418,11 @@ out-of-band by `scripts/secret_bootstrap.py`, exactly as in Days 2-5.
 ## Verification
 
 ```bash
+make ambient-workload-check # READ-ONLY: all 7 gateway/app/state Pods - identity and ambient-enrollment
+                              #   metadata, plus ztunnel LISTEN sockets on 15001/15006/15008 in each Pod's
+                              #   own network namespace (Ready/annotation alone never pass). Sockets and
+                              #   metadata only: redirection, mTLS traffic, and AuthorizationPolicy
+                              #   behavior are proven by mesh-check
 make rollout-check          # node/version/namespace/replicas/EndpointSlice/ConfigMap/
                               #   security/UID-GID/no-SA-token/Secret-mount (gateway/app)
 make scheduling-check       # worker-only scheduling + topology spread (gateway/app)
@@ -459,6 +479,31 @@ afterward (bounded `kubectl port-forward` via `scripts/portforward.py`;
 probe-Pod-creating scripts always delete their own short-lived Pods).
 Every live script fails closed via `kube.verify_context()` if it is not
 actually talking to the verified `kind-maops-k8s-day6` cluster.
+
+## After a host, Docker, or WSL restart
+
+Restart recovery varies in this local Kind-on-Docker-on-WSL
+environment (see `docs/architecture.md`'s "DAY6: post-restart ambient
+listener incident (2026-09-25)"). Before any other validation, run the
+read-only gates in this order:
+
+```bash
+make cni-status              # Cilium healthy on every node
+make context-check           # verified Day 6 cluster, all nodes Ready
+make mesh-status             # istiod/istio-cni/ztunnel healthy (infrastructure only)
+make ambient-workload-check  # every application Pod has its ambient metadata and ztunnel listeners
+make rollout-check           # full workload rollout validation
+```
+
+`mesh-status` checks the mesh infrastructure only. `ambient-workload-check`
+adds a per-Pod check that each application Pod has its expected ambient
+metadata and ztunnel in-Pod listeners - a necessary condition for ambient
+traffic, not proof that traffic is redirected, that HBONE/mTLS succeeds,
+or that AuthorizationPolicy behaves correctly (`mesh-check`,
+`networkpolicy-check`, `gateway-check`, and `smoke` prove those). If it
+reports a Pod with missing listeners, that Pod is the one to investigate - the
+2026-09-25 recovery replaced only the affected Pods, never the
+infrastructure.
 
 ## Port-forward usage
 
@@ -539,11 +584,11 @@ kind/cluster-day6.yaml       Day 6's pinned kind config - adds the 18080->30080 
 scripts/                     dependency-free Python validation + cluster tooling; new for Day 6: helm_check.py,
                               validate_helm_chart.py, validate_gateway_values_configmap.py,
                               validate_cilium_probe_policy.py, gateway_check.py, mesh_check.py, mesh_status.py,
-                              helm_lifecycle_check.py, day6_lock.py
+                              helm_lifecycle_check.py, day6_lock.py, ambient_workload_check.py
 tests/                       Docker-free unit tests (incl. negative cases and the Helm values-schema tests)
 .github/workflows/ci.yml     minimal, cluster-free GitHub Actions CI (new, Day 6)
 docs/                        architecture.md, roadmap.md, engineering-reviews/ (Days 1-5 frozen, Day 6 reviews), images/
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      0.6.0 (Day 6 - release ready on local kind; not yet committed, merged, tagged, or published)
+VERSION                      0.6.0 (Day 6 - merged on local kind; not yet tagged or published)
 ```

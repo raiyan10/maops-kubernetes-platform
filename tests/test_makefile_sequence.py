@@ -354,6 +354,36 @@ class IstiodAutoscalingDisabledTests(unittest.TestCase):
         self.assertIn("autoscaleEnabled", self._istiod_install_block())
 
 
+class AmbientWorkloadCheckPlacementTests(unittest.TestCase):
+    """DAY6 post-restart remediation (2026-09-25): the per-Pod ztunnel
+    listener check runs on DEPLOYED workloads - after `deploy`, directly
+    before the lengthy `rollout-check` - while `mesh-status` stays the
+    infrastructure-only gate before any application is deployed, and
+    the cluster-free `ci-check` never runs it."""
+
+    def setUp(self):
+        self.sequence = re.findall(r"\$\(MAKE\)\s+([a-zA-Z0-9_-]+)", _recipe_block("day6-check"))
+
+    def test_runs_exactly_once_directly_after_deploy_and_before_rollout_check(self):
+        self.assertEqual(self.sequence.count("ambient-workload-check"), 1)
+        idx = self.sequence.index("ambient-workload-check")
+        self.assertEqual(self.sequence[idx - 1], "deploy")
+        self.assertEqual(self.sequence[idx + 1], "rollout-check")
+
+    def test_mesh_status_still_precedes_application_deployment(self):
+        self.assertLess(self.sequence.index("mesh-status"), self.sequence.index("deploy"))
+        self.assertIn("scripts/mesh_status.py", _recipe_block("mesh-status"))
+        self.assertNotIn("ambient_workload_check", _recipe_block("mesh-status"))
+
+    def test_target_runs_the_read_only_script_without_the_mutation_lock(self):
+        recipe = _recipe_block("ambient-workload-check")
+        self.assertIn("python3 scripts/ambient_workload_check.py", recipe)
+        self.assertNotIn("$(DAY6_LOCK)", recipe)
+
+    def test_ci_check_stays_cluster_free(self):
+        self.assertNotIn("ambient-workload-check", _recipe_block("ci-check"))
+
+
 class ContextCheckDocstringConsistencyTests(unittest.TestCase):
     """scripts/context_check.py's own module docstring must not claim a
     stale ordering relationship that the Makefile no longer has."""

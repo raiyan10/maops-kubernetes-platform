@@ -180,8 +180,9 @@ advanced for Day 6.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 
-**IMPLEMENTED / RELEASE READY as a local kind reference platform - not
-yet committed, merged, tagged, or published.** The application (gateway/app/state, unchanged since
+**IMPLEMENTED and MERGED to `main` (PR #6) as a local kind reference
+platform - `v0.6.0` not yet tagged or published; the release gate is
+pending the 2026-09-25 post-restart remediation (see below).** The application (gateway/app/state, unchanged since
 Day 4) is packaged as a Helm chart (`charts/maops-kubernetes-platform`)
 - the sole Day 6 application deployment source; `k8s/base` remains the
 frozen, unmodified Day 5 Kustomize source and is never applied by any
@@ -260,6 +261,19 @@ that gap, and the final adjudication is **RELEASE READY**. Day 6 is a
 validated local kind reference platform, not a production-ready one;
 commit, merge, tag, and release remain separate, explicit steps
 (`.claude/skills/release-readiness/SKILL.md`).
+
+**Merged, then post-restart remediation (2026-09-25):** Day 6 was merged
+to `main` via PR #6. After a later WSL/Kind component restart,
+`maops-state-0` was Kubernetes Ready without its ambient in-Pod
+listeners (15001/15006/15008), and one gateway Pod was unready without
+them; recreating only those two Pods restored the chain, with storage identity
+preserved, and the gate then passed on merged `main`
+(`final-state-check` 43/43). A new read-only `make
+ambient-workload-check` now checks those listeners per Pod, after
+`deploy` and before `rollout-check`. `v0.6.0` stays untagged until this
+remediation passes CI and a merged-`main` live recheck. See
+`docs/architecture.md`'s "DAY6: post-restart ambient listener incident
+(2026-09-25)".
 
 ## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
 

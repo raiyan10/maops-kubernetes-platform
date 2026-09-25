@@ -432,3 +432,96 @@ dependency-free parser, which resolves the "Remaining note" above:
   hide the dependency.
 - The GitHub CI boundary above is unchanged: the fix is confirmed only when PR #6's new CI run
   passes, and PR #6 stays unmerged until then.
+
+---
+
+## Post-merge restart incident and ambient workload check (2026-09-25)
+
+PR #6 merged to `main` (`ca729f2`). This entry records a later incident and its remediation on
+branch `fix/day-6-ambient-listener-check`. It changes nothing above.
+
+**Incident (observed).** After a WSL/Kind component restart, `context-check` 6/6, `cni-status`
+4/4, and `mesh-status` 4/4 passed, but `rollout-check` failed 25/35; `maops-app` and
+`maops-gateway` were initially 0/3 Ready.
+
+- `maops-state-0` was Kubernetes Ready but had no LISTEN sockets on 15001, 15006, or 15008. The
+  source ztunnel logged `connection refused` to its Pod IP on 15008; no `/state` request reached
+  the state HTTP server.
+- Only `maops-state-0` was recreated: Pod UID `aa92aa2c-5852-4b2d-97d6-74addb78f1e2` →
+  `89abf805-9c1e-4f23-8005-483255ac98a0`; PVC UID `6c5fdacc-090a-4208-9b52-9c594211a982` and PV UID
+  `df840301-f5f1-4d8b-9d70-63597612e2fe` preserved. The new Pod had all three listeners; app
+  recovered to 3/3.
+- Gateway Pod `maops-gateway-7d59b678df-f88mj` stayed unready and likewise lacked all three
+  listeners; ztunnel rejected its plaintext calls to app under
+  `istio-system/istio_converted_static_strict`. Only that Pod was recreated; replacement
+  `maops-gateway-7d59b678df-2ggrv` had all three listeners; gateway recovered to 3/3.
+- On clean merged `main`, the gate then passed: context 6/6, cni-status 4/4, mesh-status 4/4,
+  rollout-check 35/35, gateway-check 8/8, smoke 6/6, final-state-check 43/43, against run
+  `979a1e7e72e9418199b0486cf81a920e`'s preserved baseline (file unchanged). The log is kept
+  outside the repository, in `$HOME/.local/state/maops-k8s-day6/`.
+- **Observation vs inference:** the missing listeners are confirmed; the mechanism by which they
+  were lost across the restart has not been proven.
+
+**Remediation (this branch, uncommitted at time of writing):**
+
+- New `scripts/ambient_workload_check.py` and `make ambient-workload-check`: a read-only per-Pod
+  check of all 7 deployed Pods (gateway 3, app 3, state 1). It checks Pod/namespace metadata
+  (Running/Pod IP/not terminating, the workload's own ServiceAccount, ambient-enrollment
+  metadata: namespace label, no opt-out, redirection annotation, no sidecar) and LISTEN sockets
+  on 15001/15006/15008 in each Pod's own network namespace. Scope: sockets and metadata only - it
+  does not by itself prove redirection rules, HBONE/mTLS traffic, or AuthorizationPolicy
+  behavior; the existing live traffic tests (`mesh-check`, `networkpolicy-check`,
+  `gateway-check`, `smoke`) remain the evidence for those. It reads `/proc/net/tcp{,6}` via `kubectl exec` with the workload
+  image's Python, so it needs no new image or dependency. It fails closed on missing or extra
+  Pods, missing listeners, kubectl/API errors, timeouts, and malformed output. Ready and the
+  annotation are never sufficient on their own, and only port numbers are printed.
+- `Makefile`: the target runs in `day6-check` directly after `deploy` and before `rollout-check`.
+  `mesh-status` is unchanged (infrastructure only) and `ci-check` stays cluster-free.
+- Tests: new `tests/test_ambient_workload_check.py` (23 tests). They cover the Ready-but-no-listener
+  state Pod, an unready gateway missing listeners, a single missing port, full 7-Pod success,
+  exec error/timeout, seven malformed-output forms, Pod-list API error/timeout, missing Pods,
+  identity/enrollment failures, a context-guard stop, and the real probe snippet run against a
+  real local LISTEN socket. `tests/test_makefile_sequence.py` gains 4 placement tests. The
+  architecture sequence block was updated, so the existing doc-order test still passes.
+- Docs: `docs/architecture.md` (new incident section, restart list, post-restart gate order,
+  sequence block), `README.md` (status, quick start, deploy lifecycle, verification, a new
+  post-restart gate section, layout), `docs/roadmap.md`, and `.claude` guidance. Day 6 status
+  wording was updated from "not yet committed, merged" to "merged to `main` (PR #6), not yet
+  tagged or published". Also corrected: a README code block from the earlier audit had its
+  closing sentence inside the fence.
+
+**Verification (2026-09-25):** `python3 -m unittest discover -s tests -v` → 1224 tests OK (1197 +
+27); `make ci-check` → PASS (1224 OK, version-check 50/50, manifest-check 267/267, helm-check
+215/215); `git diff --check` clean. **Live, read-only** `make ambient-workload-check` against the
+existing `maops-k8s-day6` cluster → **67/67 PASS**. All 7 Pods (including replacements
+`maops-state-0` UID `89abf805-…` and `maops-gateway-7d59b678df-2ggrv`) had 15001/15006/15008,
+and no kubectl process was left behind. No mutating check was re-run, no Pod was recreated, no
+policy or infrastructure was changed, and the preserved baseline was not touched.
+
+**Release gate:** pending until this remediation passes CI and a live recheck on merged `main`.
+
+**Review follow-up (2026-09-25, same branch, before commit).** A review of this entry's first
+draft found four issues, all corrected here and in the files named:
+
+1. The roadmap and the adjudication addendum described both Pods as Kubernetes-Ready. Only
+   `maops-state-0` was Ready without its ambient listeners; the affected gateway Pod was unready
+   without them. Also corrected in the README and the architecture restart list.
+2. `parse_listen_output()` now rejects any unexpected nonblank line, a duplicate marker, a
+   non-OK result, or a duplicate port. A valid empty port list still parses, so the caller
+   reports all three required ports missing.
+3. The check's claims are now scoped to "sockets and metadata" in its docstring, PASS message,
+   Makefile help, README, architecture, and the kind-cluster-validation skill: it does not by
+   itself prove redirection rules, HBONE/mTLS traffic, or AuthorizationPolicy behavior.
+4. `main()` now resets the module-level results at the start of every call. A new test runs
+   `main()` twice in one process (fail, then pass) without clearing results between calls; it
+   fails when the reset line is removed from a scratch copy of the script and passes with it.
+
+Tests: `tests/test_ambient_workload_check.py` now has 27 tests (23 + a rejected-forms test with
+eight malformed outputs, a blank-line tolerance test, an empty-port-list test, and the
+repeated-`main()` test).
+
+Re-verification after the follow-up (2026-09-25): `python3 -m unittest discover -s tests -v` →
+**1228 tests OK** (the 1224 above + 4); `make ci-check` → PASS (1228 OK, version-check 50/50,
+manifest-check 267/267, helm-check 215/215); `git diff --check` clean; live read-only
+`make ambient-workload-check` → **67/67 PASS**, with no kubectl process left behind. Nothing was
+mutated, and nothing is staged or committed.

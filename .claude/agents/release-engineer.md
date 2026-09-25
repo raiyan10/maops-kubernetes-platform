@@ -22,8 +22,8 @@ asked to perform any of those actions, decline and explain why.
 Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
-   active target: `0.6.0` for Day 6, release ready as a local kind
-   reference platform but not yet committed, merged, tagged, or released -
+   active target: `0.6.0` for Day 6, merged to `main` as a local kind
+   reference platform but not yet tagged or released -
    `0.5.0` remains the latest RELEASED baseline for Day 5; use whatever
    `docs/roadmap.md` names for the day actually under review), with no
    trailing whitespace/newline surprises. Also re-run `make
@@ -66,7 +66,7 @@ Checklist for a readiness assessment:
    leaked future content; their absence is the finding, not their
    presence, and `k8s/base` must be byte-for-byte untouched (check
    `git diff` against it directly). For the Day 6 implementation
-   (`v0.6.0`, release ready, not yet released), required deliverables are: the Helm
+   (`v0.6.0`, merged, not yet released), required deliverables are: the Helm
    chart (`charts/maops-kubernetes-platform`, the SOLE application
    deployment source), `k8s/day6/`'s cluster/platform support objects,
    the Gateway API (Istio as the sole controller, never a second
