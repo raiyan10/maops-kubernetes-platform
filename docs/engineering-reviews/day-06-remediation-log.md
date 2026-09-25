@@ -525,3 +525,42 @@ Re-verification after the follow-up (2026-09-25): `python3 -m unittest discover 
 manifest-check 267/267, helm-check 215/215); `git diff --check` clean; live read-only
 `make ambient-workload-check` → **67/67 PASS**, with no kubectl process left behind. Nothing was
 mutated, and nothing is staged or committed.
+
+---
+
+## Release gate closure (2026-09-25, after PR #7)
+
+PR #7 (`fix/day-6-ambient-listener-check`, merge commit `090f7f0`) merged with its GitHub CI
+passing. The read-only gate was then run on merged `main` against the existing
+`maops-k8s-day6` cluster, with no Pod recreated and no mutating check run:
+
+| Check | Result |
+|---|---|
+| `context-check` | 6/6 |
+| `cni-status` | 4/4 |
+| `mesh-status` | 4/4 |
+| `ambient-workload-check` | 67/67 |
+| `rollout-check` | 35/35 |
+| `gateway-check` | 8/8 |
+| `smoke` | 6/6 |
+| `final-state-check` | 43/43, suite-level `/state` matched run `979a1e7e72e9418199b0486cf81a920e`'s baseline |
+
+The existing baseline file was unchanged. The gate log is kept outside the repository, in
+`$HOME/.local/state/maops-k8s-day6/`. That closes the "pending until this remediation passes CI
+and a merged-`main` live recheck" condition recorded in the 2026-09-25 entry above.
+
+**Documentation reconciled (this feature branch, uncommitted at time of writing):** Day 6
+current-status wording in `README.md`, `docs/architecture.md`, `docs/roadmap.md`, and the
+`.claude` agents/skills now reads "RELEASE READY as a local kind reference platform, merged
+through PR #7; `v0.6.0` not yet tagged or published".
+
+**Correction to the entry above:** the 2026-09-25 entry says "only port numbers are printed".
+That is true of the in-Pod probe, which emits only port numbers and a result marker. The
+check's findings also show Pod names, Pod IPs, ServiceAccount names, Pod phase, enrollment
+label/annotation values, and kubectl error text on failure. It never reads environment
+variables, Secret volumes, or token contents. The architecture document and the script's
+docstring were corrected accordingly; the entry above is left as written.
+
+**Still not claimed:** production readiness, or a proven cause for the lost listeners (the
+missing listeners are confirmed; the mechanism is not). `v0.6.0` has not been tagged or
+published.
