@@ -587,7 +587,10 @@ class RenderedChartChecksumTests(unittest.TestCase):
     def _render(self, *extra_args: str) -> list[dict]:
         import subprocess
 
-        import yaml
+        # The project's own dependency-free YAML-subset loader - the same
+        # one scripts/helm_check.py uses on `helm template` output - never
+        # a third-party YAML package.
+        import k8s_yaml
 
         cmd = [
             "helm", "template", "maops-kubernetes-platform-day6", str(self._CHART_DIR),
@@ -597,7 +600,7 @@ class RenderedChartChecksumTests(unittest.TestCase):
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             self.skipTest(f"helm template failed (helm not available or chart error): {result.stderr}")
-        return [d for d in yaml.safe_load_all(result.stdout) if d]
+        return [d for d in k8s_yaml.load_all(result.stdout) if d]
 
     def _checksum(self, docs: list[dict], kind: str, name: str) -> str:
         for d in docs:

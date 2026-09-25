@@ -375,3 +375,60 @@ behavior); a "Days 1-5 baseline" note on the architecture control-flow diagram a
 note on the port-forward rationale (Day 6 adds one NodePort); two broken section references
 (`Makefile` image-build comment, a chart NetworkPolicy comment); and the chart `NOTES.txt`,
 which contradicted the documented debug port-forward and omitted the explicit kubeconfig.
+
+---
+
+## CI failure on PR #6 and fix (2026-09-25)
+
+The first GitHub Actions run for PR #6 (commit `62c69a1`) failed in `make ci-check`. The failure
+came from the CI environment differing from the locally validated one, not from a chart,
+manifest, or test defect:
+
+1. **Helm version.** The workflow installed Helm **v3.16.4**; the chart and its tests are
+   validated with Helm **v4.2.2**. Thirteen tests failed. Some assert Helm's values-schema error
+   text, which Helm 3 formats differently. Others hit the chart's `kubeVersion: ">=1.34.0-0"`
+   check, because Helm 3's `helm template` defaults to an older built-in Kubernetes version.
+2. **PyYAML missing.** Five rendered-checksum tests in `tests/test_validate_helm_chart.py`
+   parse real `helm template` output with PyYAML, which the runner did not have
+   (`ModuleNotFoundError: No module named 'yaml'`). Locally, PyYAML 6.0.3 was already installed,
+   which is why the local suite passed.
+
+**Fix (workflow only):** `.github/workflows/ci.yml` now pins `azure/setup-helm@v4` to
+`version: v4.2.2` and installs `PyYAML==6.0.3` as a pinned, test-only dependency before
+`make ci-check`. No test assertion, the chart's `kubeVersion` constraint, the application, or
+any Kubernetes manifest was changed. Before the fix, both pinned artifacts were confirmed to exist
+for the runner platform (the Helm v4.2.2 linux-amd64 archive and the PyYAML 6.0.3 CPython 3.13
+manylinux x86_64 wheel).
+
+**Local verification:** `make ci-check` → PASS (1197 tests OK, version-check 50/50,
+manifest-check 267/267, helm-check 215/215); `git diff --check` clean. Local results cannot by
+themselves reproduce the CI environment; **the fix is confirmed only when PR #6's new CI run
+passes**, and PR #6 stays unmerged until then. No live cluster check was run.
+
+**Remaining note:** the PyYAML dependency sits in tension with the project ground rule that
+static validation needs no third-party Python package. It affects only these five test-only
+render checks, not `scripts/` or `make manifest-check`. A follow-up can drop it: the project's own
+`scripts/k8s_yaml.py` loader already parses `helm template` output in `scripts/helm_check.py`.
+
+**Clarification (2026-09-25, before commit): PyYAML approach superseded.** The PyYAML-install
+step described above was never committed. Before staging, it was replaced by the project's own
+dependency-free parser, which resolves the "Remaining note" above:
+
+- `.github/workflows/ci.yml`: the `PyYAML==6.0.3` install step was removed. The Helm `v4.2.2`
+  pin is kept.
+- `tests/test_validate_helm_chart.py` (`RenderedChartChecksumTests._render`, shared by all five
+  rendered-checksum tests): `yaml.safe_load_all` was replaced with `k8s_yaml.load_all`, the same
+  `scripts/k8s_yaml.py` loader `scripts/helm_check.py` already applies to `helm template`
+  output. Assertions, the chart, and the application are unchanged; no Python dependency was
+  added.
+- Equivalence was checked before the swap: for the default render and each of the three
+  single-component config overrides, both parsers produced identical documents (30 each) and
+  identical `checksum/config` values.
+- **Verification:** `make ci-check` → PASS (1197 tests OK, version-check 50/50, manifest-check
+  267/267, helm-check 215/215); `git diff --check` clean. It was then repeated in a **fresh
+  Python virtual environment with no packages beyond pip**, where `import yaml` fails with
+  `ModuleNotFoundError`. `make ci-check` still passed there (1197 tests OK, all five
+  rendered-checksum tests run rather than skipped), so a locally installed PyYAML can no longer
+  hide the dependency.
+- The GitHub CI boundary above is unchanged: the fix is confirmed only when PR #6's new CI run
+  passes, and PR #6 stays unmerged until then.

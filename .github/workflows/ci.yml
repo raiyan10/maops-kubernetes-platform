@@ -36,10 +36,14 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Pinned to the Helm version the chart is validated with locally.
+      # Helm 3's `helm template` defaults to an older Kubernetes version
+      # than the chart's `kubeVersion: ">=1.34.0-0"` and formats schema
+      # errors differently, so an older Helm fails the chart/schema tests.
       - name: Set up Helm
         uses: azure/setup-helm@v4
         with:
-          version: v3.16.4
+          version: v4.2.2
 
       # kubectl ships preinstalled on GitHub-hosted ubuntu-latest
       # runners - `make manifest-render`/`manifest-check` need only
