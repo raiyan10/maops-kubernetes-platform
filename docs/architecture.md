@@ -1,4 +1,4 @@
-# Architecture - Day 6 (v0.6.0, release ready as a local kind reference platform - not yet committed, merged, tagged, or published)
+# Architecture - Day 6 (v0.6.0, merged to main as a local kind reference platform - not yet tagged or published)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -34,8 +34,10 @@ unchanged Day 1-5 material) for the full design. **Day 6 is release
 ready as a local kind reference platform** - it has passed its
 cluster-free static validation, its live validation against the local
 `maops-k8s-day6` kind cluster, and an independent five-reviewer round
-whose findings are closed - **but it has not yet been committed,
-merged, tagged, or published.** See "DAY6: live validation record"
+whose findings are closed, and was merged to `main` via PR #6 - **but
+`v0.6.0` has not been tagged or published, and the release gate is
+pending again** after the 2026-09-25 post-restart incident (see "DAY6:
+post-restart ambient listener incident (2026-09-25)"). See "DAY6: live validation record"
 below for the exact results, dates, and accepted limitations, and
 `docs/engineering-reviews/day-06-*` for the independent reviews,
 adjudication, and remediation log. This is a validated local kind
@@ -1625,7 +1627,8 @@ helm-template -> helm-check -> image-build -> cluster-create ->
 gateway-api-install -> cni-install -> cni-status -> context-check ->
 mesh-install -> mesh-status -> image-load -> storage-bootstrap ->
 storage-hardening-check -> namespace-apply -> secret-bootstrap ->
-gateway-apply -> deploy -> rollout-check -> scheduling-check ->
+gateway-apply -> deploy -> ambient-workload-check -> rollout-check ->
+scheduling-check ->
 discovery-check -> secret-check -> gateway-check -> mesh-check ->
 rbac-check -> networkpolicy-check -> smoke -> dependency-check ->
 scaling-check -> rolling-update-check -> pdb-check -> state-check ->
@@ -2411,7 +2414,9 @@ what each property proves.
 This is the Day 6 evidence record - the Day 6 counterpart of "DAY5:
 released validation record" above. Day 6 is **release ready as a local
 kind reference platform** (final adjudication: RELEASE READY,
-2026-09-24) but **not yet committed, merged, tagged, or published**;
+2026-09-24), merged to `main` via PR #6, but **not yet tagged or
+published** - the release gate is pending the 2026-09-25 post-restart
+remediation below;
 this record describes a validated local kind reference platform, not a
 production-ready platform. The independent reviews, their adjudication,
 and the review-remediation log are under
@@ -2487,9 +2492,9 @@ expected configuration; the external Gateway API path observing it
 too; unchanged PVC/PV identity; and rollback always executing once an
 upgrade was submitted.
 
-**Host/Docker restart recovery (local-environment limitation).** Two
-host/Docker restarts were observed on this local Kind-on-Docker-on-WSL2
-environment, with different outcomes:
+**Host/Docker restart recovery (local-environment limitation).** Three
+host/Docker/WSL restarts have been observed on this local
+Kind-on-Docker-on-WSL2 environment, with different outcomes:
 
 1. During the staged live run, one restart left one older,
    ambient-enrolled `maops-app` Pod unable to reach `maops-state`
@@ -2503,13 +2508,18 @@ environment, with different outcomes:
    Cilium API rate-limit responses (HTTP 429). It then recovered
    without any Pod replacement, through kubelet sandbox re-creation
    alone.
+3. On 2026-09-25, after a WSL/Kind component restart, `maops-state-0`
+   was Kubernetes Ready without its ambient in-Pod listeners and one
+   gateway Pod was unready without them, while the mesh infrastructure
+   reported healthy - see "DAY6:
+   post-restart ambient listener incident (2026-09-25)" below.
 
-Neither incident proves an internal ztunnel defect - the evidence
-supports only "restart recovery in this environment varies." Before any
-validation after a host or Docker restart, run the bounded readiness
-gates first (`make cni-status`, `make context-check`, `make
-mesh-status`, `make rollout-check`); never assume the previous run's
-state survived. The same reboot also cleared `/tmp`, which is where
+None of these incidents proves an internal ztunnel defect - the
+evidence supports only "restart recovery in this environment varies."
+Before any validation after a host, Docker, or WSL restart, run the
+bounded read-only gates first, in this order: `make cni-status`, `make
+context-check`, `make mesh-status`, `make ambient-workload-check`, then
+`make rollout-check`. Never assume the previous run's state survived. The same reboot also cleared `/tmp`, which is where
 the suite-level state baseline file lives
 (`DAY6_SUITE_BASELINE_PATH`, by default under `/tmp`) - a run's
 baseline does not survive a host reboot, by design, and is never
@@ -2550,6 +2560,82 @@ NetworkPolicy checks were not re-run; their results above stand. See
 [`day-06-remediation-log.md`](engineering-reviews/day-06-remediation-log.md)
 and [`day-06-final-adjudication.md`](engineering-reviews/day-06-final-adjudication.md)
 for the exact commands, results, and final verdict.
+
+## DAY6: post-restart ambient listener incident (2026-09-25)
+
+**What was observed.** After a WSL/Kind component restart on
+2026-09-25, the infrastructure gates passed - `context-check` 6/6,
+`cni-status` 4/4, `mesh-status` 4/4 - but `rollout-check` failed 25/35,
+with `maops-app` and `maops-gateway` initially 0/3 Ready.
+
+- `maops-state-0` was Kubernetes Ready, yet its network namespace had
+  **no** LISTEN sockets on 15001, 15006, or 15008 (ztunnel's in-Pod
+  redirection and HBONE listeners). The source ztunnel logged
+  `connection refused` to that Pod's IP on 15008, and no `/state`
+  request reached the state HTTP server.
+- Only `maops-state-0` was recreated (Pod UID
+  `aa92aa2c-5852-4b2d-97d6-74addb78f1e2` -> `89abf805-9c1e-4f23-8005-483255ac98a0`).
+  The PVC UID `6c5fdacc-090a-4208-9b52-9c594211a982` and PV UID
+  `df840301-f5f1-4d8b-9d70-63597612e2fe` were preserved. The new Pod had
+  all three listeners, and `maops-app` recovered to 3/3.
+- One gateway Pod, `maops-gateway-7d59b678df-f88mj`, stayed unready and
+  likewise lacked all three listeners; ztunnel explicitly rejected its
+  plaintext calls to app under `istio-system/istio_converted_static_strict`
+  (STRICT mTLS doing its job for an un-redirected source). Only that Pod
+  was recreated; its replacement, `maops-gateway-7d59b678df-2ggrv`, had
+  all three listeners, and the gateway recovered to 3/3.
+- No Istio policy, infrastructure component, or other Pod was changed.
+
+**Result on merged `main`.** The subsequent gate passed:
+`context-check` 6/6, `cni-status` 4/4, `mesh-status` 4/4,
+`rollout-check` 35/35, `gateway-check` 8/8, `smoke` 6/6, and
+`final-state-check` 43/43 against the preserved suite baseline of run
+`979a1e7e72e9418199b0486cf81a920e` (baseline file unchanged). The log
+is kept outside the repository, in the private
+`$HOME/.local/state/maops-k8s-day6/` directory.
+
+**Observation vs inference.** The missing listeners in those two Pods'
+network namespaces are confirmed. The exact mechanism by which they
+were lost across the restart has **not** been proven; nothing here
+claims a specific ztunnel or istio-cni defect.
+
+**The gap it exposed, and the new check.** Neither Kubernetes
+readiness nor the `ambient.istio.io/redirection` annotation revealed
+the problem, and `mesh-status` checks infrastructure only. `make
+ambient-workload-check` (`scripts/ambient_workload_check.py`) is a
+read-only, per-Pod check of all seven deployed Pods - gateway (3),
+app (3), state (1). For each it verifies Pod and namespace metadata -
+the Pod is Running with a Pod IP and not terminating, runs as its own
+ServiceAccount, and carries the expected ambient-enrollment metadata
+(namespace label, no opt-out, redirection annotation, no sidecar) - and
+that TCP 15001, 15006, and 15008 are LISTEN sockets in that Pod's own
+network namespace, the condition that failed on 2026-09-25. It reads
+`/proc/net/tcp` and `/proc/net/tcp6` through `kubectl exec` with the
+workload image's own Python, so it needs no extra image or dependency.
+It fails closed on a missing or extra Pod, a kubectl/API error, a
+timeout, or malformed output, and it names the exact Pod and missing
+ports. The Ready condition and the annotation are never sufficient on
+their own, and only port numbers are printed.
+
+**Scope.** It checks sockets and metadata only. Present listeners are
+necessary for ambient traffic but do not by themselves prove that
+traffic is redirected into them (the in-Pod redirection rules), that
+HBONE/mTLS connections succeed, or that AuthorizationPolicy allows and
+denies the right identities. Those behaviors remain proven by the
+existing live traffic tests - `make mesh-check` (STRICT mTLS, allowed
+identity paths, correlated wrong-identity denial), `make
+networkpolicy-check`, `make gateway-check`, and `make smoke` - which
+this check complements and never replaces.
+
+It runs in `make day6-check` directly after `deploy` and before the
+lengthy `rollout-check`, and it is the fourth read-only gate after any
+restart. `mesh-status` remains the infrastructure-only check before
+application deployment, and `make ci-check` stays cluster-free.
+
+**Release status.** The 2026-09-24 RELEASE READY adjudication stands as
+history, but the release gate is **pending again**: `v0.6.0` should not
+be tagged until this remediation passes CI and a live recheck on merged
+`main` passes.
 
 ## What Day 6 proves, and what it explicitly does not claim
 

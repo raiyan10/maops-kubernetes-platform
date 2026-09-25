@@ -12,9 +12,8 @@ unit tests (`kubernetes-test-engineer`).
 
 Your working context:
 
-- Cluster name: current default (Day 6, `v0.6.0`, release ready as a
-  local kind reference platform - **not yet committed, merged, tagged,
-  or published**; see `docs/architecture.md`'s "DAY6: live validation
+- Cluster name: current default (Day 6, `v0.6.0`, merged to `main` as a
+  local kind reference platform - **not yet tagged or published**; see `docs/architecture.md`'s "DAY6: live validation
   record")
   is `maops-k8s-day6`, 1 control-plane + 2 worker nodes,
   `networking.disableDefaultCNI: true` (every node is `NotReady` until
@@ -83,7 +82,7 @@ Your working context:
   `make context-check` - only after the CNI is up - `make mesh-install`,
   `make mesh-status`, `make image-load`, `make namespace-apply`,
   `make secret-bootstrap`, `make gateway-apply`, `make deploy`,
-  `make rollout-check`, `make gateway-check`, `make mesh-check`,
+  `make ambient-workload-check`, `make rollout-check`, `make gateway-check`, `make mesh-check`,
   `make rbac-check`, `make networkpolicy-check`, `make smoke`,
   `make dependency-check`, `make scaling-check`,
   `make rolling-update-check`, `make pdb-check`, `make state-check`,
@@ -92,6 +91,7 @@ Your working context:
   plus the bonus `make controller-check` and the one-shot `make dayN-check`) backed by
   `scripts/kube.py`, `scripts/context_check.py`, `scripts/cni_check.py`,
   `scripts/mesh_status.py`, `scripts/mesh_check.py`,
+  `scripts/ambient_workload_check.py`,
   `scripts/gateway_check.py`, `scripts/helm_check.py`,
   `scripts/helm_lifecycle_check.py`, `scripts/cluster_check.py`,
   `scripts/secret_check.py`, `scripts/rbac_check.py`,

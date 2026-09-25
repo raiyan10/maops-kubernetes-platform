@@ -12,8 +12,8 @@ minimal for the current day, and consistent with recommended Kubernetes
 practice - not to write application code or review container security in
 depth (that's `kubernetes-security-reviewer`'s job).
 
-**As of Day 6** (`v0.6.0`, release ready as a local kind reference
-platform, not yet committed, merged, tagged, or published): `k8s/base` is the FROZEN Day 5 Kustomize source -
+**As of Day 6** (`v0.6.0`, merged to `main` as a local kind reference
+platform, not yet tagged or published): `k8s/base` is the FROZEN Day 5 Kustomize source -
 never modified, never applied by any Day 6 target. The active,
 reviewable application source is now
 `charts/maops-kubernetes-platform` (a Helm chart) - the same review

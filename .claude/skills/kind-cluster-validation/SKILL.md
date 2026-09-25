@@ -6,9 +6,8 @@ description: Create/use the project's kind cluster and prove real Kubernetes beh
 # kind cluster validation
 
 Real-cluster validation for the maops-kubernetes-platform project's kind
-cluster. **Current default (Day 6 / `v0.6.0`, release ready as a local
-kind reference platform - NOT yet committed, merged, tagged, or
-published):**
+cluster. **Current default (Day 6 / `v0.6.0`, merged to `main` as a
+local kind reference platform - NOT yet tagged or published):**
 `maops-k8s-day6` (context `kind-maops-k8s-day6`, kubeconfig
 `$HOME/.kube/maops-k8s-day6.config`), 1 control-plane + 2 worker nodes,
 `networking.disableDefaultCNI: true` (every node is `NotReady` until
@@ -48,6 +47,9 @@ make namespace-apply          # apply the three Namespaces (maops-platform, maop
 make secret-bootstrap         # create/preserve BOTH runtime Secrets - never printed
 make gateway-apply             # apply the Istio Gateway infrastructure ConfigMap + the Gateway object
 make deploy                       # helm upgrade --install charts/maops-kubernetes-platform - NEVER kubectl apply -k k8s/base
+make ambient-workload-check    # scripts/ambient_workload_check.py - READ-ONLY: all 7 app Pods' identity/ambient
+                                    #   metadata and ztunnel LISTEN sockets 15001/15006/15008 (never Ready alone;
+                                    #   not a traffic/mTLS/AuthorizationPolicy proof - mesh-check is)
 make rollout-check             # scripts/cluster_check.py - real Deployment/security/Secret-mount state (gateway/app)
 make scheduling-check         # scripts/scheduling_check.py - worker-only scheduling + topology spread (gateway/app)
 make discovery-check          # scripts/discovery_check.py - real DNS + gateway -> app Service HTTP proof
@@ -85,6 +87,23 @@ target-by-target against one preserved cluster, with remediation
 between stages) and its restart-recovery limitation.
 
 ## What each real check proves
+
+`scripts/ambient_workload_check.py` (`make ambient-workload-check`,
+READ-ONLY): for each deployed gateway (3), app (3), and state (1) Pod,
+verifies Pod/namespace metadata (Running/Pod IP/not terminating, the
+workload's own ServiceAccount, ambient-enrollment metadata: namespace
+label, no opt-out, redirection annotation, no sidecar) and that TCP
+15001, 15006, and 15008 are LISTEN sockets in that Pod's own network
+namespace (`/proc/net/tcp{,6}` via `kubectl exec`). Sockets and
+metadata only: it does not prove redirection rules, HBONE/mTLS
+traffic, or AuthorizationPolicy behavior - `mesh-check` and the other
+live traffic checks remain the evidence for those. Fails closed on missing Pods
+or listeners, kubectl/API errors, timeouts, or malformed output, naming
+the exact Pod and ports. Added after the 2026-09-25 incident in which a
+Kubernetes-Ready `maops-state-0` had no listeners while `mesh-status`
+passed. After any host/Docker/WSL restart, run `cni-status`,
+`context-check`, `mesh-status`, `ambient-workload-check`, then
+`rollout-check`.
 
 `scripts/cluster_check.py` (`make rollout-check`), for **gateway and
 app** (StatefulSet-specific proofs for `state` live in

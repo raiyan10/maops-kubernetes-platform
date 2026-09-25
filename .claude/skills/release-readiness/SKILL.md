@@ -14,8 +14,8 @@ say so directly.
 ## Checklist
 
 1. **VERSION file.** Exact match to the day's target version (current
-   active target: `0.6.0` for Day 6, release ready as a local kind
-   reference platform but NOT yet committed, merged, tagged, or released -
+   active target: `0.6.0` for Day 6, merged to `main` as a local kind
+   reference platform but NOT yet tagged or released -
    `0.5.0` remains the latest RELEASED baseline; use whatever
    `docs/roadmap.md` names for the day actually under review) -
    `cat VERSION` and compare byte-for-byte (no trailing newline
@@ -39,7 +39,7 @@ say so directly.
    pass/fail counts printed by every script the sequence composes
    (`scripts/manifest_check.py`, `scripts/version_check.py`,
    `scripts/helm_check.py`, `scripts/context_check.py`,
-   `scripts/cluster_check.py`, `scripts/scheduling_check.py`,
+   `scripts/ambient_workload_check.py`, `scripts/cluster_check.py`, `scripts/scheduling_check.py`,
    `scripts/discovery_check.py`, `scripts/secret_check.py`,
    `scripts/rbac_check.py`, `scripts/networkpolicy_check.py`,
    `scripts/cni_check.py`, `scripts/mesh_status.py`,
@@ -92,7 +92,7 @@ say so directly.
    ServiceAccounts, the `maops-diagnostics` `Role`/`RoleBinding`, seven
    NetworkPolicy objects, and be byte-for-byte untouched (`git diff`
    against it must be empty). As of the Day 6 implementation
-   (`v0.6.0`, release ready, not yet released), a review should find: the Helm chart
+   (`v0.6.0`, merged, not yet released), a review should find: the Helm chart
    (`charts/maops-kubernetes-platform`) as the SOLE application
    deployment source; `k8s/day6/`'s cluster/platform support objects;
    the Gateway API with Istio as the sole controller (never a second
