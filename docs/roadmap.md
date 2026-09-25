@@ -180,9 +180,11 @@ advanced for Day 6.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 
-**IMPLEMENTED / RELEASE READY as a local kind reference platform -
-merged to `main` through PR #7; `v0.6.0` not yet tagged or
-published.** The application (gateway/app/state, unchanged since
+**COMPLETE / RELEASED as a local kind reference platform.** Released
+as `v0.6.0` on 2026-09-25 (PRs #6-#8; annotated tag `v0.6.0` -> commit
+`19d6b28b1282aedc8417a5a2ba10e74614afe244`; [GitHub Release](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0));
+post-release record in
+`docs/engineering-reviews/day-06-post-release-verification.md`. The application (gateway/app/state, unchanged since
 Day 4) is packaged as a Helm chart (`charts/maops-kubernetes-platform`)
 - the sole Day 6 application deployment source; `k8s/base` remains the
 frozen, unmodified Day 5 Kustomize source and is never applied by any
@@ -277,10 +279,10 @@ ambient-workload-check` now checks those listeners per Pod, after
 the read-only gate on merged `main` passed (`context-check` 6/6,
 `cni-status` 4/4, `mesh-status` 4/4, `ambient-workload-check` 67/67,
 `rollout-check` 35/35, `gateway-check` 8/8, `smoke` 6/6,
-`final-state-check` 43/43 against the unchanged run baseline). Day 6 is
-RELEASE READY as a local kind reference platform; tagging and
-publishing `v0.6.0` remain separate, explicit steps. The cause of the
-lost listeners remains unproven.
+`final-state-check` 43/43 against the unchanged run baseline). Day 6 was
+adjudicated RELEASE READY as a local kind reference platform and then
+released as `v0.6.0` the same day, after PR #8 merged the release-gate
+documentation. The cause of the lost listeners remains unproven.
 
 ## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
 

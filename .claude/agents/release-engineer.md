@@ -22,10 +22,9 @@ asked to perform any of those actions, decline and explain why.
 Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
-   active target: `0.6.0` for Day 6, release ready as a local kind
-   reference platform (merged through PR #7) but not yet tagged or
-   released -
-   `0.5.0` remains the latest RELEASED baseline for Day 5; use whatever
+   RELEASED baseline: `0.6.0` for Day 6, released 2026-09-25 as a local
+   kind reference platform; the next target is `1.0.0` for Day 7, not
+   yet started; use whatever
    `docs/roadmap.md` names for the day actually under review), with no
    trailing whitespace/newline surprises. Also re-run `make
    version-check` yourself rather than trusting the file alone - as of
@@ -38,7 +37,7 @@ Checklist for a readiness assessment:
    check `git status` and `git log` against the base branch; uncommitted
    changes are the expected, correct state at handoff. Earlier days'
    tags (as of the current released baseline: `v0.1.0` through
-   `v0.5.0`) must still exist unmoved - Day 6 has no tag yet, and none
+   `v0.6.0`) must still exist unmoved - Day 7 has no tag yet, and none
    should be created by this work.
 3. **`make dayN-check`** for the current day (e.g. `make day6-check`) has
    actually been run and its real output captured - not assumed. Re-run
@@ -67,7 +66,7 @@ Checklist for a readiness assessment:
    leaked future content; their absence is the finding, not their
    presence, and `k8s/base` must be byte-for-byte untouched (check
    `git diff` against it directly). For the Day 6 implementation
-   (`v0.6.0`, release ready, not yet released), required deliverables are: the Helm
+   (`v0.6.0`, released), required deliverables are: the Helm
    chart (`charts/maops-kubernetes-platform`, the SOLE application
    deployment source), `k8s/day6/`'s cluster/platform support objects,
    the Gateway API (Istio as the sole controller, never a second

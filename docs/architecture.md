@@ -1,4 +1,4 @@
-# Architecture - Day 6 (v0.6.0, release ready as a local kind reference platform - merged through PR #7, not yet tagged or published)
+# Architecture - Day 6 (v0.6.0, released as a local kind reference platform)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -12,9 +12,10 @@ unchanged architecture: a purpose-built ServiceAccount per workload, a
 namespace-scoped Role/RoleBinding for the one identity that exercises
 real API authorization (`maops-diagnostics`), and standard
 `networking.k8s.io/v1` NetworkPolicy objects enforced by Cilium
-(replacing kind's default kindnet CNI). All five days are released and
+(replacing kind's default kindnet CNI). Days 1-5 are released and
 frozen; see the historical evidence under
-`docs/engineering-reviews/day-0[1-5]-*`. Day 5 keeps the entire
+`docs/engineering-reviews/day-0[1-5]-*`. Day 6 is released as
+`v0.6.0` (see below). Day 5 keeps the entire
 gateway/app/state architecture (security context, probes, Secrets,
 PodDisruptionBudgets, persistence/retention behavior) **entirely
 unchanged** from Day 4. See the Day 5 sections below (after the
@@ -38,8 +39,11 @@ whose findings are closed. It was merged to `main` via PR #6; after
 the 2026-09-25 post-restart incident (see "DAY6: post-restart ambient
 listener incident (2026-09-25)") the release gate re-opened, and it
 closed again once PR #7 merged with CI passing and the read-only
-merged-`main` gate passed. **`v0.6.0` has not been tagged or
-published.** See "DAY6: live validation record"
+merged-`main` gate passed. **Day 6 was released as `v0.6.0` on
+2026-09-25** ([GitHub Release](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0); annotated tag on PR #8's merge
+commit `19d6b28`) - see
+`docs/engineering-reviews/day-06-post-release-verification.md`. See
+"DAY6: live validation record"
 below for the exact results, dates, and accepted limitations, and
 `docs/engineering-reviews/day-06-*` for the independent reviews,
 adjudication, and remediation log. This is a validated local kind
@@ -2417,8 +2421,8 @@ This is the Day 6 evidence record - the Day 6 counterpart of "DAY5:
 released validation record" above. Day 6 is **release ready as a local
 kind reference platform** (final adjudication: RELEASE READY,
 2026-09-24; re-closed 2026-09-25 after the post-restart remediation
-below), merged to `main` through PR #7, but **not yet tagged or
-published**;
+below) and **released as `v0.6.0` on 2026-09-25** ([GitHub
+Release](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0));
 this record describes a validated local kind reference platform, not a
 production-ready platform. The independent reviews, their adjudication,
 and the review-remediation log are under
@@ -2646,9 +2650,10 @@ day: PR #7 merged with CI passing, and the read-only gate on merged
 `gateway-check` 8/8, `smoke` 6/6, and `final-state-check` 43/43 against
 run `979a1e7e72e9418199b0486cf81a920e`'s unchanged baseline (log kept
 outside the repository, in `$HOME/.local/state/maops-k8s-day6/`).
-Current status: **RELEASE READY** as a local kind reference platform;
-`v0.6.0` is not yet tagged or published. The cause of the lost
-listeners remains unproven.
+The adjudication returned to **RELEASE READY** as a local kind
+reference platform, and Day 6 was then released as `v0.6.0`
+(2026-09-25; [GitHub Release](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0)). The cause of the lost listeners
+remains unproven.
 
 ## What Day 6 proves, and what it explicitly does not claim
 

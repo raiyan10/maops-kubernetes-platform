@@ -15,8 +15,7 @@ presence/shape of fields in the frozen `k8s/base` source) and to the
 RBAC/NetworkPolicy/mesh review).
 
 Days 1-5 (`v0.1.0`-`v0.5.0`) are released and frozen. Day 6 (`v0.6.0`)
-is **release ready as a local kind reference platform** (merged through
-PR #7) but **not yet tagged or published**
+is **released** (2026-09-25) as a local kind reference platform
 - Helm packaging, the Gateway API (Istio as the sole controller), and
 Istio ambient service mesh (strict mTLS, identity-scoped
 `AuthorizationPolicy`, no sidecars, no waypoint - so still no

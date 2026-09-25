@@ -9,21 +9,14 @@ fronted by the Kubernetes Gateway API through an Istio ambient service
 mesh - all proven live against a real multi-node kind cluster, not just
 asserted in YAML.
 
-**Latest RELEASED: `v0.5.0`** (Day 5 - ServiceAccounts, RBAC,
-NetworkPolicy, Cilium as the enforcing CNI - evidence-closed and frozen,
-see `docs/engineering-reviews/day-05-*`). `v0.1.0` (Day 1), `v0.2.0`
-(Day 2), `v0.3.0` (Day 3), and `v0.4.0` (Day 4) are also released and
-frozen. **Days 1-5 are complete.**
-
-**Active implementation: `v0.6.0`** (Day 6 - Helm packaging, minimal
+**Latest RELEASED: `v0.6.0`** (Day 6 - Helm packaging, minimal
 cluster-free GitHub Actions CI, the Kubernetes Gateway API through
 Istio as the sole cluster-external routing approach, and an Istio
-ambient service mesh). **RELEASE READY as a local Kind reference
-platform**, merged to `main` through PR #7 - static and live
-validation passed, the independent review findings are closed, and the
-2026-09-25 post-restart release gate is closed - but **`v0.6.0` is not
-yet tagged or published**. See [Day 6 status](#day-6-status-release-ready-local-kind-not-yet-tagged-or-released)
-below.
+ambient service mesh), released 2026-09-25 as a **local Kind reference
+platform** - [release `v0.6.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0). See [Day 6
+status](#day-6-status-released-v060-local-kind-reference-platform)
+below. `v0.1.0` (Day 1) through `v0.5.0` (Day 5) are also released and
+frozen. **Days 1-6 are complete.**
 
 **Final milestone: `v1.0.0`** (Day 7 - Recreate/Blue-Green/Canary
 deployment-strategy demonstrations and final production-readiness
@@ -51,8 +44,8 @@ together, including the full Day 6 design.
   exercises real API authorization (`maops-diagnostics`), and standard
   `networking.k8s.io/v1` NetworkPolicy objects enforced by Cilium.
 - **Day 6's Helm packaging, Gateway API routing, and Istio ambient
-  mesh** (implemented and merged on the local kind cluster; not yet
-  tagged or published - see below):
+  mesh** (released as `v0.6.0`, validated on the local kind cluster -
+  see below):
   - The application is packaged as a Helm chart
     (`charts/maops-kubernetes-platform`) - the sole Day 6 application
     deployment source. `k8s/base` (Day 5's Kustomize source) stays
@@ -77,11 +70,14 @@ for the full Day 5 release record
 ([PR #5](https://github.com/raiyan10/maops-kubernetes-platform/pull/5),
 [release `v0.5.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.5.0)).
 Only a few purposeful screenshots are kept, under `docs/images/day-05/`
-- deliberately not a full evidence dump. Day 6's independent reviews,
-adjudication, and remediation log are under
-`docs/engineering-reviews/day-06-*`; it has no post-release evidence,
-release URL, or screenshots yet, because it has not been committed,
-merged, tagged, or released.
+and `docs/images/day-06/` - deliberately not a full evidence dump. The
+Day 6 release record is
+[`docs/engineering-reviews/day-06-post-release-verification.md`](docs/engineering-reviews/day-06-post-release-verification.md)
+([PR #6](https://github.com/raiyan10/maops-kubernetes-platform/pull/6),
+[PR #7](https://github.com/raiyan10/maops-kubernetes-platform/pull/7),
+[PR #8](https://github.com/raiyan10/maops-kubernetes-platform/pull/8),
+[release `v0.6.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0)), alongside its independent reviews,
+adjudication, and remediation log under `docs/engineering-reviews/day-06-*`.
 
 **Not claimed at this stage:** production cluster high availability,
 node-loss recovery, a production-grade service mesh rollout, TLS/
@@ -90,13 +86,15 @@ operation on a cloud-managed Kubernetes offering - this remains a
 local, single-tenant kind cluster built for staged engineering
 demonstration.
 
-## Day 6 status: release ready (local kind), not yet tagged or released
+## Day 6 status: released (v0.6.0), local Kind reference platform
 
-Day 6 is **RELEASE READY as a local Kind reference platform**, merged
-to `main` through PR #7 (Day 6 itself in PR #6; the post-restart
-listener check in PR #7). It has **not** been tagged (`v0.6.0`) or
-published - those remain explicit, separate steps. It is not a
-production-ready platform.
+Day 6 is **released as `v0.6.0`** ([GitHub Release](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0),
+published 2026-09-25): Day 6 itself in PR #6, the post-restart listener
+check in PR #7, and the release-gate documentation in PR #8, whose
+merge commit `19d6b28` the annotated `v0.6.0` tag points to. It is
+released as a **local Kind reference platform**, not a
+production-ready platform. See
+[`docs/engineering-reviews/day-06-post-release-verification.md`](docs/engineering-reviews/day-06-post-release-verification.md).
 
 - **Static** (`make ci-check`, the same cluster-free sequence GitHub
   Actions runs) - current result, after PR #7: 1228 unit tests;
@@ -140,8 +138,8 @@ production-ready platform.
   `cni-status` 4/4, `mesh-status` 4/4, `ambient-workload-check` 67/67,
   `rollout-check` 35/35, `gateway-check` 8/8, `smoke` 6/6, and
   `final-state-check` 43/43 against run `979a1e7e…`'s unchanged
-  baseline. Current adjudication: **RELEASE READY** (local Kind
-  reference platform).
+  baseline. Adjudication: **RELEASE READY** (local Kind reference
+  platform), then released as `v0.6.0` the same day.
 
 The exact results, dates, Helm revision history, mesh denial-evidence
 tiers, and accepted limitations (including host/Docker restart
@@ -597,5 +595,5 @@ tests/                       Docker-free unit tests (incl. negative cases and th
 docs/                        architecture.md, roadmap.md, engineering-reviews/ (Days 1-5 frozen, Day 6 reviews), images/
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      0.6.0 (Day 6 - release ready on local kind, merged via PR #7; not yet tagged or published)
+VERSION                      0.6.0 (Day 6 - released as v0.6.0, local Kind reference platform)
 ```

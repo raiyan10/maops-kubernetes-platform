@@ -12,9 +12,8 @@ unit tests (`kubernetes-test-engineer`).
 
 Your working context:
 
-- Cluster name: current default (Day 6, `v0.6.0`, release ready as a
-  local kind reference platform, merged through PR #7 - **not yet
-  tagged or published**; see `docs/architecture.md`'s "DAY6: live validation
+- Cluster name: current default (Day 6, `v0.6.0`, **released** 2026-09-25
+  as a local kind reference platform; see `docs/architecture.md`'s "DAY6: live validation
   record")
   is `maops-k8s-day6`, 1 control-plane + 2 worker nodes,
   `networking.disableDefaultCNI: true` (every node is `NotReady` until
