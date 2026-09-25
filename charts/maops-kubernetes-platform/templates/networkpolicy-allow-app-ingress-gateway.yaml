@@ -1,0 +1,30 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY5 (unchanged for Day 6): app accepts application-port ingress ONLY
+# from gateway. Paired with networkpolicy-allow-gateway-egress-app.yaml
+# - both sides must independently allow the same traffic. DAY6 caveat:
+# meaningful for plaintext/non-ambient paths only - see
+# networkpolicy-allow-gateway-egress-app.yaml's header comment and
+# networkpolicy-allow-hbone.yaml for why the real ambient path is
+# governed by Istio AuthorizationPolicy instead.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-app-ingress-from-gateway
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "app") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.containerPort }}
+{{- end }}

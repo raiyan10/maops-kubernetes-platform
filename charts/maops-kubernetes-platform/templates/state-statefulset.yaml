@@ -1,0 +1,109 @@
+# DAY6: ambient mesh enrollment is namespace-level, not per-Pod - see
+# gateway-deployment.yaml's header comment. Everything else in this
+# StatefulSet (single replica, PVC retention policy, fsGroup/storage
+# hardening contract) is carried forward unchanged from Day 4/5 - see
+# docs/architecture.md.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: maops-state
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 4 }}
+spec:
+  replicas: {{ .Values.state.replicas }}
+  serviceName: maops-state-headless
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "state") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # DAY6 (live-discovered Helm ConfigMap rollout remediation) -
+        # see gateway-deployment.yaml's identical addition for the full
+        # rationale. Scoped to state-configmap.yaml specifically - never
+        # affected by gateway/app config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/state-configmap.yaml") . | sha256sum | quote }}
+      labels:
+        {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 8 }}
+    spec:
+      serviceAccountName: maops-state
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        fsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      containers:
+        - name: maops-state
+          image: "{{ .Values.images.state.repository }}:{{ .Values.images.state.tag }}"
+          imagePullPolicy: {{ .Values.images.state.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.state.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: maops-state-config
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.state.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            - name: state-auth
+              mountPath: /var/run/secrets/maops-state
+              readOnly: true
+            - name: data
+              mountPath: /data
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+      volumes:
+        - name: state-auth
+          secret:
+            secretName: {{ .Values.secrets.stateAuthName }}
+            defaultMode: 288
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 10 }}
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        volumeMode: Filesystem
+        {{- if .Values.state.storage.storageClassName }}
+        storageClassName: {{ .Values.state.storage.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.state.storage.requests }}

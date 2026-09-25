@@ -1,5 +1,8 @@
 """
 DAY4: minimal, explicit, run-specific suite-level `/state` baseline.
+DAY6: re-wired (env var names only - the design is unchanged) to the
+Day 6 suite/lock identifiers; Day 4's/Day 5's own DAY4_RUN_ID/
+DAY5_RUN_ID-era runs are historical and not read by this module.
 
 Distinct from persistence_check.py/retention_check.py's own per-
 experiment restoration proofs (each of which independently verifies
@@ -9,21 +12,21 @@ inserted between state-check and final-state-check that forgets its
 own restoration contract - that no single script's own self-check
 could ever catch.
 
-Deliberately NOT a reusable per-cluster baseline file (the design
-batch 1 proposed and this batch's own briefing explicitly rejects): a
+Deliberately NOT a reusable per-cluster baseline file (the Day 4 design
+batch 1 proposed and that batch's own briefing explicitly rejected): a
 fixed per-cluster path would let a stale baseline from an unrelated
 earlier run be silently reused by a later invocation. Every baseline
 here is scoped to one explicit run ID and one explicit external file
 path, both supplied via environment variables the Makefile generates
-once per `make day5-check` invocation (see Makefile's DAY5_RUN_ID /
-DAY5_SUITE_BASELINE_PATH) and passes through to child `$(MAKE)`
+once per `make day6-check` invocation (see Makefile's DAY6_RUN_ID /
+DAY6_SUITE_BASELINE_PATH) and passes through to child `$(MAKE)`
 recipe lines by exporting them - never auto-discovered by the reader
 (check_and_report() below) and never recomputed at the final gate.
 
 Standalone command behavior (explicit, by design): a script invoked
-without DAY5_RUN_ID/DAY5_SUITE_BASELINE_PATH set in its environment -
+without DAY6_RUN_ID/DAY6_SUITE_BASELINE_PATH set in its environment -
 i.e. `make state-check` or `make final-state-check` run on its own,
-outside `make day5-check` - never claims suite-baseline capture or
+outside `make day6-check` - never claims suite-baseline capture or
 restoration. `state_check.py` simply skips capture (non-fatally; its
 other checks are still meaningful standalone) and prints why;
 `final_state_check.py` records this as a distinct, explicit FAILURE of
@@ -31,7 +34,7 @@ the suite-baseline check specifically (not a silent skip) - a
 standalone final-state-check run cannot prove a whole-pipeline
 invariant it was never given the means to check. Two independent
 `make X` invocations that don't deliberately share the same
-DAY5_RUN_ID/DAY5_SUITE_BASELINE_PATH env vars will always disagree on
+DAY6_RUN_ID/DAY6_SUITE_BASELINE_PATH env vars will always disagree on
 `run_id` and correctly fail closed at the final gate - this is the
 intended behavior, not a bug.
 
@@ -39,18 +42,18 @@ Single-operator assumption: this project's Makefile/scripts are a
 single local operator's tool, never a concurrent shared CI runner (see
 docs/architecture.md). This module's own refuse-to-overwrite creation
 (`capture()` below, via O_EXCL) does NOT, by itself, guard against two
-overlapping `make day5-check` invocations mutating the same live
+overlapping `make day6-check` invocations mutating the same live
 cluster at once - a genuinely FRESH run computes its own new
-`uuid4().hex`-derived path each time (see the Makefile's `DAY5_RUN_ID`),
+`uuid4().hex`-derived path each time (see the Makefile's `DAY6_RUN_ID`),
 so it will essentially never collide with an unrelated earlier run's
 file; O_EXCL here instead guards a narrower case - the SAME path being
-written to twice (e.g. `DAY5_RUN_ID`/`DAY5_SUITE_BASELINE_PATH`
+written to twice (e.g. `DAY6_RUN_ID`/`DAY6_SUITE_BASELINE_PATH`
 deliberately reused/re-exported by the operator, or `capture()` being
 called a second time within one run) - never silently overwriting
 whatever is already there. Actual mutual exclusion against a second,
-independent, concurrent invocation is `scripts/day5_lock.py`'s job
-(DAY4 batch 2b, Part D - carried forward and re-wired to `day5_lock.py`
-for Day 5), a wholly separate, process-held local lock - not this
+independent, concurrent invocation is `scripts/day6_lock.py`'s job, a
+wholly separate, process-held local lock scoped to Day 6's own mutation
+target (independent of Day 4's/Day 5's own preserved locks) - not this
 per-run baseline file. Cleaning up a stale leftover baseline file (from
 a run that crashed before final-state-check ever ran) is a manual
 operator action.
@@ -68,8 +71,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from http_checks import is_nonempty_identity
 
-RUN_ID_ENV = "DAY5_RUN_ID"
-PATH_ENV = "DAY5_SUITE_BASELINE_PATH"
+RUN_ID_ENV = "DAY6_RUN_ID"
+PATH_ENV = "DAY6_SUITE_BASELINE_PATH"
 
 _REQUIRED_FIELDS = {"run_id", "context", "namespace", "namespace_uid", "pvc_uid", "pv_uid", "value", "captured_at"}
 

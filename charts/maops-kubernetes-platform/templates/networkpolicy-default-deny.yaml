@@ -1,0 +1,21 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY5 (unchanged for Day 6): baseline default-deny for every Pod in
+# this release's namespace, both directions. Every other NetworkPolicy
+# template in this chart is a narrow, explicit ADD on top of this
+# baseline. Cilium is the enforcing CNI (installed out-of-band via
+# Helm, configured for Istio ambient coexistence - see
+# docs/architecture.md); this is a standard networking.k8s.io/v1
+# object with no Cilium-specific extensions.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-default-deny-all
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+{{- end }}

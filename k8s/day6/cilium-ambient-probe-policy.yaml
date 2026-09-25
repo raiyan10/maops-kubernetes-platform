@@ -1,0 +1,86 @@
+# DAY6 (narrowed after independent review): narrowly-scoped Cilium/
+# Istio ambient integration fix, not an application-layer NetworkPolicy
+# and not a replacement for the standard Kubernetes NetworkPolicies in
+# charts/maops-kubernetes-platform.
+#
+# Istio ztunnel SNATs kubelet's HTTP liveness/readiness probe
+# connections (which kubelet makes directly, without presenting a mesh
+# mTLS client identity) to the well-known link-local source address
+# 169.254.7.127 before proxying them on to the target Pod's actual
+# probe port - a documented ambient-mode mechanism, not a
+# project-specific value. Under Cilium's default-deny NetworkPolicy
+# baseline (charts/maops-kubernetes-platform's
+# maops-default-deny-all), this SNAT'd probe traffic would otherwise be
+# indistinguishable from - and blocked alongside - any other
+# unrecognized source, breaking startup/liveness/readiness probes for
+# every ambient-enrolled Pod in maops-platform.
+#
+# This is a CiliumClusterwideNetworkPolicy (a Cilium CRD, not a
+# standard networking.k8s.io/v1 object) specifically because the
+# exception concerns the CNI's own host-probe delivery path, an
+# infrastructure-level concern that is not itself scoped to one
+# namespace's application NetworkPolicy set the way a namespaced
+# CiliumNetworkPolicy would be. Narrowed here to exactly TWO
+# dimensions, both required:
+#   - `k8s:io.kubernetes.pod.namespace: maops-platform` - Cilium's
+#     reserved namespace-metadata label, the documented way a
+#     cluster-scoped CCNP's endpointSelector is narrowed to one
+#     namespace (a CCNP has no implicit `metadata.namespace` field of
+#     its own to rely on, unlike a namespaced CiliumNetworkPolicy).
+#   - `app.kubernetes.io/part-of: maops-kubernetes-platform` - this
+#     project's own workload label, so the exception can never apply to
+#     an unrelated Pod that merely happens to land in maops-platform.
+# Combined (matchLabels ANDs all entries), this endpointSelector can
+# only ever match this project's own three workload Pods
+# (maops-gateway/maops-app/maops-state) - never a bare "allow all
+# endpoints" rule, never cluster-wide.
+#
+# IP FAMILY: this project's kind clusters (kind/cluster-day6.yaml, like
+# every earlier day's) never set `networking.ipFamily`, so kind
+# provisions them IPv4-only (kind's own default) - there is no IPv6
+# stack on this cluster to protect or claim coverage for. This policy
+# therefore permits ONLY the IPv4 link-local SNAT address
+# (169.254.7.127/32) and deliberately does NOT include an IPv6
+# equivalent - adding one would claim dual-stack coverage this
+# single-family cluster does not have and this project has never
+# verified. If a future day moves this cluster to dual-stack, revisit
+# this policy explicitly rather than assuming IPv4-only coverage still
+# suffices.
+#
+# Limited to the workloads' own actual probe destination port (8080 -
+# the same `containerPort: http` every startup/liveness/readiness probe
+# in this chart targets, for all three workloads) - never a broader
+# port range.
+#
+# VERIFICATION: `scripts/validate_cilium_probe_policy.py` (part of the
+# cluster-free `make helm-check`/`make ci-check`) pins this object's
+# exact shape - name, endpointSelector, the single /32 IPv4 source CIDR,
+# TCP 8080 only, and no egress/extra ingress/L7 rule. Its runtime effect
+# (ambient-enrolled workload probes passing under Cilium default-deny)
+# is exercised whenever `make rollout-check` observes every workload
+# Pod Ready; see docs/architecture.md's "DAY6: live validation
+# record". Revisit this policy explicitly if Cilium, Istio, or the
+# cluster's IP family changes.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: maops-allow-ambient-health-probes
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  description: "Allow Istio ztunnel's SNAT'd (169.254.7.127, IPv4-only - this cluster has no IPv6 stack) kubelet health-probe traffic to reach maops-kubernetes-platform workload container ports (8080) under ambient mode + Cilium default-deny NetworkPolicy. Narrowly scoped to maops-platform namespace + this project's own workload label only."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: maops-platform
+      app.kubernetes.io/part-of: maops-kubernetes-platform
+  ingress:
+    - fromCIDR:
+        - "169.254.7.127/32"
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

@@ -1,0 +1,24 @@
+# DAY5 (unchanged design for Day 6): binds the maops-diagnostics
+# ServiceAccount (living in the separate validation namespace,
+# {{ .Values.validation.namespace }} - a cluster/platform support
+# object applied via k8s/day6/, never created by this chart) to the
+# namespace-scoped maops-diagnostics-reader Role above - a
+# cross-namespace RoleBinding subject, the grant still only ever
+# applies within {{ .Values.release.namespace }}. Only this one
+# identity is ever bound to a Role - the application ServiceAccounts
+# (maops-gateway/maops-app/maops-state) have no RoleBinding at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: maops-diagnostics-reader-binding
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "diagnostics") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.validation.diagnostics.serviceAccountName }}
+    namespace: {{ .Values.validation.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: maops-diagnostics-reader

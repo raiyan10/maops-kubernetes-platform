@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-Day 5 final restored-state validation.
+Day 6 final restored-state validation.
 
-Run after all mutating Day 5 experiments (scaling, rolling update +
-rollback, PDB/Eviction, persistence, retention) to independently prove
-the cluster is back in its normal, fully-healthy Day 5 baseline state -
-not by re-reading the manifest, but by querying the live cluster:
+Run after all mutating Day 6 experiments (the inherited Day 3-5 scaling,
+rolling update + rollback, PDB/Eviction, persistence, retention checks,
+now re-run against the Day 6 Helm-deployed workloads) to independently
+prove the cluster is back in its normal, fully-healthy Day 6 baseline
+state - not by re-reading the manifest, but by querying the live
+cluster:
 
-  - context is kind-maops-k8s-day5, 3 nodes Ready.
+  - context is kind-maops-k8s-day6, 3 nodes Ready.
   - both workloads: desired 3, Ready 3, 3 Ready Pods, 3 ready
     EndpointSlice endpoints, worker-only scheduling, worker skew <= 1.
   - both PodDisruptionBudgets: minAvailable 2, and a normal healthy
@@ -17,16 +19,20 @@ not by re-reading the manifest, but by querying the live cluster:
   - the runtime Secret still exists and is valid (never rotated,
     contents never inspected here beyond shape).
   - no leaked `kubectl port-forward` process from any of this project's
-    Day 4 validation scripts (scoped to the Day 4 context/namespace -
+    Day 6 validation scripts (scoped to the Day 6 context/namespace -
     DAY3-INT-L2 - never flagging an unrelated operator's port-forward to
     a different cluster/project).
+  - no leaked temporary mesh-probe namespace
+    (`mesh_check.MESH_PROBE_NAMESPACE`) - the DAY6 remediation item 3
+    whole-suite-level backstop for `scripts/mesh_check.py`'s own
+    verified namespace cleanup.
   - Day 1 (maops-k8s-day1), Day 2 (maops-k8s-day2), Day 3
-    (maops-k8s-day3), and Day 4 (maops-k8s-day4) kind clusters still
-    EXIST (DAY3-INT-I2, extended for Day 5: existence only, not a
-    byte-for-byte "unchanged" claim - the separate, stronger safety
-    argument is that every Day 5 kubectl mutation is explicitly scoped
-    to `kind-maops-k8s-day5` and gated by `context_check.py` before it
-    ever runs).
+    (maops-k8s-day3), Day 4 (maops-k8s-day4), and Day 5 (maops-k8s-day5)
+    kind clusters still EXIST (DAY3-INT-I2, extended for each new day
+    since: existence only, not a byte-for-byte "unchanged" claim - the
+    separate, stronger safety argument is that every Day 6 kubectl
+    mutation is explicitly scoped to `kind-maops-k8s-day6` and gated by
+    `context_check.py` before it ever runs).
 
 Node-topology and per-workload scheduling proof reuses
 scheduling_check's own functions directly (not a re-implementation) -
@@ -45,6 +51,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import kube
+import mesh_check
+import networkpolicy_check
 import scheduling_check
 import suite_baseline
 from endpointslice import count_ready_endpoints
@@ -71,7 +79,7 @@ EXPECTED_REPLICAS = 3
 EXPECTED_STATE_REPLICAS = 1
 EXPECTED_MIN_AVAILABLE = 2
 EXPECTED_STATE_CLAIM_STORAGE = "256Mi"
-OTHER_DAY_CLUSTERS = ["maops-k8s-day1", "maops-k8s-day2", "maops-k8s-day3", "maops-k8s-day4"]
+OTHER_DAY_CLUSTERS = ["maops-k8s-day1", "maops-k8s-day2", "maops-k8s-day3", "maops-k8s-day4", "maops-k8s-day5"]
 
 results: list[tuple[bool, str]] = []
 
@@ -254,7 +262,7 @@ def check_suite_state_baseline_restored() -> None:
     of leftover baseline files, and never satisfied by recapturing the
     current value here (that would prove nothing). A run without a
     supplied run ID/path (standalone `final-state-check`, or
-    `state-check` did not run first in the same `make day5-check`
+    `state-check` did not run first in the same `make day6-check`
     invocation) is recorded as an explicit FAILURE of this specific
     check, never a silent skip - it cannot claim suite-baseline
     restoration it was never given the means to verify."""
@@ -264,8 +272,8 @@ def check_suite_state_baseline_restored() -> None:
             False,
             f"suite-level state baseline restoration cannot be verified: {suite_baseline.RUN_ID_ENV}/"
             f"{suite_baseline.PATH_ENV} not supplied to this invocation (standalone final-state-check, or "
-            "state-check did not run first in the same `make day5-check` sequence) - this check only has "
-            "meaning when run via the full `make day5-check` sequence",
+            "state-check did not run first in the same `make day6-check` sequence) - this check only has "
+            "meaning when run via the full `make day6-check` sequence",
         )
         return
 
@@ -302,7 +310,7 @@ def check_suite_state_baseline_restored() -> None:
     record(
         matches,
         f"suite-level state baseline restored: independent GET /state matches the run {run_id!r} baseline "
-        f"captured before any Day 4 mutating experiment (value={actual_value!r}, expected {baseline['value']!r})"
+        f"captured before any Day 6 mutating experiment (value={actual_value!r}, expected {baseline['value']!r})"
         + (f", schema error: {err}" if not ok else ""),
     )
 
@@ -339,12 +347,12 @@ def check_secret_final_state() -> None:
 
 
 def check_no_leaked_port_forwards() -> None:
-    """DAY3-INT-L2: scoped to THIS project's Day 5 port-forwards only. A
+    """DAY3-INT-L2: scoped to THIS project's Day 6 port-forwards only. A
     bare "kubectl" + "port-forward" substring match would also flag an
     unrelated operator's port-forward to a completely different
-    cluster/project as a Day 5 leak. Every port-forward this project's
+    cluster/project as a Day 6 leak. Every port-forward this project's
     own `scripts/portforward.py` starts always carries an explicit
-    `--context kind-maops-k8s-day5 -n maops-platform` (see
+    `--context kind-maops-k8s-day6 -n maops-platform` (see
     `port_forward()`), so requiring both substrings together is a
     reliable, minimal scope without needing to also enumerate the exact
     resource names it can create."""
@@ -354,11 +362,75 @@ def check_no_leaked_port_forwards() -> None:
         for line in result.stdout.splitlines()
         if "kubectl" in line and "port-forward" in line and kube.CONTEXT in line and kube.NAMESPACE in line
     ]
-    record(not leaked, f"no leaked Day 5 ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
+    record(not leaked, f"no leaked Day 6 ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
+
+
+def check_no_leaked_mesh_probe_namespace() -> None:
+    """DAY6 remediation item 3: `scripts/mesh_check.py`'s wrong-identity
+    proof creates and (in a guaranteed `finally`) deletes a temporary
+    ambient namespace (`mesh_check.MESH_PROBE_NAMESPACE`) - this is the
+    independent, whole-suite-level backstop confirming that cleanup
+    actually held: even if `mesh_check.py`'s own
+    `delete_namespace_and_verify_gone()` were ever silently bypassed
+    (e.g. a future edit skips calling it, or its own bounded wait timed
+    out and the failure was somehow not fatal to that run), this check
+    still catches the leaked namespace before the suite as a whole is
+    considered restored.
+
+    DAY6 fourth remediation item 2: uses `mesh_check`'s own tri-state
+    `_resource_state()` rather than folding any nonzero kubectl exit
+    into "confirmed absent" - an explicit NOT_FOUND is the only outcome
+    that proves the namespace is actually gone; a connection failure,
+    timeout, Forbidden, or other API_ERROR is its own distinct failure,
+    never silently read as "not leaked"."""
+    state = mesh_check._resource_state("namespace", mesh_check.MESH_PROBE_NAMESPACE)
+    if state == mesh_check.API_ERROR:
+        record(False, f"could not determine whether the temporary mesh-probe namespace ({mesh_check.MESH_PROBE_NAMESPACE!r}) is leaked: API_ERROR (not an explicit NotFound response)")
+        return
+    leaked = state == mesh_check.EXISTS
+    record(not leaked, f"no leaked temporary mesh-probe namespace ({mesh_check.MESH_PROBE_NAMESPACE!r}) - {'STILL PRESENT' if leaked else 'confirmed absent (explicit NOT_FOUND)'}")
+
+
+def check_no_leaked_networkpolicy_probe_pods() -> None:
+    """DAY6 third remediation (live-discovered): `scripts/networkpolicy_check.py`'s
+    `check_application_port_networkpolicy_isolated()` creates four
+    temporary, non-ambient probe Pods directly in `maops-platform` and
+    (in a guaranteed `finally`) deletes every one it successfully
+    created - this is the independent, whole-suite-level backstop
+    confirming that cleanup actually held, even if a future edit to
+    that function ever skipped or weakened it. Every probe Pod that
+    script creates carries the `networkpolicy_check.NETPOL_PROBE_RUN_LABEL`
+    key (a per-run-unique value, but this check matches on the key's
+    mere PRESENCE - `-l <key>` - so it catches a leak from any run, not
+    only the most recent one).
+
+    A `kubectl get pods -l <key> --ignore-not-found` list query is used
+    rather than a single named-resource tri-state check (there is no
+    one fixed name to check - the whole point is catching ANY leaked
+    probe Pod under this label): exit 0 with empty stdout means none
+    exist, exit 0 with any output means at least one leaked, and any
+    OTHER (nonzero) exit is its own distinct API_ERROR failure, never
+    silently read as "no leaked pods"."""
+    result = kube.run(
+        "-n", NAMESPACE, "get", "pods", "-l", networkpolicy_check.NETPOL_PROBE_RUN_LABEL, "--ignore-not-found", "-o", "name", check=False
+    )
+    if result.returncode != 0:
+        record(
+            False,
+            f"could not determine whether any NetworkPolicy probe Pods are leaked in {NAMESPACE!r} "
+            f"(label {networkpolicy_check.NETPOL_PROBE_RUN_LABEL!r}): API_ERROR (not an explicit empty response)",
+        )
+        return
+    leaked_names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    record(
+        not leaked_names,
+        f"no leaked NetworkPolicy probe Pods in {NAMESPACE!r} (label {networkpolicy_check.NETPOL_PROBE_RUN_LABEL!r}) - "
+        f"{'STILL PRESENT: ' + str(leaked_names) if leaked_names else 'confirmed absent'}",
+    )
 
 
 def check_other_day_clusters_still_exist() -> None:
-    """DAY3-INT-I2, extended for Day 5 (DAY5-INT-H2/DAY5-REL-M1 fix -
+    """DAY3-INT-I2, extended for Day 5 and again for Day 6 (DAY5-INT-H2/DAY5-REL-M1 fix -
     this list previously stopped at Day 3 and never grew to include Day
     4 once Day 5 introduced its own separate cluster, so a Day 4
     cluster failure was structurally unable to be caught here): this
@@ -369,7 +441,7 @@ def check_other_day_clusters_still_exist() -> None:
     on registration, not liveness). The separate, stronger structural
     safety argument that nothing in them was ever mutated is: every Day
     5 kubectl mutation in this project is explicitly scoped to
-    `kind-maops-k8s-day5` (`kube.CONTEXT`, never the ambient
+    `kind-maops-k8s-day6` (`kube.CONTEXT`, never the ambient
     current-context) and is preceded by the fail-closed identity/
     topology gate in `context_check.py` / `kube.verify_context()` - not
     a runtime snapshot comparison performed by this function."""
@@ -380,7 +452,7 @@ def check_other_day_clusters_still_exist() -> None:
 
 
 def main() -> int:
-    print(f"# Day 5 final restored-state validation against context {kube.CONTEXT}")
+    print(f"# Day 6 final restored-state validation against context {kube.CONTEXT}")
     try:
         kube.verify_context()
     except RuntimeError as exc:
@@ -405,6 +477,8 @@ def main() -> int:
     check_secret_final_state()
     check_state_secret_final_state()
     check_no_leaked_port_forwards()
+    check_no_leaked_mesh_probe_namespace()
+    check_no_leaked_networkpolicy_probe_pods()
     check_other_day_clusters_still_exist()
 
     all_results = results + scheduling_check.results
@@ -414,7 +488,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} final-state check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: Day 5 cluster fully restored to its normal healthy baseline state")
+    print("PASS: Day 6 cluster fully restored to its normal healthy baseline state")
     return 0
 
 

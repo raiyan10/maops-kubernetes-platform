@@ -1,0 +1,33 @@
+{{- if .Values.meshPolicy.enabled }}
+# DAY6: L4-compatible identity authorization only (source principal),
+# never an L7/HTTP-aware `to.operation` (method/path) rule - Day 6 runs
+# no waypoint proxy, so L7 east-west authorization is architecturally
+# unavailable and is never claimed here (see docs/architecture.md).
+#
+# Istio's semantics: once ANY AuthorizationPolicy with action ALLOW
+# selects a workload, that workload denies every request that does not
+# match ANY such policy - so this single ALLOW-only policy is also
+# what DENIES every other source identity, including the
+# maops-diagnostics/validation-client identity in
+# {{ .Values.validation.namespace }} (never listed as a principal
+# below, so implicitly denied - matching the equivalent NetworkPolicy
+# deny proven by scripts/networkpolicy_check.py and the mesh-layer
+# identity-denial proof in scripts/mesh_check.py).
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: maops-gateway-authz
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway") | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ include "maops.principal" (dict "namespace" .Values.routing.gateway.namespace "serviceAccount" .Values.routing.gateway.serviceAccountName) }}
+{{- end }}

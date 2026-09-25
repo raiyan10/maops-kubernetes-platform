@@ -1,0 +1,22 @@
+{{- if .Values.meshPolicy.enabled }}
+# DAY6: namespace-wide STRICT mutual TLS for {{ .Values.release.namespace }}.
+# No selector is set, so this applies to every workload in the
+# namespace, not just one component. Enforced by ztunnel for
+# ambient-enrolled workloads (this namespace is labeled
+# istio.io/dataplane-mode: ambient - see k8s/day6/platform-namespace.yaml).
+# This does NOT replace or remove the existing application-layer Secret
+# authentication (maops-internal-auth/maops-state-auth) - both remain
+# required; mTLS is a transport-layer identity/confidentiality
+# guarantee, not a substitute for the application's own credential
+# checks.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: maops-platform-strict-mtls
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.labels" . | nindent 4 }}
+spec:
+  mtls:
+    mode: STRICT
+{{- end }}

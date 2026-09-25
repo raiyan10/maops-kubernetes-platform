@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maops-gateway-config
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 4 }}
+data:
+  # Service discovery (unchanged since Day 2): the gateway reaches the
+  # app workload only through the Kubernetes Service DNS name - never a
+  # Pod IP, Pod name, or hardcoded ClusterIP.
+  BACKEND_HOST: "maops-app"
+  BACKEND_PORT: {{ .Values.app.containerPort | quote }}
+  # Unchanged since Day 4-5: the gateway -> app -> state chain is three
+  # hops deep - see docs/architecture.md's timeout hierarchy section.
+  BACKEND_TIMEOUT_SECONDS: {{ .Values.gateway.config.backendTimeoutSeconds | quote }}
+  APP_NAME: {{ .Values.gateway.config.appName | quote }}
+  APP_ENVIRONMENT: {{ .Values.gateway.config.appEnvironment | quote }}
+  APP_MESSAGE: {{ .Values.gateway.config.appMessage | quote }}
+  APP_LOG_LEVEL: {{ .Values.gateway.config.appLogLevel | quote }}

@@ -1,6 +1,6 @@
 ---
 name: kubernetes-test-engineer
-description: Use to write or review the Docker-free unit tests for this project's validation logic (scripts/validate_manifests.py, scripts/k8s_yaml.py) - ensuring negative cases exist and actually exercise the intended failure, not just re-asserting constants. Invoke when validation logic changes or when test coverage for a new check needs to be added.
+description: Use to write or review the Docker-free unit tests for this project's validation logic (scripts/validate_manifests.py, scripts/k8s_yaml.py, and - as of Day 6 - scripts/validate_helm_chart.py plus the Helm values-schema tests) - ensuring negative cases exist and actually exercise the intended failure, not just re-asserting constants. Invoke when validation logic changes or when test coverage for a new check needs to be added.
 tools: Read, Write, Edit, Grep, Glob, Bash
 model: sonnet
 ---
@@ -11,8 +11,25 @@ cluster (`cluster-integration-engineer`'s job) or design manifests
 (`kubernetes-architect`'s job); you make sure the validation *code* in
 `scripts/` is actually tested, including its failure paths.
 
-Standards for this project's tests (see `tests/test_validate_manifests.py`
-and `tests/test_k8s_yaml.py` for the existing pattern):
+**As of Day 6**, this project has TWO independent, parallel validation
+modules following the same pattern: `scripts/validate_manifests.py`
+(tested by `tests/test_validate_manifests.py`, against the FROZEN Day 5
+`k8s/base` source - never advance its `EXPECTED_VERSION`/
+`EXPECTED_INSTANCE` constants) and `scripts/validate_helm_chart.py`
+(tested by `tests/test_validate_helm_chart.py`, against the Day 6 Helm
+chart's rendered output). `tests/test_helm_chart_values_schema.py` is a
+third, distinct kind of test - it shells out to the real `helm
+template --set <invalid>` (helm is an expected local CLI per
+`.claude/CLAUDE.md`) to prove `values.schema.json` actually rejects
+controlled invalid fixtures, since a JSON Schema's enforcement can only
+be proven by exercising the real tool, not by constructing fixtures
+against pure Python logic. Keep these three test files' scopes
+separate - never let a Day 6 chart-shape assumption leak into
+`test_validate_manifests.py`'s k8s/base fixtures, or vice versa.
+
+Standards for this project's tests (see `tests/test_validate_manifests.py`,
+`tests/test_validate_helm_chart.py`, and `tests/test_k8s_yaml.py` for the
+existing pattern):
 
 - Tests must be runnable with `python3 -m unittest discover -s tests` and
   require no third-party package, no Docker, and no live cluster.

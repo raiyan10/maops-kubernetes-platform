@@ -1,0 +1,160 @@
+# Day 6 default values for the maops-kubernetes-platform application
+# chart. Installed as:
+#   helm upgrade --install maops-kubernetes-platform-day6 \
+#     charts/maops-kubernetes-platform --namespace maops-platform
+#
+# Resource NAMES are deliberately kept stable across days (maops-gateway,
+# maops-app, maops-state, maops-diagnostics) and are NOT templated from
+# the release name - only the standard
+# app.kubernetes.io/instance=<release name> LABEL varies by release, the
+# same convention Days 1-5's Kustomize base already used (instance
+# label = maops-kubernetes-platform-day<N>, object names unchanged).
+#
+# k8s/base (the frozen Day 5 Kustomize source) is never a dependency of
+# this chart and this chart never reads it - the two sources are wired
+# to completely independent Makefile targets (`deploy` here uses
+# `helm upgrade --install` only, never `kubectl apply -k k8s/base`).
+
+nameOverride: ""
+fullnameOverride: ""
+
+# The Namespace this release's application objects live in. The
+# Namespace object ITSELF is a cluster/platform support object, not an
+# application workload - it is applied separately via
+# k8s/day6/platform-namespace.yaml (`make namespace-apply`), never
+# created by this chart. This value must match that Namespace's name;
+# it is used for cross-namespace references (RoleBinding subject
+# namespace, NetworkPolicy namespaceSelector) that must stay in sync
+# with wherever this release is actually installed.
+release:
+  namespace: maops-platform
+
+# The validation/diagnostics namespace and identity - also a
+# cluster/platform support object applied via k8s/day6/, never created
+# by this chart. Referenced here only so the chart's own
+# Role/RoleBinding (which grant access INTO release.namespace FOR this
+# identity) can name it correctly.
+validation:
+  namespace: maops-day6-validation
+  diagnostics:
+    serviceAccountName: maops-diagnostics
+
+# Gateway API / Istio ingress Gateway routing. The Gateway object
+# itself (`maops-edge`) lives in k8s/day6/ (a platform/cluster support
+# object, not an application workload) - this chart owns only the
+# HTTPRoute that attaches to it.
+routing:
+  hostname: maops.local
+  gateway:
+    name: maops-edge
+    namespace: maops-ingress
+    # Istio's Gateway API deployment controller deterministically names
+    # the ServiceAccount it generates for a Gateway "<gateway-name>-istio" -
+    # used to build the AuthorizationPolicy source principal for the
+    # ingress-Gateway -> maops-gateway identity path
+    # (cluster.local/ns/<gateway.namespace>/sa/<gateway.serviceAccountName>).
+    serviceAccountName: maops-edge-istio
+
+images:
+  gateway:
+    repository: maops-kubernetes-gateway
+    tag: "0.6.0"
+    pullPolicy: IfNotPresent
+  app:
+    repository: maops-kubernetes-app
+    tag: "0.6.0"
+    pullPolicy: IfNotPresent
+  state:
+    repository: maops-kubernetes-state
+    tag: "0.6.0"
+    pullPolicy: IfNotPresent
+
+# Unchanged since Day 1/2: applied identically to every workload
+# container. Kept as one shared block (rather than duplicated per
+# workload) since Days 1-5 never varied it - each workload template
+# still renders its own explicit securityContext, this is only a
+# values-level convenience for a single place to tune it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+gateway:
+  replicas: 3
+  containerPort: 8080
+  resources: {}
+  config:
+    backendTimeoutSeconds: 5
+    appName: maops-kubernetes-gateway
+    appEnvironment: day6-helm-routing-mesh
+    appMessage: "Hello from the MAOps Kubernetes Gateway (Day 6)"
+    appLogLevel: info
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+app:
+  replicas: 3
+  containerPort: 8080
+  resources: {}
+  config:
+    stateTimeoutSeconds: 3
+    appName: maops-kubernetes-app
+    appEnvironment: day6-helm-routing-mesh
+    appMessage: "Hello from the MAOps Kubernetes App (Day 6)"
+    appLogLevel: info
+  pdb:
+    enabled: true
+    minAvailable: 2
+
+state:
+  replicas: 1
+  containerPort: 8080
+  resources: {}
+  config:
+    stateFilePath: /data/state.json
+    stateMaxBodyBytes: 4096
+    appName: maops-kubernetes-state
+    appEnvironment: day6-helm-routing-mesh
+    appMessage: "Hello from the MAOps Kubernetes State service (Day 6)"
+    appLogLevel: info
+  storage:
+    requests: 256Mi
+    # Empty string == use the cluster's verified default StorageClass
+    # (rancher.io/local-path), unchanged since Day 4 - never hardcoded
+    # to a class name that may not exist on every cluster this chart
+    # could be installed against.
+    storageClassName: ""
+
+# Both runtime Secrets (maops-internal-auth, maops-state-auth) are
+# deliberately NEVER represented here - no key, no default, no
+# generator. They remain externally bootstrapped by
+# scripts/secret_bootstrap.py (`make secret-bootstrap`), exactly as in
+# Days 2/4/5, and are referenced by NAME only in the Deployment/
+# StatefulSet volume templates.
+secrets:
+  internalAuthName: maops-internal-auth
+  stateAuthName: maops-state-auth
+
+networkPolicy:
+  enabled: true
+
+meshPolicy:
+  enabled: true

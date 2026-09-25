@@ -1,0 +1,125 @@
+# DAY6: ambient mesh enrollment for this workload is a NAMESPACE-level
+# label (istio.io/dataplane-mode: ambient, set on the
+# {{ .Values.release.namespace }} Namespace itself - see
+# k8s/day6/platform-namespace.yaml), never a per-Pod sidecar injection
+# annotation. Ambient mode has no sidecar at all: no istio-proxy
+# container is added here, no annotation is set on the Pod template -
+# this Deployment spec is otherwise unchanged from Day 5's.
+#
+# DAY6 (live rollout remediation): `fsGroup`/`fsGroupChangePolicy` added
+# for the same reason as app-deployment.yaml's identical addition (see
+# its header comment and docs/architecture.md's "DAY6: live rollout
+# remediation - fsGroup for projected Secret volumes" section) -
+# `runAsGroup` alone does not make a projected Secret volume's files
+# group-readable by that process; `fsGroup` does. maops-gateway mounts
+# only `internal-auth` (never `state-auth`), but the same
+# PermissionError-shaped defect applies to any 0440 Secret projection
+# read by a non-root, non-matching-primary-group process, so this
+# workload gets the identical fix even though the live failure was
+# observed on maops-app's `state-token` read specifically.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maops-gateway
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # DAY6 (live-discovered Helm ConfigMap rollout remediation): a
+        # deterministic checksum of THIS workload's own ConfigMap
+        # template render - never a timestamp/random value - makes a
+        # ConfigMap-only change (e.g. gateway.config.appMessage) a
+        # declarative Pod-template change too, so `helm upgrade`
+        # actually triggers a new ReplicaSet/rollout instead of
+        # `kubectl rollout status` trivially reporting success against
+        # an unchanged, already-healthy ReplicaSet. Scoped to
+        # gateway-configmap.yaml specifically via $.Template.BasePath -
+        # never affected by app/state config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/gateway-configmap.yaml") . | sha256sum | quote }}
+      labels:
+        {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 8 }}
+    spec:
+      serviceAccountName: maops-gateway
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        fsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway") | nindent 14 }}
+      containers:
+        - name: maops-gateway
+          image: "{{ .Values.images.gateway.repository }}:{{ .Values.images.gateway.tag }}"
+          imagePullPolicy: {{ .Values.images.gateway.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: maops-gateway-config
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.gateway.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            - name: internal-auth
+              mountPath: /var/run/secrets/maops
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 7
+            failureThreshold: 3
+      volumes:
+        - name: internal-auth
+          secret:
+            secretName: {{ .Values.secrets.internalAuthName }}
+            defaultMode: 288

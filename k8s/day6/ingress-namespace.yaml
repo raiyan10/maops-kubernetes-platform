@@ -1,0 +1,26 @@
+# DAY6: dedicated namespace for the Istio ingress Gateway
+# (`maops-edge` - see gateway.yaml in this directory) and its
+# Istio-generated Deployment/Service/ServiceAccount. Kept separate from
+# both maops-platform (the application release namespace) and
+# maops-day6-validation (the diagnostics/validation namespace) so the
+# ingress Gateway's identity (`cluster.local/ns/maops-ingress/sa/maops-edge-istio`,
+# Istio's own deterministic "<gateway-name>-istio" ServiceAccount
+# naming - see gateway-values-configmap.yaml) is unambiguous and never
+# collides with an application or validation identity.
+#
+# Not mesh-enrolled (no istio.io/dataplane-mode label) - the ingress
+# Gateway is a standard Istio Envoy proxy Deployment, not an
+# ambient-redirected workload; it originates the mesh connection (via
+# HBONE to the destination's ztunnel) rather than participating in
+# ambient redirection itself.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maops-ingress
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl

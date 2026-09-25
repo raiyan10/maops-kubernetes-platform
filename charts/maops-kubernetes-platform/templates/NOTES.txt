@@ -1,0 +1,32 @@
+maops-kubernetes-platform ({{ .Chart.AppVersion }}) - Day 6 - has been installed/upgraded.
+
+Release:    {{ .Release.Name }}
+Namespace:  {{ .Release.Namespace }}
+Revision:   {{ .Release.Revision }}
+
+This chart deploys the application workloads only (maops-gateway,
+maops-app, maops-state, plus the Role/RoleBinding granting
+maops-diagnostics read-only access into this namespace). It does NOT
+create the Namespace itself, the Istio ingress Gateway, or Cilium/
+Istio - those are cluster/platform support objects and infrastructure
+Helm charts applied separately (see k8s/day6/ and the Makefile's
+cni-install/gateway-api-install/mesh-install targets).
+
+Check rollout status (explicit kubeconfig/context, as the Makefile uses):
+  kubectl --kubeconfig ~/.kube/maops-k8s-day6.config --context kind-maops-k8s-day6 \
+    -n {{ .Release.Namespace }} get deployment,statefulset
+
+Reach the application through its normal entry point, the Istio
+ingress Gateway (kind maps host 127.0.0.1:18080 to its NodePort):
+  curl -H "Host: {{ .Values.routing.hostname }}" http://127.0.0.1:18080/
+
+A bounded `kubectl port-forward` to service/maops-gateway remains
+available for debugging and is what `make smoke` uses; it bypasses the
+Gateway API path (see README.md's "Port-forward usage").
+
+List everything this release owns:
+  helm get manifest {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+This is a local kind development install - no production-readiness,
+HA, or TLS claim is made. See docs/architecture.md's Day 6 section for
+the full list of accepted limitations.

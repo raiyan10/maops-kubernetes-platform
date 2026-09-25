@@ -1,0 +1,29 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY5 (unchanged for Day 6): every Pod in this namespace needs
+# outbound DNS to resolve Service names - the one egress allow that
+# applies namespace-wide (podSelector: {}) rather than per-component.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-dns-egress
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

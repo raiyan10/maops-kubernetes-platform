@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-DAY5: proves maops-diagnostics' RBAC scope against the LIVE cluster,
-using a real mounted ServiceAccount token from inside an ephemeral
-probe Pod - never `kubectl auth can-i --as=`, which only proves what
-the INVOKING identity's own impersonation rights say, not what the
-diagnostics token itself is actually authorized to do end to end
-(token mount + API server authorization, together).
+DAY5 (unchanged design for Day 6, just the validation namespace name):
+proves maops-diagnostics' RBAC scope against the LIVE cluster, using a
+real mounted ServiceAccount token from inside an ephemeral probe Pod -
+never `kubectl auth can-i --as=`, which only proves what the INVOKING
+identity's own impersonation rights say, not what the diagnostics
+token itself is actually authorized to do end to end (token mount + API
+server authorization, together).
 
 The probe Pod runs as ServiceAccount maops-diagnostics in
-maops-day5-validation (the one identity in this project with
+maops-day6-validation (the one identity in this project with
 automountServiceAccountToken: true) and makes real HTTPS calls
 directly to the in-cluster API server (https://kubernetes.default.svc)
 using its own mounted token and CA bundle, asserting the EXACT HTTP
@@ -220,7 +221,7 @@ _EXPECTED = [
 
 
 def main() -> int:
-    print(f"# Day 5 RBAC check: maops-diagnostics scope (context {CONTEXT})")
+    print(f"# Day 6 RBAC check: maops-diagnostics scope (context {CONTEXT})")
     try:
         kube.verify_context()
     except RuntimeError as exc:

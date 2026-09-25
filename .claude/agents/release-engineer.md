@@ -22,20 +22,32 @@ asked to perform any of those actions, decline and explain why.
 Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
-   released baseline: `0.5.0` for Day 5; use whatever `docs/roadmap.md`
-   names for the day actually under review), with no trailing
-   whitespace/newline surprises. Also re-run `make version-check`
-   yourself rather than trusting the file alone - it closes
-   `DAY1-REL-I1` precisely because drift between VERSION/image
-   tags/labels is no longer just eyeballed.
+   active target: `0.6.0` for Day 6, release ready as a local kind
+   reference platform but not yet committed, merged, tagged, or released -
+   `0.5.0` remains the latest RELEASED baseline for Day 5; use whatever
+   `docs/roadmap.md` names for the day actually under review), with no
+   trailing whitespace/newline surprises. Also re-run `make
+   version-check` yourself rather than trusting the file alone - as of
+   Day 6 it checks both the frozen k8s/base target (`0.5.0`, must never
+   advance) AND the live release target (VERSION, Helm chart
+   version/appVersion, image tags, Day 6 cluster/context/release
+   identities, pinned infrastructure versions - all `0.6.0`/their
+   pinned value).
 2. **No git tag, commit, or push has occurred** as part of this work -
    check `git status` and `git log` against the base branch; uncommitted
    changes are the expected, correct state at handoff. Earlier days'
-   tags (as of the current baseline: `v0.1.0` through `v0.5.0`) must
-   still exist unmoved.
-3. **`make dayN-check`** for the current day (e.g. `make day5-check`) has
+   tags (as of the current released baseline: `v0.1.0` through
+   `v0.5.0`) must still exist unmoved - Day 6 has no tag yet, and none
+   should be created by this work.
+3. **`make dayN-check`** for the current day (e.g. `make day6-check`) has
    actually been run and its real output captured - not assumed. Re-run
-   it if you can't find fresh evidence it passed.
+   it if you can't find fresh evidence it passed. For a Day 6
+   implementation pass explicitly scoped to static validation only
+   (no live cluster contact authorized), `make ci-check` (the
+   cluster-free subset: test, version-check, manifest-check, helm-lint,
+   helm-template, helm-check) is the evidence to look for instead -
+   confirm the report is explicit that `day6-check`/live targets were
+   deliberately deferred, not silently skipped or claimed as passing.
 4. **No leaked processes.** Confirm no background `kubectl port-forward`
    process survives (`ps aux | grep port-forward`).
 5. **Documentation is current and consistent**: `README.md` reflects the
@@ -50,16 +62,34 @@ Checklist for a readiness assessment:
    the frozen `v0.5.0` baseline (Days 1-5 released), the Day 5 security
    objects - dedicated ServiceAccounts, the single `maops-diagnostics`
    `Role`/`RoleBinding`, the seven NetworkPolicy objects, and Cilium as
-   the enforcing CNI - are **required deliverables**, not leaked future
-   content; their absence is the finding, not their presence. What must
-   still be excluded from the frozen `v0.5.0` baseline: Day 6 work
-   (Helm-packaged application charts - Helm here installs only Cilium -
-   GitHub Actions CI, a service mesh, Ingress/Gateway API) and Day 7 work
-   (Recreate/Blue-Green/Canary deployment-strategy demonstrations), plus
-   the evergreen exclusions at any day: observability stack,
-   Terraform/Ansible/Argo CD, and cloud provisioning. A *committed*
-   Secret object is always forbidden; a runtime-bootstrapped Secret live
-   in the cluster is expected from Day 2 onward and is not a violation.
+   the enforcing CNI - are **required deliverables in k8s/base**, not
+   leaked future content; their absence is the finding, not their
+   presence, and `k8s/base` must be byte-for-byte untouched (check
+   `git diff` against it directly). For the Day 6 implementation
+   (`v0.6.0`, release ready, not yet released), required deliverables are: the Helm
+   chart (`charts/maops-kubernetes-platform`, the SOLE application
+   deployment source), `k8s/day6/`'s cluster/platform support objects,
+   the Gateway API (Istio as the sole controller, never a second
+   Ingress-based path), Istio ambient mesh (PeerAuthentication/
+   AuthorizationPolicy, no waypoint), Cilium reconfigured for ambient
+   coexistence, and the cluster-free GitHub Actions workflow. Flag as a
+   hard finding: any Day 6 application object duplicated between
+   `k8s/base` and the Helm chart, or between the Helm chart and
+   `k8s/day6/`; any Ingress object or second ingress controller; any
+   waypoint proxy or Cilium L7 policy; any unpinned infrastructure
+   version (Cilium/Gateway API CRDs/Istio must be exact, never
+   `latest`); a live cluster having actually been contacted when the
+   task scope said not to. What must still be excluded even from Day 6:
+   Day 7 work (Recreate/Blue-Green/Canary deployment-strategy
+   demonstrations, `HorizontalPodAutoscaler`, Argo Rollouts), plus the
+   evergreen exclusions at any day: observability stack (Hubble, Kiali,
+   Prometheus, Grafana, Jaeger/tracing), TLS/cert-manager, a cloud
+   LoadBalancer, Terraform/Ansible/Argo CD, and cloud provisioning. A
+   *committed* Secret object is always forbidden (check both `k8s/base`
+   and the Helm chart's rendered output, and confirm neither Secret's
+   value/key ever appears in `values.yaml`); a runtime-bootstrapped
+   Secret live in the cluster is expected from Day 2 onward and is not
+   a violation.
 7. **Claims match evidence.** Any count claimed (agents, skills, tests,
    checks passed) must be independently verifiable by you re-running the
    relevant command (`ls .claude/agents`, `ls .claude/skills`,

@@ -1,6 +1,6 @@
 ---
 name: manifest-validation
-description: Render and statically validate this project's Kubernetes manifests (k8s/base) without a live cluster - namespace, object counts, replicas, container/image/probe/resource fields, and Service/selector wiring. Use whenever k8s/base changes, before deploying, or when asked to check the manifests are correct.
+description: Render and statically validate this project's FROZEN Day 5 Kubernetes manifests (k8s/base) without a live cluster - namespace, object counts, replicas, container/image/probe/resource fields, and Service/selector wiring. Use whenever k8s/base changes (it never should, as of Day 6), before deploying, or when asked to check the manifests are correct. For the ACTIVE Day 6 application source, use `make helm-check`/`scripts/validate_helm_chart.py` instead - this skill's scope is k8s/base only.
 ---
 
 # Manifest validation
@@ -8,6 +8,18 @@ description: Render and statically validate this project's Kubernetes manifests 
 Static, cluster-free validation for `k8s/base` in the
 maops-kubernetes-platform project. This mirrors exactly what
 `make manifest-check` runs.
+
+**As of Day 6 (`v0.6.0`):** `k8s/base` is the FROZEN Day 5 Kustomize
+source - it must never change again, and it is never applied by any
+Day 6 target (`make deploy` runs `helm upgrade --install` only). This
+skill's checklist below still fully applies to `k8s/base` and is the
+right tool to prove it stayed untouched. The ACTIVE Day 6 application
+source is `charts/maops-kubernetes-platform` (a Helm chart); its
+equivalent static validation is `make helm-check`
+(`scripts/validate_helm_chart.py`, tested by
+`tests/test_validate_helm_chart.py`) - a parallel, independent module,
+never merged into this one. Don't confuse the two: a manifest-check
+PASS says nothing about the Helm chart, and vice versa.
 
 ## How to run it
 

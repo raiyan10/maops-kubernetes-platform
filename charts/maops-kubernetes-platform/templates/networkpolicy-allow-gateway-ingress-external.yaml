@@ -1,0 +1,48 @@
+{{- if .Values.networkPolicy.enabled }}
+# DAY6: the ONLY way into {{ .Values.release.namespace }} from outside
+# it - the Istio ingress Gateway Deployment (`{{ .Values.routing.gateway.name }}`,
+# living in `{{ .Values.routing.gateway.namespace }}`, identified by
+# BOTH the namespace's automatic `kubernetes.io/metadata.name` label
+# AND the `istio.io/gateway-name` Pod label Istio's Gateway API
+# deployment controller sets on its generated proxy Pods) may reach
+# gateway. This supersedes Day 5's `validation-client -> gateway`
+# allow, which is deliberately NOT carried forward into this chart -
+# see docs/architecture.md's "DAY6: Istio ambient service mesh" section
+# ("The Istio ingress Gateway path is adapted, not carried forward
+# unchanged from Day 5") for the full rationale. No equivalent allow exists
+# for app or state, and no namespace-wide allow exists for
+# {{ .Values.routing.gateway.namespace }} as a whole.
+#
+# DAY6 caveat (same as the application-port rules - see
+# networkpolicy-allow-hbone.yaml): since maops-gateway is ambient-
+# enrolled, the Istio ingress Gateway's real connection to it is also
+# HBONE-tunneled (the ingress Gateway proxy auto-detects an ambient
+# destination and dials its ztunnel directly), so this rule too is
+# meaningful for plaintext/non-ambient delivery only - it is kept,
+# unweakened, as defense-in-depth and to cover that case, not as the
+# primary enforcement for the real ambient-tunneled ingress path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-gateway-ingress-from-istio-ingress-gateway
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.routing.gateway.namespace }}
+          podSelector:
+            matchLabels:
+              istio.io/gateway-name: {{ .Values.routing.gateway.name }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.containerPort }}
+{{- end }}

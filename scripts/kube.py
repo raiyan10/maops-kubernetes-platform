@@ -9,16 +9,29 @@ import subprocess
 import time
 from pathlib import Path
 
-CLUSTER_NAME = "maops-k8s-day5"
+CLUSTER_NAME = "maops-k8s-day6"
 CONTEXT = f"kind-{CLUSTER_NAME}"
 NAMESPACE = "maops-platform"
-# DAY5: dedicated namespace for validation/diagnostic tooling (the
-# maops-diagnostics ServiceAccount and ephemeral probe Pods used by
-# rbac_check.py/networkpolicy_check.py) - kept separate from
-# maops-platform so NetworkPolicy default-deny in the application
-# namespace never has to account for validation traffic originating
-# FROM inside that same namespace.
-VALIDATION_NAMESPACE = "maops-day5-validation"
+# DAY5 (unchanged for Day 6): dedicated namespace for validation/
+# diagnostic tooling (the maops-diagnostics ServiceAccount and
+# ephemeral probe Pods used by rbac_check.py/networkpolicy_check.py) -
+# kept separate from maops-platform so NetworkPolicy default-deny in
+# the application namespace never has to account for validation traffic
+# originating FROM inside that same namespace.
+VALIDATION_NAMESPACE = "maops-day6-validation"
+
+# DAY6: the Istio ingress Gateway (Kubernetes Gateway API `Gateway`
+# object `maops-edge`, and its Istio-generated Deployment/Service/
+# ServiceAccount) lives in its own namespace, separate from both
+# maops-platform (the application release namespace) and
+# VALIDATION_NAMESPACE - see k8s/day6/ and charts/maops-kubernetes-platform.
+INGRESS_NAMESPACE = "maops-ingress"
+
+# DAY6: Helm release identity. The application chart is the sole Day 6
+# application deployment source (k8s/base is the frozen Day 5 Kustomize
+# source and is never applied this stage - see docs/architecture.md).
+HELM_RELEASE_NAME = "maops-kubernetes-platform-day6"
+HELM_CHART_NAME = "maops-kubernetes-platform"
 
 # DAY4: explicit, overridable kubeconfig path - every kubectl call this
 # module makes passes --kubeconfig explicitly (see run() below) rather
@@ -67,7 +80,7 @@ STATE_HEADLESS_SERVICE = "maops-state-headless"
 GATEWAY_PDB = "maops-gateway-pdb"
 APP_PDB = "maops-app-pdb"
 
-INSTANCE_LABEL = "maops-kubernetes-platform-day5"
+INSTANCE_LABEL = "maops-kubernetes-platform-day6"
 
 GATEWAY_LABEL_SELECTOR = (
     "app.kubernetes.io/name=maops-kubernetes-platform,"
@@ -105,12 +118,53 @@ DIAGNOSTICS_SERVICE_ACCOUNT = "maops-diagnostics"
 DIAGNOSTICS_ROLE = "maops-diagnostics-reader"
 DIAGNOSTICS_ROLE_BINDING = "maops-diagnostics-reader-binding"
 
-# DAY5: NetworkPolicy peer identity - a probe Pod exercising the
-# validation-client -> gateway allow (and the validation-client -> app /
-# validation-client -> state denies) carries this component label,
-# scoped to VALIDATION_NAMESPACE.
+# DAY5/DAY6: NetworkPolicy peer identity - a probe Pod exercising the
+# validation-client -> app / validation-client -> state denies (and, as
+# of Day 6, the validation-client -> gateway deny too - Day 5's
+# validation-client -> gateway ALLOW is deliberately not carried forward
+# into the Day 6 Helm chart, since the Istio ingress Gateway path is now
+# the one external entry point - see charts/maops-kubernetes-platform's
+# NetworkPolicy templates and docs/architecture.md) carries this
+# component label, scoped to VALIDATION_NAMESPACE.
 VALIDATION_CLIENT_LABEL_SELECTOR = "app.kubernetes.io/component=validation-client"
 DIAGNOSTICS_LABEL_SELECTOR = "app.kubernetes.io/component=diagnostics"
+
+# DAY6: service mesh (Istio ambient) and Gateway API identities/constants.
+ISTIO_NAMESPACE = "istio-system"
+ZTUNNEL_LABEL_SELECTOR = "app=ztunnel"
+ISTIOD_LABEL_SELECTOR = "app=istiod"
+ISTIO_CNI_LABEL_SELECTOR = "k8s-app=istio-cni-node"
+HBONE_PORT = 15008
+AMBIENT_DATAPLANE_MODE_LABEL = "istio.io/dataplane-mode"
+AMBIENT_DATAPLANE_MODE_VALUE = "ambient"
+
+GATEWAY_API_GATEWAY_NAME = "maops-edge"
+GATEWAY_API_GATEWAY_CLASS = "istio"
+GATEWAY_HTTPROUTE_NAME = "maops-gateway-route"
+ROUTING_HOSTNAME = "maops.local"
+# DAY6 (remediated after independent review): Istio's Gateway API
+# deployment controller names the ServiceAccount it generates for a
+# Gateway DETERMINISTICALLY as "<gateway-name>-istio" - for
+# GATEWAY_API_GATEWAY_NAME ("maops-edge") that is "maops-edge-istio".
+# An earlier revision of this project tried to override that generated
+# name to a bare "maops-edge" via the `infrastructure.parametersRef`
+# ConfigMap's `serviceAccount` patch - that patch can adjust fields
+# ON the generated ServiceAccount (see
+# k8s/day6/gateway-values-configmap.yaml's `automountServiceAccountToken:
+# false`), but does not control the object's own NAME, which the
+# controller's naming template owns. Every AuthorizationPolicy/
+# NetworkPolicy/test/doc in this project is written against
+# "maops-edge-istio" exactly, matching Istio's actual documented
+# naming convention rather than an unverified override.
+GATEWAY_PROXY_SERVICE_ACCOUNT = "maops-edge-istio"
+GATEWAY_NODE_PORT = 30080
+GATEWAY_HOST_PORT = 18080
+GATEWAY_HOST_ADDRESS = f"http://127.0.0.1:{GATEWAY_HOST_PORT}"
+
+# DAY6: the SNAT source Istio ztunnel uses for HBONE-proxied kubelet
+# health probes (a well-known ambient-mode constant, never a
+# project-specific value) - see k8s/day6/cilium-ambient-probe-policy.yaml.
+ZTUNNEL_PROBE_SNAT_ADDRESS = "169.254.7.127"
 
 
 def run(*args: str, check: bool = True, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
@@ -161,14 +215,14 @@ def wait_until(predicate, timeout: float, interval: float = 2.0, description: st
 
 def verify_context() -> None:
     """Fail closed (DAY3) if the live cluster this process is about to talk
-    to isn't actually Day 5's isolated cluster.
+    to isn't actually Day 6's isolated cluster.
 
     Every kubectl call in this project already passes an explicit
     `--context` flag (never relying on whatever the ambient
     `kubectl config current-context` happens to be), which rules out one
     class of "wrong cluster" mistake by construction. This function
     covers the remaining one: the context existing in kubeconfig at all,
-    and actually resolving to the expected `maops-k8s-day5` kind cluster
+    and actually resolving to the expected `maops-k8s-day6` kind cluster
     (identified by its node names, which kind derives from the cluster
     name) rather than some other cluster a stale/renamed context happens
     to point at. Every live validation/mutation script calls this first,
@@ -193,8 +247,8 @@ def verify_context() -> None:
     node_names = [n.get("metadata", {}).get("name", "") for n in nodes]
     # DAY3-INT-M2: a bare startswith(f"{CLUSTER_NAME}-") prefix check would
     # wrongly accept a prefix-collision cluster/node name such as
-    # "maops-k8s-day5-staging-control-plane" (which does start with
-    # "maops-k8s-day5-"). Anchor the full node name against kind's actual
+    # "maops-k8s-day6-staging-control-plane" (which does start with
+    # "maops-k8s-day6-"). Anchor the full node name against kind's actual
     # naming convention instead: "<cluster>-control-plane" or
     # "<cluster>-worker[N]" and nothing else.
     if not node_names or not all(_DAY_NODE_NAME_RE.match(name) for name in node_names):

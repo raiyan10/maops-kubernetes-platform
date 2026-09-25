@@ -1,0 +1,46 @@
+# MAOps Kubernetes Platform - Day 6 kind cluster.
+#
+# 1 control-plane + 2 worker nodes - same topology and same pinned
+# kindest/node digest as Days 1-5. This is a NEW, tracked file rather
+# than an in-place edit of `kind/cluster.yaml` or `kind/cluster-day5.yaml`
+# (both left untouched/preserved): Day 6 layers Cilium (configured for
+# Istio ambient coexistence), the Gateway API CRDs, and Istio ambient
+# (base/istiod/cni/ztunnel) on top of a materially different cluster
+# bootstrap contract - a NodePort/host port mapping for the Istio
+# ingress Gateway - worth keeping as its own historical record, not a
+# same-file overwrite.
+#
+# `networking.disableDefaultCNI: true` is carried forward unchanged from
+# Day 5: kind normally installs kindnet automatically on cluster
+# creation, which would otherwise conflict with the separately-installed
+# Cilium CNI. Every node comes up NotReady (no pod network) until Cilium
+# is installed out-of-band (`make cni-install`). kube-proxy is
+# deliberately left at its default (enabled) - Day 6, like Day 5, does
+# not adopt Cilium's kube-proxy-replacement mode.
+#
+# `extraPortMappings` is the one substantive addition beyond Day 5's
+# config: maps host `127.0.0.1:18080` to the control-plane container's
+# port 30080, the fixed NodePort the Day 6 Helm chart's Istio Gateway
+# infrastructure ConfigMap pins the ingress Gateway's HTTP listener to
+# (see charts/maops-kubernetes-platform and k8s/day6/). This is what lets
+# `scripts/gateway_check.py`/`scripts/smoke.py`'s live HTTP checks (not
+# yet executed - see docs/architecture.md's Day 6 section) reach the
+# mesh-fronted application from outside the cluster without a cloud
+# LoadBalancer or a second port-forward layer.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: maops-k8s-day6
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 18080
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

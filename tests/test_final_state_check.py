@@ -229,44 +229,145 @@ class LeakedPortForwardScopeTests(unittest.TestCase):
         self.assertTrue(all(ok for ok, _msg in final_state_check.results))
 
 
-class OtherDayClustersStillExistTests(unittest.TestCase):
-    """DAY3-INT-I2, extended for Day 5 (DAY5-INT-H2/DAY5-REL-M1): the
-    function name/message claim exactly what is proven - existence, not
-    byte-for-byte "untouched" - and the list must grow to include each
-    new earlier-day cluster as later days introduce their own separate
-    cluster (Day 5 was the first day to do so relative to Day 4)."""
+class LeakedMeshProbeNamespaceTests(unittest.TestCase):
+    """DAY6 remediation item 3: `check_no_leaked_mesh_probe_namespace()`
+    is the whole-suite-level backstop confirming
+    scripts/mesh_check.py's temporary ambient namespace was actually
+    cleaned up - independent of that script's own cleanup verification.
+    DAY6 fourth remediation item 2: it now uses mesh_check's tri-state
+    `_resource_state()` - only an explicit NOT_FOUND proves absence, and
+    an API_ERROR must be its own distinct failure, never silently read
+    as "not leaked"."""
 
     def setUp(self):
         final_state_check.results = []
 
-    def test_day5_checks_day4_specifically(self):
-        """Regression for DAY5-INT-H2: previously OTHER_DAY_CLUSTERS
-        stopped at Day 3, so a Day 4 cluster going missing/dying could
-        never be caught by this check - only Day 1-3 presence was ever
-        asserted. maops-k8s-day4 must now be one of the checked names."""
-        self.assertIn("maops-k8s-day4", final_state_check.OTHER_DAY_CLUSTERS)
+    def test_namespace_absent_passes(self):
+        with mock.patch.object(final_state_check.mesh_check, "_resource_state", return_value=final_state_check.mesh_check.NOT_FOUND):
+            final_state_check.check_no_leaked_mesh_probe_namespace()
+        self.assertTrue(all(ok for ok, _msg in final_state_check.results))
 
-    def test_all_four_clusters_present_passes(self):
+    def test_namespace_still_present_fails(self):
+        """The exact scenario this check exists to catch: mesh_check.py's
+        own cleanup silently failed to actually remove the namespace."""
+        with mock.patch.object(final_state_check.mesh_check, "_resource_state", return_value=final_state_check.mesh_check.EXISTS):
+            final_state_check.check_no_leaked_mesh_probe_namespace()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        self.assertTrue(any("STILL PRESENT" in msg for _ok, msg in final_state_check.results))
+
+    def test_api_error_is_its_own_failure_never_read_as_not_leaked(self):
+        """DAY6 fourth remediation item 2's core new behavior: a
+        connection failure/timeout/Forbidden while checking must never
+        be silently treated as "the namespace is gone, therefore not
+        leaked" - that would hide a genuine leak whenever the API
+        happened to be flaky."""
+        with mock.patch.object(final_state_check.mesh_check, "_resource_state", return_value=final_state_check.mesh_check.API_ERROR):
+            final_state_check.check_no_leaked_mesh_probe_namespace()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        self.assertTrue(any("API_ERROR" in msg for _ok, msg in final_state_check.results))
+        self.assertFalse(any("confirmed absent" in msg for _ok, msg in final_state_check.results))
+
+
+class LeakedNetworkPolicyProbePodsTests(unittest.TestCase):
+    """DAY6 third remediation (live-discovered): `check_no_leaked_networkpolicy_probe_pods()`
+    is the whole-suite-level backstop confirming
+    scripts/networkpolicy_check.py's four temporary, non-ambient
+    application-port probe Pods were actually cleaned up - independent
+    of that script's own cleanup verification. A list-query (label-key
+    existence, matching a leak from ANY run) rather than a single named-
+    resource check: empty output means none leaked, any output means at
+    least one leaked, and a nonzero kubectl exit is its own distinct
+    API_ERROR failure, never silently read as "not leaked"."""
+
+    def setUp(self):
+        final_state_check.results = []
+
+    def _completed(self, returncode: int, stdout: str = ""):
+        return mock.Mock(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_no_probe_pods_leaked_passes(self):
+        with mock.patch.object(final_state_check.kube, "run", return_value=self._completed(0, stdout="")):
+            final_state_check.check_no_leaked_networkpolicy_probe_pods()
+        self.assertTrue(all(ok for ok, _msg in final_state_check.results))
+        self.assertTrue(any("confirmed absent" in msg for _ok, msg in final_state_check.results))
+
+    def test_leaked_probe_pod_fails(self):
+        """The exact scenario this check exists to catch:
+        networkpolicy_check.py's own cleanup silently failed to actually
+        remove one or more of its probe Pods."""
+        with mock.patch.object(final_state_check.kube, "run", return_value=self._completed(0, stdout="pod/netpol-tgt-state-abc1234567\n")):
+            final_state_check.check_no_leaked_networkpolicy_probe_pods()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        self.assertTrue(any("STILL PRESENT" in msg for _ok, msg in final_state_check.results))
+
+    def test_multiple_leaked_probe_pods_all_reported(self):
+        leaked_output = "pod/netpol-src-gw-abc1234567\npod/netpol-tgt-app-abc1234567\n"
+        with mock.patch.object(final_state_check.kube, "run", return_value=self._completed(0, stdout=leaked_output)):
+            final_state_check.check_no_leaked_networkpolicy_probe_pods()
+        failure_messages = [msg for ok, msg in final_state_check.results if not ok]
+        self.assertTrue(any("netpol-src-gw-abc1234567" in msg for msg in failure_messages))
+        self.assertTrue(any("netpol-tgt-app-abc1234567" in msg for msg in failure_messages))
+
+    def test_api_error_is_its_own_failure_never_read_as_not_leaked(self):
+        """A connection failure/timeout/Forbidden while listing must
+        never be silently treated as "no pods found, therefore not
+        leaked" - that would hide a genuine leak whenever the API
+        happened to be flaky."""
+        with mock.patch.object(final_state_check.kube, "run", return_value=self._completed(1)):
+            final_state_check.check_no_leaked_networkpolicy_probe_pods()
+        self.assertTrue(any(not ok for ok, _msg in final_state_check.results))
+        self.assertTrue(any("API_ERROR" in msg for _ok, msg in final_state_check.results))
+        self.assertFalse(any("confirmed absent" in msg for _ok, msg in final_state_check.results))
+
+    def test_queries_by_the_correct_discovery_label_key(self):
+        with mock.patch.object(final_state_check.kube, "run", return_value=self._completed(0, stdout="")) as run_mock:
+            final_state_check.check_no_leaked_networkpolicy_probe_pods()
+        args = run_mock.call_args.args
+        self.assertIn(final_state_check.networkpolicy_check.NETPOL_PROBE_RUN_LABEL, args)
+        self.assertIn("--ignore-not-found", args)
+
+
+class OtherDayClustersStillExistTests(unittest.TestCase):
+    """DAY3-INT-I2, extended for Day 5 (DAY5-INT-H2/DAY5-REL-M1) and again
+    for Day 6: the function name/message claim exactly what is proven -
+    existence, not byte-for-byte "untouched" - and the list must grow to
+    include each new earlier-day cluster as later days introduce their
+    own separate cluster (Day 5 was the first day to do so relative to
+    Day 4; Day 6 repeats the same extension relative to Day 5)."""
+
+    def setUp(self):
+        final_state_check.results = []
+
+    def test_day6_checks_day5_specifically(self):
+        """Regression for the same DAY5-INT-H2-shaped gap, re-applied at
+        Day 6: previously OTHER_DAY_CLUSTERS stopped at Day 4, so a Day 5
+        cluster going missing/dying could never be caught by this check -
+        only Day 1-4 presence was ever asserted. maops-k8s-day5 must now
+        be one of the checked names."""
+        self.assertIn("maops-k8s-day5", final_state_check.OTHER_DAY_CLUSTERS)
+
+    def test_all_five_clusters_present_passes(self):
         result = subprocess.CompletedProcess(
-            args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\nmaops-k8s-day4\n", stderr=""
+            args=["kind"], returncode=0,
+            stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\nmaops-k8s-day4\nmaops-k8s-day5\n", stderr="",
         )
         with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
             final_state_check.check_other_day_clusters_still_exist()
         self.assertTrue(all(ok for ok, _msg in final_state_check.results))
         self.assertTrue(all("still exists" in msg for _ok, msg in final_state_check.results))
-        self.assertEqual(len(final_state_check.results), 4)
+        self.assertEqual(len(final_state_check.results), 5)
 
-    def test_missing_day4_cluster_fails(self):
-        """Regression for DAY5-INT-H2: Day 4's cluster missing/dead must
-        itself flip this check to a failure, not just Day 1-3's."""
+    def test_missing_day5_cluster_fails(self):
+        """Day 5's cluster missing/dead must itself flip this check to a
+        failure, not just Day 1-4's."""
         result = subprocess.CompletedProcess(
-            args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\n", stderr=""
+            args=["kind"], returncode=0, stdout="maops-k8s-day1\nmaops-k8s-day2\nmaops-k8s-day3\nmaops-k8s-day4\n", stderr=""
         )
         with mock.patch.object(final_state_check.subprocess, "run", return_value=result):
             final_state_check.check_other_day_clusters_still_exist()
-        day4_results = [(ok, msg) for ok, msg in final_state_check.results if "maops-k8s-day4" in msg]
-        self.assertEqual(len(day4_results), 1)
-        self.assertFalse(day4_results[0][0])
+        day5_results = [(ok, msg) for ok, msg in final_state_check.results if "maops-k8s-day5" in msg]
+        self.assertEqual(len(day5_results), 1)
+        self.assertFalse(day5_results[0][0])
 
     def test_missing_cluster_fails(self):
         result = subprocess.CompletedProcess(args=["kind"], returncode=0, stdout="maops-k8s-day3\nmaops-k8s-day4\n", stderr="")

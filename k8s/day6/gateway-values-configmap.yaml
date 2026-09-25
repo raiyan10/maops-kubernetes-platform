@@ -1,0 +1,112 @@
+# DAY6 (remediated after independent review): the Istio Gateway API
+# deployment controller's `infrastructure.parametersRef` ConfigMap for
+# `maops-edge` (see gateway.yaml in this directory).
+#
+# CORRECTION: an earlier revision of this file used a single
+# `data["values.yaml"]` key holding a nested "gateway" Helm chart
+# values document. That is NOT the schema Istio's Gateway API
+# deployment controller actually reads. The controller instead applies
+# a strategic-merge-patch per generated resource kind, keyed by
+# resource type at the TOP LEVEL of `data`: `deployment`, `service`,
+# `serviceAccount`, `horizontalPodAutoscaler`, `podDisruptionBudget` -
+# each value is a YAML document shaped like the corresponding
+# resource's own structure (i.e. starting from `spec:` for Deployment/
+# Service, which both have a `spec` field; ServiceAccount has none, so
+# its patch fields are top-level), merged on top of the controller's
+# own generated object for that Gateway. This file now uses exactly
+# that schema.
+#
+# Pins, per Day 6's local-development constraints (see
+# docs/architecture.md):
+#   - `service`: `type: NodePort`, listener `port: 80`, `nodePort: 30080`,
+#     `targetPort: 80` - matches kind/cluster-day6.yaml's
+#     extraPortMappings (127.0.0.1:18080 -> control-plane:30080). The
+#     target port is 80, not an arbitrary high port: Istio's generated
+#     gateway proxy container binds directly to the port(s) declared by
+#     the Gateway's own listeners (here, 80) - the Service's `targetPort`
+#     must therefore match that same bound port, not an assumed 8080.
+#     Binding port 80 does NOT rely on any added Linux capability: the
+#     generated `istio-proxy` container drops ALL capabilities (no
+#     `NET_BIND_SERVICE` is added), runs non-root as 1337:1337 with a
+#     read-only root filesystem and no privilege escalation, and Istio's
+#     gateway template instead sets the Pod-level, network-namespace-
+#     scoped sysctl `net.ipv4.ip_unprivileged_port_start=0`, which lets
+#     an unprivileged process in that Pod's own network namespace bind
+#     ports below 1024. This file does not patch that security context
+#     at all - it is Istio's generated default, left untouched.
+#   - `deployment`: `replicas: 1` and conservative resource requests/
+#     limits on the generated proxy container (`istio-proxy`, Istio's
+#     own fixed container name for this workload) - a single-tenant
+#     local kind cluster, not an HA claim.
+#   - `serviceAccount`: `automountServiceAccountToken: false` - the
+#     ingress Gateway proxy itself never calls the Kubernetes API, so it
+#     needs no mounted token, matching this project's general
+#     no-automount-unless-needed convention. This patch does NOT (and,
+#     per this remediation, is not relied on to) rename the generated
+#     ServiceAccount - see the identity note below.
+#
+# IDENTITY: Istio's Gateway API deployment controller names the
+# ServiceAccount it generates for a Gateway deterministically as
+# `<gateway-name>-istio` - for `maops-edge`, that is `maops-edge-istio`.
+# This project does NOT attempt to override that generated NAME via the
+# `serviceAccount` patch above (a strategic-merge patch to `metadata`/
+# top-level ServiceAccount fields is not the same guarantee as
+# controlling the object's own identity, which the controller's naming
+# template owns) - every AuthorizationPolicy/constant/test/doc in this
+# project is written against `maops-edge-istio` exactly (see
+# scripts/kube.py's `GATEWAY_PROXY_SERVICE_ACCOUNT`), not the earlier,
+# incorrect `maops-edge` assumption.
+#
+# SCHEMA vs RENDERED BEHAVIOR: the schema this file uses -
+# per-resource-kind top-level `data` keys (`deployment`, `service`,
+# `serviceAccount`), each a strategic-merge patch shaped like the
+# target resource itself - is Istio's documented Gateway API deployment
+# controller `parametersRef` mechanism. The RENDERED CONTROLLER
+# BEHAVIOR on this project's pinned Istio 1.31.0 is what `make
+# gateway-check`/`make mesh-check` verify against a live cluster: the
+# generated Service's `targetPort`/`nodePort`, the generated
+# ServiceAccount's name (`maops-edge-istio`) and token-automount
+# setting, and NodePort reachability at `30080` (see
+# docs/architecture.md's "DAY6: live validation record"). If a specific
+# field ever renders differently than expected after an Istio upgrade,
+# the fix is scoped to this one ConfigMap and the identity constants
+# that reference it, not the surrounding routing/AuthorizationPolicy
+# design.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maops-edge-gateway-values
+  namespace: maops-ingress
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/version: "0.6.0"
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+data:
+  deployment: |
+    spec:
+      replicas: 1
+      template:
+        spec:
+          containers:
+          - name: istio-proxy
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 200m
+                memory: 128Mi
+  service: |
+    spec:
+      type: NodePort
+      ports:
+      - name: http
+        port: 80
+        targetPort: 80
+        nodePort: 30080
+        protocol: TCP
+  serviceAccount: |
+    automountServiceAccountToken: false
