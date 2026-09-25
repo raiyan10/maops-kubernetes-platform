@@ -18,11 +18,11 @@ frozen. **Days 1-5 are complete.**
 **Active implementation: `v0.6.0`** (Day 6 - Helm packaging, minimal
 cluster-free GitHub Actions CI, the Kubernetes Gateway API through
 Istio as the sole cluster-external routing approach, and an Istio
-ambient service mesh). **Merged to `main` via PR #6** as a local Kind
-reference platform - static and live validation passed and the
-independent review findings are closed - but **`v0.6.0` is not yet
-tagged or published**, and the release gate is pending the 2026-09-25
-post-restart remediation. See [Day 6 status](#day-6-status-merged-local-kind-not-yet-tagged-or-released)
+ambient service mesh). **RELEASE READY as a local Kind reference
+platform**, merged to `main` through PR #7 - static and live
+validation passed, the independent review findings are closed, and the
+2026-09-25 post-restart release gate is closed - but **`v0.6.0` is not
+yet tagged or published**. See [Day 6 status](#day-6-status-release-ready-local-kind-not-yet-tagged-or-released)
 below.
 
 **Final milestone: `v1.0.0`** (Day 7 - Recreate/Blue-Green/Canary
@@ -90,16 +90,17 @@ operation on a cloud-managed Kubernetes offering - this remains a
 local, single-tenant kind cluster built for staged engineering
 demonstration.
 
-## Day 6 status: merged (local kind), not yet tagged or released
+## Day 6 status: release ready (local kind), not yet tagged or released
 
-Day 6 is **merged to `main` (PR #6)** as a local Kind reference
-platform. It has **not** been tagged (`v0.6.0`) or published - those
-remain explicit, separate steps, and the release gate is pending the
-2026-09-25 post-restart remediation described below. It is not a
+Day 6 is **RELEASE READY as a local Kind reference platform**, merged
+to `main` through PR #7 (Day 6 itself in PR #6; the post-restart
+listener check in PR #7). It has **not** been tagged (`v0.6.0`) or
+published - those remain explicit, separate steps. It is not a
 production-ready platform.
 
 - **Static** (`make ci-check`, the same cluster-free sequence GitHub
-  Actions runs): 1197 unit tests; `version-check` 50/50;
+  Actions runs) - current result, after PR #7: 1228 unit tests;
+  `version-check` 50/50;
   `manifest-check` 267/267 (frozen k8s/base); `helm-lint` and
   `helm-template` pass; `helm-check` 215/215 (including the Istio
   Gateway infrastructure ConfigMap and the ambient health-probe
@@ -133,8 +134,14 @@ production-ready platform.
   passed on merged `main` (`rollout-check` 35/35, `gateway-check` 8/8,
   `smoke` 6/6, `final-state-check` 43/43). The new read-only
   `make ambient-workload-check` now catches missing listeners directly.
-  The release gate stays pending until this remediation passes CI and
-  a merged-`main` live recheck.
+  The cause of the lost listeners has not been proven.
+- **Release gate closed (2026-09-25):** PR #7 merged with CI passing,
+  and the read-only gate on merged `main` passed: `context-check` 6/6,
+  `cni-status` 4/4, `mesh-status` 4/4, `ambient-workload-check` 67/67,
+  `rollout-check` 35/35, `gateway-check` 8/8, `smoke` 6/6, and
+  `final-state-check` 43/43 against run `979a1e7e…`'s unchanged
+  baseline. Current adjudication: **RELEASE READY** (local Kind
+  reference platform).
 
 The exact results, dates, Helm revision history, mesh denial-evidence
 tiers, and accepted limitations (including host/Docker restart
@@ -590,5 +597,5 @@ tests/                       Docker-free unit tests (incl. negative cases and th
 docs/                        architecture.md, roadmap.md, engineering-reviews/ (Days 1-5 frozen, Day 6 reviews), images/
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      0.6.0 (Day 6 - merged on local kind; not yet tagged or published)
+VERSION                      0.6.0 (Day 6 - release ready on local kind, merged via PR #7; not yet tagged or published)
 ```

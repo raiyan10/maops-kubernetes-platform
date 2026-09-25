@@ -280,3 +280,24 @@ log).
 **Current release status: GATE PENDING.** `v0.6.0` should not be tagged or published until this
 remediation passes GitHub CI and a live recheck on merged `main` passes, including
 `make ambient-workload-check`.
+
+---
+
+## Release gate closure (2026-09-25, after PR #7)
+
+> Appended; every earlier verdict above - including the 2026-09-24 RELEASE READY verdict and the
+> 2026-09-25 GATE PENDING addendum - is preserved as the historical record of its evidence.
+
+The condition set by the post-merge addendum is met. PR #7 (merge commit `090f7f0`) merged with
+GitHub CI passing. The read-only gate on merged `main` then passed: `context-check` 6/6,
+`cni-status` 4/4, `mesh-status` 4/4, `ambient-workload-check` 67/67, `rollout-check` 35/35,
+`gateway-check` 8/8, `smoke` 6/6, and `final-state-check` 43/43 against run
+`979a1e7e72e9418199b0486cf81a920e`'s unchanged baseline. No Pod was recreated and no mutating check
+was run (see `day-06-remediation-log.md`, "Release gate closure").
+
+### Current verdict
+
+**RELEASE READY** as a local kind reference platform, merged through PR #7. `v0.6.0` has not been
+tagged or published; that remains the operator's explicit decision. No production-readiness
+claim is made, and the mechanism by which the listeners were lost after the restart remains
+unproven.

@@ -1,4 +1,4 @@
-# Architecture - Day 6 (v0.6.0, merged to main as a local kind reference platform - not yet tagged or published)
+# Architecture - Day 6 (v0.6.0, release ready as a local kind reference platform - merged through PR #7, not yet tagged or published)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -34,10 +34,12 @@ unchanged Day 1-5 material) for the full design. **Day 6 is release
 ready as a local kind reference platform** - it has passed its
 cluster-free static validation, its live validation against the local
 `maops-k8s-day6` kind cluster, and an independent five-reviewer round
-whose findings are closed, and was merged to `main` via PR #6 - **but
-`v0.6.0` has not been tagged or published, and the release gate is
-pending again** after the 2026-09-25 post-restart incident (see "DAY6:
-post-restart ambient listener incident (2026-09-25)"). See "DAY6: live validation record"
+whose findings are closed. It was merged to `main` via PR #6; after
+the 2026-09-25 post-restart incident (see "DAY6: post-restart ambient
+listener incident (2026-09-25)") the release gate re-opened, and it
+closed again once PR #7 merged with CI passing and the read-only
+merged-`main` gate passed. **`v0.6.0` has not been tagged or
+published.** See "DAY6: live validation record"
 below for the exact results, dates, and accepted limitations, and
 `docs/engineering-reviews/day-06-*` for the independent reviews,
 adjudication, and remediation log. This is a validated local kind
@@ -2414,9 +2416,9 @@ what each property proves.
 This is the Day 6 evidence record - the Day 6 counterpart of "DAY5:
 released validation record" above. Day 6 is **release ready as a local
 kind reference platform** (final adjudication: RELEASE READY,
-2026-09-24), merged to `main` via PR #6, but **not yet tagged or
-published** - the release gate is pending the 2026-09-25 post-restart
-remediation below;
+2026-09-24; re-closed 2026-09-25 after the post-restart remediation
+below), merged to `main` through PR #7, but **not yet tagged or
+published**;
 this record describes a validated local kind reference platform, not a
 production-ready platform. The independent reviews, their adjudication,
 and the review-remediation log are under
@@ -2615,7 +2617,11 @@ workload image's own Python, so it needs no extra image or dependency.
 It fails closed on a missing or extra Pod, a kubectl/API error, a
 timeout, or malformed output, and it names the exact Pod and missing
 ports. The Ready condition and the annotation are never sufficient on
-their own, and only port numbers are printed.
+their own. Its in-Pod probe emits only port numbers and a result marker; the
+check's findings also show Pod names, Pod IPs, ServiceAccount names,
+Pod phase, enrollment label/annotation values, and kubectl error text
+on failure. It never reads environment variables, Secret volumes, or
+token contents.
 
 **Scope.** It checks sockets and metadata only. Present listeners are
 necessary for ambient traffic but do not by themselves prove that
@@ -2633,9 +2639,16 @@ restart. `mesh-status` remains the infrastructure-only check before
 application deployment, and `make ci-check` stays cluster-free.
 
 **Release status.** The 2026-09-24 RELEASE READY adjudication stands as
-history, but the release gate is **pending again**: `v0.6.0` should not
-be tagged until this remediation passes CI and a live recheck on merged
-`main` passes.
+history. The gate re-opened on 2026-09-25 and closed again the same
+day: PR #7 merged with CI passing, and the read-only gate on merged
+`main` passed - `context-check` 6/6, `cni-status` 4/4, `mesh-status`
+4/4, `ambient-workload-check` 67/67, `rollout-check` 35/35,
+`gateway-check` 8/8, `smoke` 6/6, and `final-state-check` 43/43 against
+run `979a1e7e72e9418199b0486cf81a920e`'s unchanged baseline (log kept
+outside the repository, in `$HOME/.local/state/maops-k8s-day6/`).
+Current status: **RELEASE READY** as a local kind reference platform;
+`v0.6.0` is not yet tagged or published. The cause of the lost
+listeners remains unproven.
 
 ## What Day 6 proves, and what it explicitly does not claim
 

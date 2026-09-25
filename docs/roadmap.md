@@ -180,9 +180,9 @@ advanced for Day 6.
 
 ## Day 6 / v0.6.0 - Helm, CI, automated kind validation, service mesh
 
-**IMPLEMENTED and MERGED to `main` (PR #6) as a local kind reference
-platform - `v0.6.0` not yet tagged or published; the release gate is
-pending the 2026-09-25 post-restart remediation (see below).** The application (gateway/app/state, unchanged since
+**IMPLEMENTED / RELEASE READY as a local kind reference platform -
+merged to `main` through PR #7; `v0.6.0` not yet tagged or
+published.** The application (gateway/app/state, unchanged since
 Day 4) is packaged as a Helm chart (`charts/maops-kubernetes-platform`)
 - the sole Day 6 application deployment source; `k8s/base` remains the
 frozen, unmodified Day 5 Kustomize source and is never applied by any
@@ -270,10 +270,17 @@ them; recreating only those two Pods restored the chain, with storage identity
 preserved, and the gate then passed on merged `main`
 (`final-state-check` 43/43). A new read-only `make
 ambient-workload-check` now checks those listeners per Pod, after
-`deploy` and before `rollout-check`. `v0.6.0` stays untagged until this
-remediation passes CI and a merged-`main` live recheck. See
-`docs/architecture.md`'s "DAY6: post-restart ambient listener incident
-(2026-09-25)".
+`deploy` and before `rollout-check`. See `docs/architecture.md`'s
+"DAY6: post-restart ambient listener incident (2026-09-25)".
+
+**Release gate closed (2026-09-25):** PR #7 merged with CI passing, and
+the read-only gate on merged `main` passed (`context-check` 6/6,
+`cni-status` 4/4, `mesh-status` 4/4, `ambient-workload-check` 67/67,
+`rollout-check` 35/35, `gateway-check` 8/8, `smoke` 6/6,
+`final-state-check` 43/43 against the unchanged run baseline). Day 6 is
+RELEASE READY as a local kind reference platform; tagging and
+publishing `v0.6.0` remain separate, explicit steps. The cause of the
+lost listeners remains unproven.
 
 ## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
 

@@ -43,8 +43,11 @@ Fail-closed rules: a missing or extra Pod, a kubectl/API error, a
 timeout, or malformed probe output is a FAILURE, never a skip. The Pod's
 Ready condition is printed for context only and never satisfies any
 check; neither does the redirection annotation on its own - check 4 is
-always required. Only port numbers are printed; no environment,
-Secret, or token content is ever read.
+always required. The in-Pod probe emits only port numbers and a
+result marker; the findings also show Pod names, Pod IPs,
+ServiceAccount names, Pod phase, enrollment label/annotation values,
+and kubectl error text on failure. No environment variable, Secret
+volume, or token content is ever read.
 
 Read-only: `kubectl get` and a read-only `kubectl exec` only. Never
 mutates, restarts, or recreates anything.
@@ -71,7 +74,8 @@ KUBECTL_TIMEOUT_SECONDS = 20.0
 
 # Runs INSIDE the workload container. /proc/net/tcp{,6} are per network
 # namespace, so they list the Pod's own sockets, including ztunnel's
-# in-Pod listeners. State 0A is TCP_LISTEN. Prints only port numbers.
+# in-Pod listeners. State 0A is TCP_LISTEN. Emits only port numbers and
+# a result marker.
 LISTEN_PROBE_SNIPPET = r"""
 import sys
 ports = set()

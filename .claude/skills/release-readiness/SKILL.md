@@ -14,8 +14,9 @@ say so directly.
 ## Checklist
 
 1. **VERSION file.** Exact match to the day's target version (current
-   active target: `0.6.0` for Day 6, merged to `main` as a local kind
-   reference platform but NOT yet tagged or released -
+   active target: `0.6.0` for Day 6, RELEASE READY as a local kind
+   reference platform (merged through PR #7) but NOT yet tagged or
+   released -
    `0.5.0` remains the latest RELEASED baseline; use whatever
    `docs/roadmap.md` names for the day actually under review) -
    `cat VERSION` and compare byte-for-byte (no trailing newline
@@ -92,7 +93,7 @@ say so directly.
    ServiceAccounts, the `maops-diagnostics` `Role`/`RoleBinding`, seven
    NetworkPolicy objects, and be byte-for-byte untouched (`git diff`
    against it must be empty). As of the Day 6 implementation
-   (`v0.6.0`, merged, not yet released), a review should find: the Helm chart
+   (`v0.6.0`, release ready, not yet released), a review should find: the Helm chart
    (`charts/maops-kubernetes-platform`) as the SOLE application
    deployment source; `k8s/day6/`'s cluster/platform support objects;
    the Gateway API with Istio as the sole controller (never a second

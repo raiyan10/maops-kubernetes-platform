@@ -6,8 +6,9 @@ description: Create/use the project's kind cluster and prove real Kubernetes beh
 # kind cluster validation
 
 Real-cluster validation for the maops-kubernetes-platform project's kind
-cluster. **Current default (Day 6 / `v0.6.0`, merged to `main` as a
-local kind reference platform - NOT yet tagged or published):**
+cluster. **Current default (Day 6 / `v0.6.0`, release ready as a local
+kind reference platform, merged through PR #7 - NOT yet tagged or
+published):**
 `maops-k8s-day6` (context `kind-maops-k8s-day6`, kubeconfig
 `$HOME/.kube/maops-k8s-day6.config`), 1 control-plane + 2 worker nodes,
 `networking.disableDefaultCNI: true` (every node is `NotReady` until
