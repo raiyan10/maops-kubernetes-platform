@@ -9,7 +9,73 @@ import subprocess
 import time
 from pathlib import Path
 
-CLUSTER_NAME = "maops-k8s-day6"
+# DAY7: explicit cluster PROFILE selection. Day 6 (`maops-k8s-day6`,
+# released as v0.6.0) stays the DEFAULT, so every existing Day 6 target
+# and test resolves exactly the identities it always did. The isolated
+# Day 7 cluster is selected only by an explicit
+# `MAOPS_CLUSTER_PROFILE=day7` - the Makefile derives that value from
+# its own CLUSTER_NAME, so the kubectl/helm context a recipe uses and
+# the context these scripts verify can never disagree. An unknown
+# profile fails closed at import time, before any kubectl call.
+#
+# Only the per-cluster identities vary by profile: cluster name (and
+# therefore context/kubeconfig/node-name guard), Helm release name (and
+# therefore the app.kubernetes.io/instance label every selector below
+# keys on), and the host port kind maps to the ingress Gateway NodePort.
+# Namespaces, the Gateway/HTTPRoute names and the NodePort itself are
+# identical in both clusters - each is its own kind cluster, so they
+# cannot collide.
+PROFILE_ENV = "MAOPS_CLUSTER_PROFILE"
+DEFAULT_PROFILE = "day6"
+#
+# DAY7 remediation: every resource a validation run CREATES in its
+# cluster also carries that cluster's own identity - the validation
+# namespace (and so the diagnostics ServiceAccount/RBAC subject and the
+# NetworkPolicy/RBAC probe Pods), the mesh wrong-identity probe
+# namespace/ServiceAccount, and the storage bootstrap/hardening scratch
+# namespaces. The Day 6 profile keeps its historical names exactly
+# (including the Day 4-era storage scratch namespaces it inherited), so
+# Day 6 behavior is unchanged; the Day 7 profile never creates a
+# day4/day6-named object.
+PROFILES = {
+    "day6": {
+        "cluster_name": "maops-k8s-day6",
+        "release": "maops-kubernetes-platform-day6",
+        "host_port": 18080,
+        "day": 6,
+        "validation_namespace": "maops-day6-validation",
+        "mesh_probe_namespace": "maops-day6-mesh-probe",
+        "mesh_probe_service_account": "maops-day6-wrong-identity",
+        "storage_bootstrap_verify_namespace": "maops-day4-storage-bootstrap-verify",
+        "storage_hardening_namespace": "maops-day4-storage-hardening",
+    },
+    "day7": {
+        "cluster_name": "maops-k8s-day7",
+        "release": "maops-kubernetes-platform-day7",
+        "host_port": 18081,
+        "day": 7,
+        "validation_namespace": "maops-day7-validation",
+        "mesh_probe_namespace": "maops-day7-mesh-probe",
+        "mesh_probe_service_account": "maops-day7-wrong-identity",
+        "storage_bootstrap_verify_namespace": "maops-day7-storage-bootstrap-verify",
+        "storage_hardening_namespace": "maops-day7-storage-hardening",
+    },
+}
+
+
+def select_profile(environ=None) -> str:
+    """Returns the requested profile name - `DEFAULT_PROFILE` when the
+    env var is unset or empty - and raises RuntimeError for anything not
+    in PROFILES (never a silent fallback to Day 6)."""
+    value = (os.environ if environ is None else environ).get(PROFILE_ENV) or DEFAULT_PROFILE
+    if value not in PROFILES:
+        raise RuntimeError(f"{PROFILE_ENV}={value!r} is not a known cluster profile (expected one of {sorted(PROFILES)})")
+    return value
+
+
+PROFILE = select_profile()
+PROFILE_DAY = PROFILES[PROFILE]["day"]
+CLUSTER_NAME = PROFILES[PROFILE]["cluster_name"]
 CONTEXT = f"kind-{CLUSTER_NAME}"
 NAMESPACE = "maops-platform"
 # DAY5 (unchanged for Day 6): dedicated namespace for validation/
@@ -18,7 +84,11 @@ NAMESPACE = "maops-platform"
 # kept separate from maops-platform so NetworkPolicy default-deny in
 # the application namespace never has to account for validation traffic
 # originating FROM inside that same namespace.
-VALIDATION_NAMESPACE = "maops-day6-validation"
+VALIDATION_NAMESPACE = PROFILES[PROFILE]["validation_namespace"]
+MESH_PROBE_NAMESPACE = PROFILES[PROFILE]["mesh_probe_namespace"]
+MESH_PROBE_SERVICE_ACCOUNT = PROFILES[PROFILE]["mesh_probe_service_account"]
+STORAGE_BOOTSTRAP_VERIFY_NAMESPACE = PROFILES[PROFILE]["storage_bootstrap_verify_namespace"]
+STORAGE_HARDENING_NAMESPACE = PROFILES[PROFILE]["storage_hardening_namespace"]
 
 # DAY6: the Istio ingress Gateway (Kubernetes Gateway API `Gateway`
 # object `maops-edge`, and its Istio-generated Deployment/Service/
@@ -30,7 +100,7 @@ INGRESS_NAMESPACE = "maops-ingress"
 # DAY6: Helm release identity. The application chart is the sole Day 6
 # application deployment source (k8s/base is the frozen Day 5 Kustomize
 # source and is never applied this stage - see docs/architecture.md).
-HELM_RELEASE_NAME = "maops-kubernetes-platform-day6"
+HELM_RELEASE_NAME = PROFILES[PROFILE]["release"]
 HELM_CHART_NAME = "maops-kubernetes-platform"
 
 # DAY4: explicit, overridable kubeconfig path - every kubectl call this
@@ -80,7 +150,9 @@ STATE_HEADLESS_SERVICE = "maops-state-headless"
 GATEWAY_PDB = "maops-gateway-pdb"
 APP_PDB = "maops-app-pdb"
 
-INSTANCE_LABEL = "maops-kubernetes-platform-day6"
+# The Helm release name IS the instance label (see the chart's
+# `maops.labels` helper), so it follows the profile too.
+INSTANCE_LABEL = HELM_RELEASE_NAME
 
 GATEWAY_LABEL_SELECTOR = (
     "app.kubernetes.io/name=maops-kubernetes-platform,"
@@ -158,7 +230,8 @@ ROUTING_HOSTNAME = "maops.local"
 # naming convention rather than an unverified override.
 GATEWAY_PROXY_SERVICE_ACCOUNT = "maops-edge-istio"
 GATEWAY_NODE_PORT = 30080
-GATEWAY_HOST_PORT = 18080
+# Day 6: 18080; Day 7: 18081 (kind/cluster-day7.yaml) - never shared.
+GATEWAY_HOST_PORT = PROFILES[PROFILE]["host_port"]
 GATEWAY_HOST_ADDRESS = f"http://127.0.0.1:{GATEWAY_HOST_PORT}"
 
 # DAY6: the SNAT source Istio ztunnel uses for HBONE-proxied kubelet

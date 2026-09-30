@@ -41,9 +41,13 @@ When reviewing or designing manifests under `k8s/` and
    Ingress-based path), and Istio ambient mesh (`PeerAuthentication`/
    `AuthorizationPolicy`, no waypoint, no L7 policy) are all correctly
    present, not pulled-forward violations. Flag anything genuinely
-   pulled forward from Day 7 (`HorizontalPodAutoscaler`, a
-   `ClusterRole`/`ClusterRoleBinding`, a Recreate/Blue-Green/Canary
-   deployment strategy, Argo Rollouts) before its day, anything that
+   pulled forward before its day - Recreate/Blue-Green/Canary belongs
+   to Day 7 (`v0.7.0`: the optional label-isolated gateway candidate,
+   `routing.mode`, `helm-values/day7/` stages and build pinning are
+   required there), while `HorizontalPodAutoscaler` and other
+   autoscaling/final hardening belong to Day 8 (`v1.0.0`); a
+   `ClusterRole`/`ClusterRoleBinding` or Argo Rollouts are never
+   expected - anything that
    should never appear at all (a waypoint proxy, a Cilium Gateway API
    controller, Cilium L7 policy, TLS/cert-manager, a cloud
    LoadBalancer, an observability stack), and anything left behind that

@@ -21,6 +21,15 @@ Day 5's frozen 0.5.0 target, independent of whatever the live VERSION
 file says - see `main()`'s wiring below, which calls it with the frozen
 constant rather than `read_version()`.
 
+DAY7: `main()` now runs `run_day7_release_checks` - the live target is
+0.7.0 - which re-asserts every Day 6 identity (via the explicit
+`kube.PROFILES["day6"]` entry, so the result does not depend on which
+profile the checker itself runs under), adds the Day 7 profile's
+identities, requires the two profiles' host ports to differ, and pins
+kind/cluster-day7.yaml to the same kindest/node digest as
+kind/cluster-day6.yaml. `run_day6_release_checks` is kept, unchanged,
+as the historical Day 6 release contract (still unit-tested).
+
 Usage:
     python3 scripts/version_check.py [path/to/base]
 
@@ -60,6 +69,11 @@ EXPECTED_TARGET_VERSION = "0.5.0"
 # version/appVersion, and all three image tags must all agree with
 # this.
 DAY6_TARGET_VERSION = "0.6.0"
+
+# DAY7: the live release target (v0.7.0 release candidate).
+DAY7_TARGET_VERSION = "0.7.0"
+KIND_DAY6_CONFIG = REPO_ROOT / "kind" / "cluster-day6.yaml"
+KIND_DAY7_CONFIG = REPO_ROOT / "kind" / "cluster-day7.yaml"
 
 # DAY6: pinned infrastructure versions - installed out-of-band by Make
 # targets (cni-install, gateway-api-install, mesh-install), never
@@ -259,6 +273,75 @@ def run_day6_release_checks(
     return findings
 
 
+def _kind_digests(kind_doc: dict) -> set[str]:
+    return {n.get("image") for n in (kind_doc.get("nodes") or [])}
+
+
+def _kind_host_ports(kind_doc: dict) -> list:
+    return [m.get("hostPort") for n in (kind_doc.get("nodes") or []) for m in (n.get("extraPortMappings") or [])]
+
+
+def run_day7_release_checks(
+    version_file_content: str,
+    chart_yaml: dict,
+    values_yaml: dict,
+    makefile_text: str,
+    kind_day6: dict,
+    kind_day7: dict,
+    profiles: dict | None = None,
+) -> list[Finding]:
+    """DAY7: pure checking logic (inputs already read/parsed)."""
+    profiles = kube.PROFILES if profiles is None else profiles
+    findings: list[Finding] = []
+    target = DAY7_TARGET_VERSION
+    findings.append(Finding(version_file_content == target, "day7.version_file_matches_target", f"expected VERSION == {target!r}, found {version_file_content!r}"))
+    findings.append(Finding(chart_yaml.get("version") == target, "day7.chart_version_matches_target", f"expected Chart.yaml version == {target!r}, found {chart_yaml.get('version')!r}"))
+    findings.append(Finding(chart_yaml.get("appVersion") == target, "day7.chart_appVersion_matches_target", f"expected Chart.yaml appVersion == {target!r}, found {chart_yaml.get('appVersion')!r}"))
+    images = values_yaml.get("images", {})
+    for workload in ("gateway", "app", "state"):
+        tag = (images.get(workload) or {}).get("tag")
+        findings.append(Finding(tag == target, f"day7.values.images.{workload}.tag_matches_target", f"expected values.yaml images.{workload}.tag == {target!r}, found {tag!r}"))
+    candidate = values_yaml.get("candidate") or {}
+    routing = values_yaml.get("routing") or {}
+    findings.append(Finding(
+        candidate.get("enabled") is False and routing.get("mode") == "stable" and "stableWeight" not in routing and "candidateWeight" not in routing,
+        "day7.values.default_is_stable_only",
+        f"expected chart defaults candidate.enabled=false, routing.mode=stable, no weights; found candidate.enabled={candidate.get('enabled')!r}, routing={routing!r}",
+    ))
+
+    day6, day7 = profiles.get("day6") or {}, profiles.get("day7") or {}
+    for label, actual, expected in (
+        ("PROFILES['day6'].cluster_name", day6.get("cluster_name"), "maops-k8s-day6"),
+        ("PROFILES['day6'].release", day6.get("release"), "maops-kubernetes-platform-day6"),
+        ("PROFILES['day6'].host_port", day6.get("host_port"), 18080),
+        ("PROFILES['day7'].cluster_name", day7.get("cluster_name"), "maops-k8s-day7"),
+        ("PROFILES['day7'].release", day7.get("release"), "maops-kubernetes-platform-day7"),
+        ("PROFILES['day7'].host_port", day7.get("host_port"), 18081),
+        ("PROFILES['day6'].validation_namespace", day6.get("validation_namespace"), "maops-day6-validation"),
+        ("PROFILES['day7'].validation_namespace", day7.get("validation_namespace"), "maops-day7-validation"),
+        ("PROFILES['day7'].mesh_probe_namespace", day7.get("mesh_probe_namespace"), "maops-day7-mesh-probe"),
+        ("kube.DEFAULT_PROFILE", kube.DEFAULT_PROFILE, "day6"),
+        ("kube.INGRESS_NAMESPACE", kube.INGRESS_NAMESPACE, "maops-ingress"),
+    ):
+        findings.append(Finding(actual == expected, f"day7.identity[{label}]", f"expected {label} == {expected!r}, found {actual!r}"))
+    findings.append(Finding(day6.get("host_port") != day7.get("host_port"), "day7.identity.host_ports_distinct", f"Day 6 and Day 7 host ports must differ ({day6.get('host_port')} vs {day7.get('host_port')})"))
+
+    findings.append(Finding(kind_day7.get("name") == "maops-k8s-day7", "day7.kind_config.name", f"expected kind/cluster-day7.yaml name maops-k8s-day7, found {kind_day7.get('name')!r}"))
+    findings.append(Finding(_kind_host_ports(kind_day7) == [18081], "day7.kind_config.host_port", f"expected kind/cluster-day7.yaml host ports [18081], found {_kind_host_ports(kind_day7)}"))
+    findings.append(Finding(_kind_host_ports(kind_day6) == [18080], "day7.kind_config.day6_host_port_preserved", f"expected kind/cluster-day6.yaml host ports [18080], found {_kind_host_ports(kind_day6)}"))
+    d6, d7 = _kind_digests(kind_day6), _kind_digests(kind_day7)
+    findings.append(Finding(
+        len(d7) == 1 and d7 == d6 and all("@sha256:" in (i or "") for i in d7),
+        "day7.kind_config.pinned_digest_matches_day6",
+        f"expected one digest-pinned kindest/node image identical to Day 6's ({sorted(d6)}), found {sorted(d7)}",
+    ))
+    for token in ("DAY7_CLUSTER_NAME := maops-k8s-day7", "kind/cluster-$(CLUSTER_PROFILE).yaml", "maops-kubernetes-platform-$(CLUSTER_PROFILE)"):
+        findings.append(Finding(token in makefile_text, f"day7.makefile[{token}]", f"expected the Makefile to contain {token!r}"))
+    for label, expected_version in (("Cilium", CILIUM_VERSION), ("Gateway API CRDs", GATEWAY_API_CRDS_VERSION), ("Istio", ISTIO_VERSION)):
+        findings.append(Finding(expected_version in makefile_text, f"day7.pinned_infra[{label}]", f"expected the Makefile to pin {label} at {expected_version!r}"))
+    return findings
+
+
 def render(base_dir: str) -> str:
     result = subprocess.run(
         ["kubectl", "kustomize", base_dir],
@@ -303,8 +386,14 @@ def main() -> int:
         print(f"FAIL: could not read/parse the Helm chart's Chart.yaml/values.yaml: {exc}", file=sys.stderr)
         return 1
     makefile_text = MAKEFILE.read_text()
+    try:
+        kind_day6 = k8s_yaml.load_all(KIND_DAY6_CONFIG.read_text())[0]
+        kind_day7 = k8s_yaml.load_all(KIND_DAY7_CONFIG.read_text())[0]
+    except (OSError, IndexError, ValueError) as exc:
+        print(f"FAIL: could not read/parse the kind configs: {exc}", file=sys.stderr)
+        return 1
 
-    findings += run_day6_release_checks(version, chart_yaml, values_yaml, makefile_text)
+    findings += run_day7_release_checks(version, chart_yaml, values_yaml, makefile_text, kind_day6, kind_day7)
     failures = [f for f in findings if not f.ok]
 
     print(f"# Version consistency check (live VERSION file == {version!r}; k8s/base frozen at {EXPECTED_TARGET_VERSION!r})")

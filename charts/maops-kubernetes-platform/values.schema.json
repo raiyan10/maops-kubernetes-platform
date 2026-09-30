@@ -1,10 +1,19 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "maops-kubernetes-platform values",
-  "description": "Day 6 chart values schema - rejects invalid image tags, replica counts, ports, and empty required routing/identity values before any template ever renders.",
+  "description": "Chart values schema (Day 6, extended Day 7) - rejects invalid image tags, replica counts, ports, empty required routing/identity values, and every invalid Day 7 candidate/routing state (candidate or weighted routing without a candidate, missing/unexpected/out-of-range/non-integer weights, unknown modes, and a fault-injected candidate outside stable routing) before any template renders. Weights summing to exactly 100 and a distinct candidate message are enforced by the chart's own template guard (maops.validateDay7State), since JSON Schema cannot express them.",
   "type": "object",
   "additionalProperties": true,
-  "required": ["release", "validation", "routing", "images", "gateway", "app", "state"],
+  "required": [
+    "release",
+    "validation",
+    "routing",
+    "images",
+    "gateway",
+    "app",
+    "state",
+    "candidate"
+  ],
   "definitions": {
     "imageTag": {
       "type": "string",
@@ -18,15 +27,29 @@
     },
     "pullPolicy": {
       "type": "string",
-      "enum": ["Always", "IfNotPresent", "Never"]
+      "enum": [
+        "Always",
+        "IfNotPresent",
+        "Never"
+      ]
     },
     "image": {
       "type": "object",
-      "required": ["repository", "tag", "pullPolicy"],
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
       "properties": {
-        "repository": { "$ref": "#/definitions/imageRepository" },
-        "tag": { "$ref": "#/definitions/imageTag" },
-        "pullPolicy": { "$ref": "#/definitions/pullPolicy" }
+        "repository": {
+          "$ref": "#/definitions/imageRepository"
+        },
+        "tag": {
+          "$ref": "#/definitions/imageTag"
+        },
+        "pullPolicy": {
+          "$ref": "#/definitions/pullPolicy"
+        }
       }
     },
     "port": {
@@ -55,146 +78,335 @@
         "requests": {
           "type": "object",
           "properties": {
-            "cpu": { "$ref": "#/definitions/resourceQuantity" },
-            "memory": { "$ref": "#/definitions/resourceQuantity" }
+            "cpu": {
+              "$ref": "#/definitions/resourceQuantity"
+            },
+            "memory": {
+              "$ref": "#/definitions/resourceQuantity"
+            }
           }
         },
         "limits": {
           "type": "object",
           "properties": {
-            "cpu": { "$ref": "#/definitions/resourceQuantity" },
-            "memory": { "$ref": "#/definitions/resourceQuantity" }
+            "cpu": {
+              "$ref": "#/definitions/resourceQuantity"
+            },
+            "memory": {
+              "$ref": "#/definitions/resourceQuantity"
+            }
           }
         }
       }
+    },
+    "routeWeight": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 99
     }
   },
   "properties": {
     "release": {
       "type": "object",
-      "required": ["namespace"],
+      "required": [
+        "namespace"
+      ],
       "properties": {
-        "namespace": { "$ref": "#/definitions/dnsSubdomainName" }
+        "namespace": {
+          "$ref": "#/definitions/dnsSubdomainName"
+        }
       }
     },
     "validation": {
       "type": "object",
-      "required": ["namespace", "diagnostics"],
+      "required": [
+        "namespace",
+        "diagnostics"
+      ],
       "properties": {
-        "namespace": { "$ref": "#/definitions/dnsSubdomainName" },
+        "namespace": {
+          "$ref": "#/definitions/dnsSubdomainName"
+        },
         "diagnostics": {
           "type": "object",
-          "required": ["serviceAccountName"],
+          "required": [
+            "serviceAccountName"
+          ],
           "properties": {
-            "serviceAccountName": { "$ref": "#/definitions/nonEmptyString" }
+            "serviceAccountName": {
+              "$ref": "#/definitions/nonEmptyString"
+            }
           }
         }
       }
     },
     "routing": {
       "type": "object",
-      "required": ["hostname", "gateway"],
+      "required": [
+        "hostname",
+        "gateway",
+        "mode"
+      ],
       "properties": {
-        "hostname": { "$ref": "#/definitions/dnsSubdomainName" },
+        "hostname": {
+          "$ref": "#/definitions/dnsSubdomainName"
+        },
         "gateway": {
           "type": "object",
-          "required": ["name", "namespace", "serviceAccountName"],
+          "required": [
+            "name",
+            "namespace",
+            "serviceAccountName"
+          ],
           "properties": {
-            "name": { "$ref": "#/definitions/nonEmptyString" },
-            "namespace": { "$ref": "#/definitions/dnsSubdomainName" },
-            "serviceAccountName": { "$ref": "#/definitions/nonEmptyString" }
+            "name": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "namespace": {
+              "$ref": "#/definitions/dnsSubdomainName"
+            },
+            "serviceAccountName": {
+              "$ref": "#/definitions/nonEmptyString"
+            }
           }
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "candidate",
+            "weighted"
+          ]
+        },
+        "stableWeight": {
+          "$ref": "#/definitions/routeWeight"
+        },
+        "candidateWeight": {
+          "$ref": "#/definitions/routeWeight"
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "build": {
+      "type": "object",
+      "description": "DAY7: requirePinnedTags=true (every helm-values/day7 stage) makes the chart refuse to render unless images.*.tag are pinned build tags <appVersion>-cfg-<64-hex config digest> (maops.validatePinnedBuild).",
+      "required": [
+        "requirePinnedTags"
+      ],
+      "properties": {
+        "requirePinnedTags": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
     },
     "images": {
       "type": "object",
-      "required": ["gateway", "app", "state"],
+      "required": [
+        "gateway",
+        "app",
+        "state"
+      ],
       "properties": {
-        "gateway": { "$ref": "#/definitions/image" },
-        "app": { "$ref": "#/definitions/image" },
-        "state": { "$ref": "#/definitions/image" }
+        "gateway": {
+          "$ref": "#/definitions/image"
+        },
+        "app": {
+          "$ref": "#/definitions/image"
+        },
+        "state": {
+          "$ref": "#/definitions/image"
+        }
       }
     },
-    "podSecurityContext": { "type": "object" },
-    "containerSecurityContext": { "type": "object" },
-    "resources": { "$ref": "#/definitions/resourceSpec" },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "containerSecurityContext": {
+      "type": "object"
+    },
+    "resources": {
+      "$ref": "#/definitions/resourceSpec"
+    },
     "gateway": {
       "type": "object",
-      "required": ["replicas", "containerPort"],
+      "required": [
+        "replicas",
+        "containerPort"
+      ],
       "properties": {
-        "replicas": { "type": "integer", "minimum": 1, "maximum": 10 },
-        "containerPort": { "$ref": "#/definitions/port" },
-        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "containerPort": {
+          "$ref": "#/definitions/port"
+        },
+        "resources": {
+          "$ref": "#/definitions/resourceSpec"
+        },
         "config": {
           "type": "object",
           "properties": {
-            "backendTimeoutSeconds": { "type": "integer", "minimum": 1 },
-            "appName": { "$ref": "#/definitions/nonEmptyString" },
-            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
-            "appMessage": { "type": "string" },
-            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+            "backendTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "appName": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appEnvironment": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appMessage": {
+              "type": "string"
+            },
+            "appLogLevel": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warning",
+                "error"
+              ]
+            }
           }
         },
         "pdb": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "minAvailable": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       }
     },
     "app": {
       "type": "object",
-      "required": ["replicas", "containerPort"],
+      "required": [
+        "replicas",
+        "containerPort"
+      ],
       "properties": {
-        "replicas": { "type": "integer", "minimum": 1, "maximum": 10 },
-        "containerPort": { "$ref": "#/definitions/port" },
-        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "containerPort": {
+          "$ref": "#/definitions/port"
+        },
+        "resources": {
+          "$ref": "#/definitions/resourceSpec"
+        },
         "config": {
           "type": "object",
           "properties": {
-            "stateTimeoutSeconds": { "type": "integer", "minimum": 1 },
-            "appName": { "$ref": "#/definitions/nonEmptyString" },
-            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
-            "appMessage": { "type": "string" },
-            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+            "stateTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "appName": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appEnvironment": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appMessage": {
+              "type": "string"
+            },
+            "appLogLevel": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warning",
+                "error"
+              ]
+            }
           }
         },
         "pdb": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "minAvailable": { "type": "integer", "minimum": 0 }
+            "enabled": {
+              "type": "boolean"
+            },
+            "minAvailable": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         }
       }
     },
     "state": {
       "type": "object",
-      "required": ["replicas", "containerPort", "storage"],
+      "required": [
+        "replicas",
+        "containerPort",
+        "storage"
+      ],
       "properties": {
-        "replicas": { "type": "integer", "minimum": 1, "maximum": 1 },
-        "containerPort": { "$ref": "#/definitions/port" },
-        "resources": { "$ref": "#/definitions/resourceSpec" },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+        },
+        "containerPort": {
+          "$ref": "#/definitions/port"
+        },
+        "resources": {
+          "$ref": "#/definitions/resourceSpec"
+        },
         "config": {
           "type": "object",
           "properties": {
-            "stateFilePath": { "$ref": "#/definitions/nonEmptyString" },
-            "stateMaxBodyBytes": { "type": "integer", "minimum": 1 },
-            "appName": { "$ref": "#/definitions/nonEmptyString" },
-            "appEnvironment": { "$ref": "#/definitions/nonEmptyString" },
-            "appMessage": { "type": "string" },
-            "appLogLevel": { "type": "string", "enum": ["debug", "info", "warning", "error"] }
+            "stateFilePath": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "stateMaxBodyBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "appName": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appEnvironment": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "appMessage": {
+              "type": "string"
+            },
+            "appLogLevel": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warning",
+                "error"
+              ]
+            }
           }
         },
         "storage": {
           "type": "object",
-          "required": ["requests"],
+          "required": [
+            "requests"
+          ],
           "properties": {
-            "requests": { "$ref": "#/definitions/resourceQuantity" },
-            "storageClassName": { "type": "string" }
+            "requests": {
+              "$ref": "#/definitions/resourceQuantity"
+            },
+            "storageClassName": {
+              "type": "string"
+            }
           }
         }
       }
@@ -202,21 +414,219 @@
     "secrets": {
       "type": "object",
       "properties": {
-        "internalAuthName": { "$ref": "#/definitions/nonEmptyString" },
-        "stateAuthName": { "$ref": "#/definitions/nonEmptyString" }
+        "internalAuthName": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "stateAuthName": {
+          "$ref": "#/definitions/nonEmptyString"
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
       }
     },
     "meshPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "replicas",
+        "strategy",
+        "config",
+        "faultInjection"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "RollingUpdate",
+            "Recreate"
+          ]
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "appMessage"
+          ],
+          "properties": {
+            "appMessage": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "faultInjection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "failReadiness"
+          ],
+          "properties": {
+            "failReadiness": {
+              "type": "boolean"
+            }
+          }
+        }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "$comment": "DAY7: candidate or weighted routing requires the candidate to exist.",
+      "if": {
+        "properties": {
+          "routing": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "candidate",
+                  "weighted"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        "required": [
+          "routing"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidate": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "candidate"
+        ]
+      }
+    },
+    {
+      "$comment": "DAY7: weighted routing requires BOTH weights; every other mode forbids them.",
+      "if": {
+        "properties": {
+          "routing": {
+            "properties": {
+              "mode": {
+                "const": "weighted"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        "required": [
+          "routing"
+        ]
+      },
+      "then": {
+        "properties": {
+          "routing": {
+            "required": [
+              "stableWeight",
+              "candidateWeight"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "routing": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "stableWeight"
+                  ]
+                },
+                {
+                  "required": [
+                    "candidateWeight"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "DAY7: a fault-injected (deliberately unready) candidate is only valid while enabled and while routing is stable.",
+      "if": {
+        "properties": {
+          "candidate": {
+            "properties": {
+              "faultInjection": {
+                "properties": {
+                  "failReadiness": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "failReadiness"
+                ]
+              }
+            },
+            "required": [
+              "faultInjection"
+            ]
+          }
+        },
+        "required": [
+          "candidate"
+        ]
+      },
+      "then": {
+        "properties": {
+          "candidate": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          },
+          "routing": {
+            "properties": {
+              "mode": {
+                "const": "stable"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

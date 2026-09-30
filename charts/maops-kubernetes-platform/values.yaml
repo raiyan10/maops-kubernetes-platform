@@ -1,7 +1,15 @@
-# Day 6 default values for the maops-kubernetes-platform application
-# chart. Installed as:
+# Default values for the maops-kubernetes-platform application chart
+# (introduced Day 6, extended Day 7 with an OPTIONAL gateway candidate
+# and explicit HTTPRoute traffic modes - both off/stable by default, so
+# the default render keeps Day 6's stable-only object inventory).
+# Installed as:
 #   helm upgrade --install maops-kubernetes-platform-day6 \
 #     charts/maops-kubernetes-platform --namespace maops-platform
+# (Day 6 cluster), or, for the isolated Day 7 cluster, always with an
+# explicit stage file and --reset-values:
+#   helm upgrade --install maops-kubernetes-platform-day7 \
+#     charts/maops-kubernetes-platform --namespace maops-platform \
+#     --reset-values -f helm-values/day7/stable.yaml
 #
 # Resource NAMES are deliberately kept stable across days (maops-gateway,
 # maops-app, maops-state, maops-diagnostics) and are NOT templated from
@@ -54,19 +62,41 @@ routing:
     # ingress-Gateway -> maops-gateway identity path
     # (cluster.local/ns/<gateway.namespace>/sa/<gateway.serviceAccountName>).
     serviceAccountName: maops-edge-istio
+  # DAY7: explicit traffic mode for the ONE Helm-owned HTTPRoute
+  # (maops-gateway-route). Exactly one of:
+  #   stable    - one backendRef, service/maops-gateway (default; renders
+  #               the same single backendRef Day 6 rendered, no weight)
+  #   candidate - one backendRef, service/maops-gateway-candidate
+  #               (Blue/Green cutover; requires candidate.enabled=true)
+  #   weighted  - two backendRefs, stable + candidate, with explicit
+  #               integer weights (Canary; requires candidate.enabled=true)
+  # `stableWeight`/`candidateWeight` are deliberately NOT defaulted here:
+  # they are required when mode=weighted (each 1-99, summing to exactly
+  # 100 - enforced by values.schema.json and again by the template) and
+  # rejected in every other mode, so a stale weight can never silently
+  # ride along into a stable or candidate render.
+  mode: stable
+
+# DAY7: when true (set by every helm-values/day7 stage file), the chart
+# refuses to render unless images.{gateway,app,state}.tag are pinned
+# build tags <appVersion>-cfg-<config digest> (see
+# "maops.validatePinnedBuild" in _helpers.tpl). false keeps the Day 6
+# default render byte-for-byte unchanged.
+build:
+  requirePinnedTags: false
 
 images:
   gateway:
     repository: maops-kubernetes-gateway
-    tag: "0.6.0"
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
   app:
     repository: maops-kubernetes-app
-    tag: "0.6.0"
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
   state:
     repository: maops-kubernetes-state
-    tag: "0.6.0"
+    tag: "0.7.0"
     pullPolicy: IfNotPresent
 
 # Unchanged since Day 1/2: applied identically to every workload
@@ -103,12 +133,56 @@ gateway:
   config:
     backendTimeoutSeconds: 5
     appName: maops-kubernetes-gateway
-    appEnvironment: day6-helm-routing-mesh
-    appMessage: "Hello from the MAOps Kubernetes Gateway (Day 6)"
+    appEnvironment: day7-deployment-strategies
+    appMessage: "Hello from the MAOps Kubernetes Gateway (Day 7 stable)"
     appLogLevel: info
   pdb:
     enabled: true
     minAvailable: 2
+
+# DAY7: OPTIONAL gateway candidate - a second, independently-selected
+# gateway Deployment (maops-gateway-candidate) used ONLY to demonstrate
+# Blue/Green, Canary and (candidate-scoped) Recreate. Disabled by
+# default: the default render contains no candidate object at all.
+#
+# What the candidate is, honestly: the SAME gateway image, the SAME
+# ServiceAccount (maops-gateway - so stable and candidate share ONE
+# Istio workload principal, cluster.local/ns/maops-platform/sa/maops-gateway;
+# the mesh cannot tell them apart), the SAME internal-auth Secret mount
+# and the SAME security context as the stable gateway. It differs only
+# in its own ConfigMap's non-secret APP_MESSAGE - a CONFIGURATION
+# variant, not a different application binary.
+#
+# Isolation is by label, never by name: candidate objects carry
+# app.kubernetes.io/component=gateway-candidate, which none of the
+# stable gateway's Deployment/Service/PDB/NetworkPolicy/
+# AuthorizationPolicy selectors (all component=gateway) can match, and
+# vice versa. Candidate-only NetworkPolicies/AuthorizationPolicy render
+# only when enabled=true.
+candidate:
+  enabled: false
+  # 2 replicas - one per worker under the candidate's own
+  # topologySpreadConstraints; enough to show Recreate terminating ALL
+  # old Pods before any replacement exists.
+  replicas: 2
+  # RollingUpdate (stable-gateway-equivalent maxUnavailable/maxSurge) or
+  # Recreate. Recreate renders NO rollingUpdate block. Only this
+  # candidate Deployment may ever use Recreate - the stable gateway and
+  # the state StatefulSet are never switched to it.
+  strategy: RollingUpdate
+  config:
+    # Must differ from gateway.config.appMessage (the template fails
+    # otherwise): this message is how an external request is
+    # identified as served by the candidate.
+    appMessage: "Hello from the MAOps Kubernetes Gateway (Day 7 candidate)"
+  # Controlled negative-test knob ONLY (Canary's candidate-unready
+  # scenario): points the candidate's readinessProbe at a path the
+  # gateway answers with 404, so candidate Pods start and stay live but
+  # never become Ready. The schema only allows it with
+  # candidate.enabled=true AND routing.mode=stable - an intentionally
+  # unready candidate can never be rendered as a route backend.
+  faultInjection:
+    failReadiness: false
 
 app:
   replicas: 3
@@ -117,8 +191,8 @@ app:
   config:
     stateTimeoutSeconds: 3
     appName: maops-kubernetes-app
-    appEnvironment: day6-helm-routing-mesh
-    appMessage: "Hello from the MAOps Kubernetes App (Day 6)"
+    appEnvironment: day7-deployment-strategies
+    appMessage: "Hello from the MAOps Kubernetes App (Day 7)"
     appLogLevel: info
   pdb:
     enabled: true
@@ -132,8 +206,8 @@ state:
     stateFilePath: /data/state.json
     stateMaxBodyBytes: 4096
     appName: maops-kubernetes-state
-    appEnvironment: day6-helm-routing-mesh
-    appMessage: "Hello from the MAOps Kubernetes State service (Day 6)"
+    appEnvironment: day7-deployment-strategies
+    appMessage: "Hello from the MAOps Kubernetes State service (Day 7)"
     appLogLevel: info
   storage:
     requests: 256Mi

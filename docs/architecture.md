@@ -1,4 +1,4 @@
-# Architecture - Day 6 (v0.6.0, released as a local kind reference platform)
+# Architecture - Day 6 (v0.6.0, released) and Day 7 (v0.7.0, release candidate)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -47,10 +47,15 @@ commit `19d6b28`) - see
 below for the exact results, dates, and accepted limitations, and
 `docs/engineering-reviews/day-06-*` for the independent reviews,
 adjudication, and remediation log. This is a validated local kind
-reference platform, not a production-ready platform. Day 7 (`v1.0.0`) is the final milestone: Recreate,
-Blue-Green, and Canary deployment-strategy demonstrations, a final
-hardened validation pass, and portfolio closure. See
-`docs/roadmap.md` for the full plan.
+reference platform, not a production-ready platform. Day 7 (`v0.7.0`,
+**release candidate** - local Kind gate PASSED on a freshly created
+cluster, run `6b0029cc63724291a00bba6ed52ea7a9`, 2026-09-30; PR, merge,
+merged-main validation and publication pending; see "DAY7: live
+validation record") demonstrates Recreate, Blue/Green and Canary on this
+platform on a separate `maops-k8s-day7` kind cluster; see "DAY7:
+deployment strategies (v0.7.0, release candidate)" at the end of this
+file. Day 8 (`v1.0.0`) is the later autoscaling and final-hardening
+milestone. See `docs/roadmap.md` for the full plan.
 
 ## Control flow
 
@@ -743,7 +748,7 @@ invoked once, explicitly, at a known point in `make day4-check`'s
 sequence, not on a recurring or node-lifecycle-triggered basis. Any
 such new node requires an explicit, manual re-run of `make
 storage-bootstrap` (idempotent - see
-[DAY4: storage bootstrap](#day4-storage-bootstrap-making-fsgroup-do-real-access-control-work)
+[DAY4: storage bootstrap](#day4-storage-bootstrap---making-fsgroup-do-real-access-control-work)
 above) and its own `storage-hardening-check` verification before any
 `maops-state` PVC is ever scheduled to provision on it.
 
@@ -1005,7 +1010,7 @@ NetworkPolicy does not and cannot provide and which remains explicitly
 out of Day 5's scope. No L7/HTTP-aware policy engine (Cilium's own
 `CiliumNetworkPolicy` L7 rules, or any service mesh's request-level
 policy) is introduced this stage - see
-[Why Service Mesh remains deferred to Day 6](#why-service-mesh-remains-deferred-to-day-6)
+[Why Service Mesh remained deferred through Day 5](#why-service-mesh-remained-deferred-through-day-5)
 below. Tracked forward as `DAY5-SEC-M1` (Medium, non-blocking) in
 `docs/engineering-reviews/day-05-kubernetes-security-review.md`.
 
@@ -2706,3 +2711,736 @@ restarts (see above); L7/HTTP-aware east-west authorization (no
 waypoint), or HTTP-method-level authorization from the NetworkPolicy/
 AuthorizationPolicy layer; and live-cluster validation in GitHub
 Actions (CI is cluster-free by design).
+
+## DAY7: deployment strategies (v0.7.0, release candidate)
+
+**Status: local Kind gate PASSED - release candidate, not released.**
+- **Gating run:** one uninterrupted `make day7-check` that itself
+  created `maops-k8s-day7`, run `6b0029cc63724291a00bba6ed52ea7a9`,
+  2026-09-30, make exit 0.
+- **Freshness:** `kind create` ran; new node containers; the app
+  release started at revision 1; new namespace, PVC and PV.
+- **Results:** all three strategies PRIMARY and RESTORATION PASS under
+  one pinned build; final gate PASS.
+- **Still pending:** the PR, merge, merged-`main` validation, and
+  `v0.7.0` publication.
+
+The earlier runs, including the failed attempts and the defects they
+exposed, are listed in "DAY7: live validation record" below. The
+adjudication is `docs/engineering-reviews/day-07-final-adjudication.md`.
+The design sections below describe the code; live results are only in
+the record. Day 6
+(`v0.6.0`) is released and unchanged; Day 8 (`v1.0.0`) is the later
+autoscaling and final-hardening milestone. Day 7 does not claim
+production readiness.
+
+Day 7 demonstrates **Recreate, Blue/Green and Canary** on the existing
+Helm + Gateway API + Istio ambient platform, using native Kubernetes and
+Gateway API primitives only (no Argo Rollouts, no VirtualService, no
+second Gateway, no waypoint, no Ingress, no second HTTPRoute).
+
+### The optional gateway candidate
+
+The chart gains an OPTIONAL second gateway Deployment,
+`maops-gateway-candidate`, **disabled by default**. With the default
+values the chart renders exactly the Day 6 inventory (30 objects, one
+unweighted `maops-gateway` backendRef); the only differences from the
+`v0.6.0` render are version labels/image tags, the `day7-*`
+environment/message strings, and the checksums derived from them.
+Enabling it adds exactly **7** objects (37 total):
+
+| Object | Why it exists |
+|---|---|
+| `ConfigMap/maops-gateway-candidate-config` | same keys and values as `maops-gateway-config` except a **distinct** `APP_MESSAGE` |
+| `Deployment/maops-gateway-candidate` | 2 replicas, own immutable selector, stable-gateway parity (below) |
+| `Service/maops-gateway-candidate` | selects candidate Pods only; same `http`/8080 port |
+| `NetworkPolicy/maops-allow-gateway-candidate-ingress-from-istio-ingress-gateway` | the stable ingress rule selects `component=gateway` only |
+| `NetworkPolicy/maops-allow-gateway-candidate-egress-to-app` | the stable egress rule selects `component=gateway` only; no state egress |
+| `NetworkPolicy/maops-allow-app-ingress-from-gateway-candidate` | app's stable ingress rule admits `component=gateway` only |
+| `AuthorizationPolicy/maops-gateway-candidate-authz` | without it the candidate would have **no** ALLOW policy, and an unselected ambient workload accepts any authenticated mesh identity |
+
+**What the candidate is - honestly.** It runs the same gateway image,
+the same `maops-gateway` ServiceAccount, the same `maops-internal-auth`
+Secret mount (mode 0440, `fsGroup` 10001), and the same Pod/container
+security context, resources, probes, worker-only affinity and spread as
+the stable gateway. It differs only in its ConfigMap's non-secret
+`APP_MESSAGE`. It is a **configuration variant**, not a different
+application release: no distinct image digest or application behavior
+is built or claimed.
+
+**Shared identity.** Because stable and candidate share the
+`maops-gateway` ServiceAccount, they present **one** Istio principal
+(`cluster.local/ns/maops-platform/sa/maops-gateway`). `maops-app-authz`
+therefore admits candidate -> app without change, `maops-state-authz`
+still denies candidate -> state, and nothing at the mesh-identity layer
+can tell stable and candidate traffic apart. Candidate *inbound* is
+narrowed by its own AuthorizationPolicy (ingress Gateway principal only).
+
+### Selector isolation (static proof)
+
+Every candidate object uses `app.kubernetes.io/component:
+gateway-candidate`; every stable gateway selector uses `component:
+gateway`. The existing stable Deployment/Service/PDB selectors are
+**unchanged** (`name` + `instance` + `component=gateway`), so the
+immutable stable Deployment selector never needed to move.
+`scripts/validate_helm_chart.py` proves, for every candidate-enabled
+render:
+
+- stable and candidate **Deployment** selectors are *provably disjoint*
+  (they share the `component` key with different values - no label set
+  can satisfy both), and each selects only its own Pod template;
+- stable and candidate **Service** selectors are provably disjoint;
+- the stable **PDB** selector is provably disjoint from the candidate
+  selector and does not match the candidate Pod template; no PDB
+  selects candidate Pods at all;
+- candidate selectors match no app/state Pod template;
+- exactly one AuthorizationPolicy selects each of stable and candidate
+  Pods;
+- evaluating the rendered NetworkPolicies with standard additive
+  semantics, the candidate has **exactly** the stable gateway's path
+  matrix (istio-ingress -> gateway allowed; validation-client/app/state
+  -> gateway denied; gateway -> app allowed; gateway -> state denied,
+  on each side separately as well as end to end; HBONE 15008 both
+  ways), no stable <-> candidate lateral path exists, app/state paths
+  are unchanged, and no candidate-only policy selects state or the
+  stable gateway.
+
+Live, the preflight gate compares ready EndpointSlice addresses and
+target Pods for both Services before any traffic moves (see below).
+
+### One route, explicit traffic modes
+
+The single Helm-owned `HTTPRoute/maops-gateway-route` (same parentRef,
+hostname, path and rule) takes its backendRefs from `routing.mode`:
+
+| `routing.mode` | backendRefs | Requires |
+|---|---|---|
+| `stable` (default) | `maops-gateway:8080` (no weight) | nothing |
+| `candidate` | `maops-gateway-candidate:8080` (no weight) | `candidate.enabled=true` |
+| `weighted` | `maops-gateway:8080` w=`stableWeight`, `maops-gateway-candidate:8080` w=`candidateWeight` | `candidate.enabled=true`, both weights, each an integer 1-99, summing to exactly 100 |
+
+`values.schema.json` rejects: candidate/weighted modes without the
+candidate; missing, extra (outside weighted mode), zero, negative or
+non-integer weights; unknown or empty modes; unknown `routing`/
+`candidate` keys; invalid candidate strategy or replica count; and a
+fault-injected candidate outside `stable` mode. The template guard
+(`maops.validateDay7State`) repeats every state check so it still holds
+under `--skip-schema-validation`, and adds what JSON Schema cannot
+express: weights summing to exactly 100, and a candidate message that
+differs from the stable one. Backend ports are the gateway container
+port for both Services; the validator checks each backendRef's port
+against the referenced Service's rendered ports.
+
+### Helm stages - explicit values only
+
+Every Day 7 change is a `helm upgrade` of the Day 7 release with
+`--reset-values -f helm-values/day7/<stage>.yaml -f <verified build
+overlay>` (never `--reuse-values`, never `--set`, never `kubectl patch`;
+the overlay is described under "Verified build identity" below). After
+each stage, `helm get values` must equal the stage file plus exactly the
+build's image tags, so no candidate flag or weight can silently carry
+into the next stage or into restoration, and no stage can run another
+build. Every stage file spells out every Day 7 knob, including
+`build.requirePinnedTags: true`.
+
+| Stage file | candidate | strategy | route | Notes |
+|---|---|---|---|---|
+| `stable.yaml` | off | - | stable | install/baseline/restoration target |
+| `green-prepared.yaml` | on | RollingUpdate | stable | Blue/Green + Canary preparation |
+| `blue-green-cutover.yaml` | on | RollingUpdate | candidate | promotion stage (gate first) |
+| `canary-90-10.yaml` | on | RollingUpdate | weighted 90/10 | promotion stage (gate first) |
+| `candidate-unready.yaml` | on (never Ready) | RollingUpdate | stable | negative scenario, `--wait=hookOnly` |
+| `recreate-prepared.yaml` | on | Recreate | stable | |
+| `recreate-serving.yaml` | on | Recreate | candidate | promotion stage (gate first) |
+| `recreate-changed.yaml` | on | Recreate | candidate | only the candidate message differs |
+
+`scripts/helm_check.py` renders every stage and validates it against an
+expectation **declared in helm_check.py** (not derived from the file),
+so a drifted stage file fails `make helm-check`.
+
+### The candidate preflight gate
+
+`day7_strategy.promote()` is the only path to a promotion stage. It
+observes the live cluster once and refuses - submitting nothing to Helm
+- unless every check passes: candidate Deployment converged
+(`observedGeneration`, ready/updated/available replicas); every
+candidate Pod Running, Ready, not terminating; each Pod's
+ServiceAccount, token automount, Pod/container security context,
+Secret mount and mode, no sidecar, ambient redirection annotation, and
+**ztunnel listeners 15001/15006/15008 in its own network namespace**;
+candidate ready endpoints equal the ready candidate Pod IPs and
+reference only candidate Pods; stable ready endpoints still 3 and
+reference only stable Pods; the two sets disjoint; the HTTPRoute still
+exactly the pre-promotion backends with current-generation conditions;
+the Gateway Accepted/Programmed for its current generation; and **every
+candidate container runs the run's verified build** - Pod spec image ==
+the pinned `maops-kubernetes-gateway:0.7.0-cfg-<digest>` ref and the
+container's imageID maps through its node's containerd record to that
+build's config digest (`day7_running_images.evaluate_component`; see
+"Verified build identity"). Unobserved image identity refuses the gate.
+
+**Path checks are the second enforced condition of every promotion**
+(Blue/Green cutover, Canary 90/10, Recreate serving). Only after the
+readiness gate passes, `promote()` runs the candidate path checks:
+candidate -> app allowed, candidate -> state denied, app -> candidate
+denied, and controls app -> state allowed / app -> stable gateway
+denied.
+
+**What one probe observes** (stdlib Python exec'd in an existing
+workload Pod), phase by phase: DNS resolution of the Service name
+(`DNS_FAIL`, or the resolved address); the TCP connect (`REFUSED`,
+`RESET`, `CONNECT_TIMEOUT`, or `NET_ERROR` for any other network error);
+then `GET /livez` (`STATUS:<code>` for any HTTP response, `RESET` when
+the connection closes without one, `READ_TIMEOUT`, or `PROBE_ERROR`).
+`kubectl exec` failure/timeout and malformed output are classified
+separately by the caller. Before probing, every destination Service is
+read live: its ClusterIP and at least one ready EndpointSlice address
+are required, and a probe must have resolved to exactly that ClusterIP.
+
+**Verdicts (fail closed).** Allowed: HTTP 200. Denied: *no HTTP
+response* - reset, refused, connect timeout or read timeout - from a
+verified, ready destination, AND the same source Pod's positive control
+(candidate -> app, or app -> state) passed in the same observation. A
+bounded timeout is accepted as negative-reachability evidence on
+purpose: a NetworkPolicy drop surfaces as a timeout, and rejecting all
+timeouts would make that denial unobservable; the verified destination
+and the passing same-source control are what keep it from standing in
+for an unrelated failure. Refusal is likewise accepted only with a
+verified destination, since a Service without endpoints also refuses.
+Any HTTP status from a denied destination fails (it answered). DNS
+failure, `NET_ERROR`/`PROBE_ERROR`, malformed output, `kubectl exec`
+failure or timeout, an unreadable or endpoint-less destination, or a
+resolution to another address is inconclusive and fails. A local TCP
+connect alone is never evidence (ambient redirection completes it
+locally), and a denial result never identifies *which* layer
+(NetworkPolicy or ztunnel/AuthorizationPolicy) denied the traffic -
+`mesh-check`'s correlated ztunnel evidence remains that proof for the
+stable workloads. Any failed or inconclusive result refuses the
+promotion with a recorded reason and submits no traffic-moving Helm
+stage. A readiness refusal returns before any path probe, so an
+unready candidate is never probed. Every kubectl and Helm call inside
+`day7_strategy` goes through a guard that refuses to run unless the Day
+7 profile is selected, so no Day 7 code path can reach the Day 6
+cluster. Positive controls are always evaluated before any negative
+path of the same source, regardless of how the plan is ordered.
+
+### The three experiments
+
+All three start from a verified 100% stable state (release at the stable
+stage, no candidate object, route current, external stable response),
+require this run's strategy baseline (never recaptured), and always end
+in `restore_or_verify()`: a Helm upgrade to `stable.yaml` if anything
+was submitted, otherwise read-only verification - proven by `helm get
+values`, explicit absence of every candidate-only object, the route,
+the Gateway, and external stable responses. PRIMARY and RESTORATION
+results are printed and exit-coded separately; a restoration failure is
+never hidden by (or hides) a primary failure.
+
+- **Blue/Green** (`make day7-blue-green`): prepare Green; the route's
+  UID and generation must be verifiably unchanged and prepared-stage
+  external traffic must still be 100% stable, or the experiment stops
+  before cutover. Then the gate, and the promotion (gate again + the
+  enforced path checks above). Only then the cutover:
+  the same route's generation must advance to exactly the candidate
+  backend with fresh conditions, external `/` must converge to the
+  candidate message from candidate Pods and `/backend` must return a
+  normal app result via a candidate Pod, while Blue stays 3/3 Ready.
+- **Canary** (`make day7-canary`): gate, then the one route with
+  `maops-gateway` w=90 and `maops-gateway-candidate` w=10; live
+  backendRefs/ports/weights and fresh conditions; ready endpoints 3 and
+  2, disjoint (if the route identity or the endpoints fail, it stops
+  before sampling and restores at once); 200 independent external
+  `/backend` requests (new
+  connection each), each classified by the serving Pod. Required: all
+  completed, at least one stable and one candidate, zero errors or
+  unidentified responses. The split is reported as counts - a finite
+  sample is never presented as proof of 90/10. Then, after a verified
+  return to stable, the **candidate-unready negative scenario**: the
+  candidate is enabled with `faultInjection.failReadiness` (readiness
+  probe pointed at a 404 path, route still stable). Once every
+  candidate Pod is Running with its container started but not Ready,
+  and the candidate Service has zero ready endpoints for a 30s hold,
+  the canary promotion must be refused by the gate on readiness - before,
+  and without, any path probe - without a Helm revision change, with the route's UID/generation/
+  backends unchanged, and with a bounded external sample 100% stable.
+- **Recreate** (`make day7-recreate`): **only** the candidate
+  Deployment ever uses `strategy.type: Recreate` (no `rollingUpdate`
+  block); the stable gateway stays RollingUpdate and the state
+  StatefulSet is never touched. With the candidate serving 100% of
+  external traffic (after the gate and the enforced path checks), only
+  its ConfigMap message changes through Helm, so its Pod-template
+  checksum changes. Preconditions stop the experiment rather than being
+  merely recorded: a failed stable-strategy check stops before
+  promotion; a failed old-Pod/ready-endpoint identity, single active
+  ReplicaSet, readable Helm revision, or PDB-coverage check stops before
+  `recreate-changed` is submitted. That upgrade runs as an **owned child
+  process**: its output goes to private temporary files (never an
+  undrained pipe), and a lifecycle `finally` always stops and joins the
+  prober and terminates -> kills -> reaps a still-running Helm child - on
+  Popen failure, observer exceptions, deadline expiry, or Ctrl-C (also
+  while waiting) - before restoration begins; the restore hook reaps any
+  registered child again first and fails the run if one was still
+  running. A background
+  prober samples `/` every 0.25s while the foreground records candidate
+  Pods and EndpointSlices every 0.5s. **The ordering guarantee comes
+  from the Deployment controller**, not from sampling: with
+  `strategy.type: Recreate` it scales the old ReplicaSet to zero and
+  waits for the old Pods to terminate before creating new ones. The
+  checker therefore *requires* the facts that make that guarantee apply
+  to this rollout - live strategy exactly Recreate (no `rollingUpdate`)
+  before and after, same Deployment UID, generation advanced and
+  observed, checksum changed, the `deployment.kubernetes.io/revision`
+  annotation advanced, exactly one new active ReplicaSet carrying that
+  revision and a new `pod-template-hash`, old Pods on the old hash, all
+  remaining Pods on the new hash, no old Pod UID left - and then
+  reports what the bounded 0.5s observations saw. A sample showing old
+  and new Pods together (or both as ready endpoints) contradicts the
+  expected behavior and fails; otherwise the result reads "no overlap
+  observed in N bounded samples - consistent with the controller's
+  Recreate ordering", never a claim that sampling proved no overlap
+  could have occurred between samples. External samples are summarized
+  as old/new/error runs with timestamps. **A Recreate rollout has a
+  planned interruption for traffic routed to that Deployment**: if
+  samples observed it, its window and recovery are reported; if not,
+  the report says sampling did not observe one - it never fabricates an
+  outage or claims zero downtime. No PDB may select any live candidate
+  Pod (full matchLabels + matchExpressions evaluation; unreadable input,
+  no candidate Pods, or an unsupported selector fail closed), and a PDB
+  would not protect it here anyway: PDBs constrain voluntary
+  evictions through the Eviction API, while the Deployment controller
+  scales the old ReplicaSet down directly.
+
+**One build throughout.** Every stage of every experiment is applied
+as `--reset-values -f <stage> -f <build overlay>` for the build the
+run's strategy baseline recorded (a different current build refuses the
+baseline), the candidate's image identity is part of every promotion
+gate, the Recreate replacement Pods are re-verified on the build after
+`recreate-changed` (`replacement candidate images`), and every
+restoration and independent `day7-stable-check` includes the
+running-image gate for the stable Pods.
+
+**Failure/rollback path.** A failed gate or path check prevents promotion
+outright; a failed precondition stops before the next mutation.
+Any failure after a submission leads to the `finally` restoration to
+`stable.yaml`; `make day7-check` stops at the first failing step, and
+`make day7-final-gate DAY7_RUN_ID=<run>` re-verifies that run's state
+independently. `helm rollback` is not used for Day 7 restoration: the
+restoration target is the explicit stable stage file, and the final
+gate proves the deployed manifest's sha256 equals the pre-experiment
+baseline's.
+
+### The separate Day 7 cluster
+
+Day 7 runs on its own kind cluster, `maops-k8s-day7`
+(`kind/cluster-day7.yaml`: same pinned `kindest/node` digest and
+topology as Day 6, host `127.0.0.1:18081` -> NodePort 30080; Day 6
+keeps `18080`). It is created alongside - never instead of - the
+released Day 6 cluster, which no Day 7 target ever stops, recreates,
+deletes or deploys to (the Day 1-6 containers were stopped by the
+operator for host memory; Day 7 gates never require them).
+`make day7-check` creates the cluster itself when absent (the gating
+run did exactly that); `make day7-cluster-delete` deletes it by name
+only (`kind delete cluster --name maops-k8s-day7`), which also removes
+the nodes' anonymous `/var` volumes - so the local-path PVC/PV data is
+destroyed, never carried over (see
+`docs/engineering-reviews/day-07-fresh-cluster-plan.md` for the guarded
+procedure that was used). `tool-check` requires `/usr/bin/docker`;
+where a user-level `docker` wrapper shadows it, run with
+`PATH=/usr/bin:$PATH`. `make day7-preflight` (read-only) checks the kind
+config, Docker, existing clusters, that 18081 is free (or already
+published by `maops-k8s-day7`), and MemAvailable/CPU/disk/inotify
+headroom for a second 3-node cluster on the WSL VM.
+
+### Image contract (build -> verify -> load -> verify -> deploy)
+
+The chart's images are `maops-kubernetes-{gateway,app,state}:0.7.0`
+with `imagePullPolicy: IfNotPresent` and no registry, so a Pod starts
+only if the node's containerd already holds that exact tag (otherwise
+kubelet tries Docker Hub and fails; a stale build under the same tag
+would silently run the wrong content). `make day7-check` therefore
+runs, in order: `image-build` (via `DAY7_MAKE`: `docker build
+--platform linux/amd64 --provenance=false --sbom=false --load -t
+<repo>:0.7.0`) -> `day7-image-verify-local` -> ... -> `image-load`
+(`kind load docker-image <repo>:0.7.0 --name maops-k8s-day7` - never the
+Day 6 cluster) -> `day7-image-verify-nodes` -> ... -> `day7-deploy`.
+
+`scripts/day7_image_check.py` compares the right digest kind: on this
+host's containerd-backed Docker, `docker inspect .Id` is the
+platform-manifest digest while `crictl` on a kind node reports the
+**config** digest (see "DAY4: measured image digest mapping"). The
+`local` step derives the config digest from `docker save` (one image,
+RepoTags include the tag, the config blob's recomputed sha256 matches,
+os/arch linux/amd64); the `nodes` step requires `kind get nodes --name
+maops-k8s-day7` to return exactly the 3 Day 7 nodes and, in every node,
+`crictl inspecti docker.io/library/<tag>` to show that tag with the same
+config digest. Any missing or different image fails before deploy.
+
+### Verified build identity (image-contract remediation)
+
+**The defect (run `ce55f5fb...`, 2026-09-28).** The second `day7-check`
+rebuilt the images under the same mutable `:0.7.0` tags and
+`day7-image-verify-nodes` proved every node held the new build, but the
+chart still said `<repo>:0.7.0`, so `day7-deploy` changed no Pod
+template, nothing rolled out, and the stable Pods kept running the
+previous build (verified afterwards on the nodes). Node image checks do
+not prove what a running container runs.
+
+**Content-derived tags.** `make day7-build-record` (after
+`day7-image-verify-local`, `scripts/day7_build.py`) derives each image's
+config digest from `docker save`, tags it locally as
+`<repo>:0.7.0-cfg-<64-hex config digest>`, re-derives the digest *from
+that new tag* (so the name provably denotes its content), and records
+the build once in a private store (`$DAY7_BUILD_ROOT`, default
+`~/.local/state/maops-kubernetes-platform/day7-builds/<build id>/`,
+0700/0600, O_EXCL; the build id is the sha256 of the three
+`component=digest` lines) with `current.json` naming the build the next
+deploy carries. `make day7-image-load` loads those pinned tags into
+`maops-k8s-day7` only; `day7-image-verify-nodes` additionally proves
+each node holds every pinned tag with the digest its own name carries,
+and that the current build is today's local build. The mutable tags stay
+loaded and verified for the Day 7 helper Pods (storage/NetworkPolicy/
+validation-client probes).
+
+**Helm carries it.** The build's `values.yaml` overlay contains only
+`images.{gateway,app,state}.tag` and is always the **second** `-f`
+(`day7-deploy` and every strategy stage). Every Day 7 stage file sets
+`build.requirePinnedTags: true`, and the chart's
+`maops.validatePinnedBuild` guard refuses to render a Day 7 stage unless
+all three tags match `<appVersion>-cfg-<64 hex>` (the default Day 6
+render, `requirePinnedTags: false`, is unchanged). A new build therefore
+**always** changes the gateway, app and state Pod templates (and the
+candidate's, which uses the gateway image): the Deployments roll and the
+StatefulSet rolls `maops-state-0` in place - its PVC comes from the
+immutable `volumeClaimTemplates` and is not touched by an image change.
+`make helm-check` proves, statically, that every stage without an
+overlay is refused, that each stage renders exactly the pinned refs, and
+that two different builds change every workload Pod template's image
+**and nothing else**.
+
+**One build per run.** Every stage of an experiment uses the same
+`current.json` build (`day7_strategy.active_build()`); `apply_stage`
+submits nothing if no verified build is readable. The strategy baseline
+records the build it was captured under (after the running-image gate
+passed), and `load_strategy_baseline()` refuses a baseline without a
+build record or for a different build than the current one - a new build
+needs a **new run ID and new baselines**; an old baseline is never
+claimed to match a new rollout. The expected values everywhere
+(`apply_stage`, `verify_stable`, the entry gate, the baseline, the final
+check) are `stage values ⊕ build overlay`; the final check's manifest
+digest comparison is unchanged (same values + same chart + same build =>
+byte-identical manifest).
+
+**Running-image gate** (`make day7-running-images`,
+`scripts/day7_running_images.py`, read-only). Digest kinds are mapped,
+never compared across kinds: Docker's `.Id` is a manifest digest, the
+build record holds config digests, and Kubernetes'
+`containerStatuses[].imageID` is containerd's CRI imageRef - for a
+`kind load`ed image a repo digest like
+`docker.io/library/import-<date>@sha256:<...>`, a third digest. On the
+container's own node, `crictl images -o json` lists each image record's
+`id` (config digest), `repoTags` and `repoDigests`; the gate finds the
+one record whose repoDigests contain the container's imageID and
+requires its `id` to equal the build's config digest and its tags to
+include the pinned tag. Per component it also requires the exact Pod
+count from the release's own values (gateway 3, app 3, state 1;
+candidate `candidate.replicas` when enabled, otherwise zero), every Pod
+Running/Ready/not terminating, the container Ready with a containerID,
+and the Pod **spec's** image reference equal to the pinned ref. The
+runtime-reported `containerStatuses[].image` is informational only:
+measured live (run `c252aa3d...`), containerd reports an image record's
+*first* repoTag there, so a container created from `...:0.7.0-cfg-<d>`
+reads `...:0.7.0` once both tags name the same record. The runtime
+identity is the imageID -> node record -> config digest chain. Unreadable
+API or node state fails immediately; the bounded wait (240 s) re-observes
+only while a rollout converges. It runs after `day7-deploy`/`rollout-check`
+(before the baseline), inside `verify_stable()` (every restoration and
+`day7-stable-check`), in `day7-resume-check`, in `day7-final-gate` and in
+`day7-final-state-check`; the candidate's containers are checked by the
+promotion gate (`evaluate_gate` refuses without them) and after the
+Recreate replacement.
+
+**Not a new application binary.** `0.7.0` is the release version. The
+workload sources and Dockerfiles are unchanged since `v0.6.0` (`make
+day7-history-audit` checks this with Git), so these are rebuilds of the
+same application; the candidate runs the same gateway image and differs
+only by configuration.
+
+### Candidate replica count and resource budget
+
+The candidate runs **2 replicas** deliberately (an earlier sketch had
+1): with the worker-only spread, 2 Pods put one candidate Pod on each
+worker, and Recreate then has more than one old Pod to terminate before
+any replacement exists - the demonstration is meaningless with a single
+Pod. The cost is small next to the node containers themselves: each
+candidate Pod requests 50m CPU / 32Mi and is limited to 250m / 128Mi
+(the stable gateway's values), so the candidate adds 100m / 64Mi of
+requests (150m / 96Mi during a RollingUpdate surge; 0 extra during
+Recreate). The dominant cost is a second 3-node kind cluster (plus its
+Cilium and Istio) running beside the Day 6 cluster, which is why
+`make day7-preflight` - read-only, every command bounded by a timeout -
+checks MemAvailable, CPUs, free disk under `$HOME`, inotify limits, and
+host port 18081 **before** `cluster-create`. Nothing in Day 7 stops,
+deletes or modifies the Day 6 cluster to make room.
+
+### Day 7 identities
+
+Everything the Day 7 sequence creates carries Day 7 identities:
+`k8s/day7/` (the same seven platform objects as `k8s/day6/`, which is
+unchanged) uses instance `maops-kubernetes-platform-day7`, version
+`0.7.0`, and the validation namespace `maops-day7-validation` (also the
+diagnostics RoleBinding subject namespace in every Day 7 stage file);
+the Day 7 profile's mesh probe namespace/ServiceAccount are
+`maops-day7-mesh-probe`/`maops-day7-wrong-identity` and its storage
+scratch namespaces `maops-day7-storage-{bootstrap-verify,hardening}`.
+Genuinely shared per-cluster names (`maops-platform`, `maops-ingress`,
+`maops-edge`, `maops-diagnostics`) stay. The Day 6 profile keeps every
+historical name. `make helm-check` validates `k8s/day7/`, tests assert
+no day1-6 identity appears in any Day 7 render, platform manifest or
+probe manifest, and `day7-final-state-check` fails on any
+earlier-day-named namespace or earlier-release instance label in the
+Day 7 cluster, and on leftover Pods in `maops-day7-validation` or
+leftover Day 7 storage scratch namespaces.
+
+Profiles, not copies: `scripts/kube.py` selects its cluster identity
+from `MAOPS_CLUSTER_PROFILE` (`day6` default - every Day 6 target and
+test is unchanged; `day7` opt-in; anything else fails at import). The
+Makefile derives that profile from `CLUSTER_NAME`, and the Day 7
+targets re-run the existing recipes via `DAY7_MAKE`
+(`CLUSTER_NAME=maops-k8s-day7` + the Day 7 kubeconfig), which also
+switches the kind config, release/instance name, platform manifest
+directory (`PLATFORM_K8S` = `k8s/day6` or `k8s/day7`), and lock
+(`scripts/day7_lock.py`, independent of Day 6's). Day 6-only
+targets that deploy with implicit values or mutate chart-owned objects
+outside Helm (`deploy`, the inherited scaling/rollout/PDB/persistence/
+retention/lifecycle/controller experiments) refuse the Day 7 profile.
+
+**Evidence and baselines.** Each run has one private directory,
+`$HOME/.local/state/maops-kubernetes-platform/day7-runs/<DAY7_RUN_ID>/`
+(outside `/tmp` and the repository; created exclusively, mode 0700;
+never reused). `make state-check` writes the suite baseline
+(`suite-baseline.json`: namespace/PVC/PV UIDs and the `/state` value)
+and `make day7-baseline` the strategy baseline (`strategy-baseline.json`:
+Helm revision, values, manifest sha256, route, workload/Service/PDB
+identities and generations, stable message, storage identities) - both
+O_EXCL, mode 0600, re-validated before use, and never recaptured or
+overwritten. No Secret content is read or printed.
+
+### Day 7 live sequence
+
+`make day7-check` runs, under one Day 7 lock, in this order (the
+Makefile recipe is the source of truth; `tests/test_day7_makefile.py`
+pins it and a test keeps this block in sync):
+
+```text
+day7-check:
+tool-check -> test -> version-check -> manifest-check -> helm-lint ->
+helm-template -> helm-check -> day7-preflight -> image-build ->
+day7-image-verify-local -> day7-build-record -> cluster-create ->
+gateway-api-install -> cni-install -> day7-nodes-ready -> cni-status ->
+context-check -> mesh-install -> mesh-status -> image-load ->
+day7-image-load -> day7-image-verify-nodes ->
+storage-bootstrap -> storage-hardening-check -> namespace-apply ->
+secret-bootstrap -> gateway-apply -> day7-deploy ->
+ambient-workload-check -> rollout-check -> day7-running-images ->
+gateway-check -> mesh-check ->
+networkpolicy-check -> day7-baseline-init -> state-check ->
+day7-baseline -> day7-blue-green -> day7-stable-check -> day7-canary ->
+day7-stable-check -> day7-recreate -> day7-stable-check ->
+day7-final-gate
+```
+
+`day7-final-gate` = `cni-status -> context-check -> mesh-status ->
+ambient-workload-check -> rollout-check -> day7-running-images ->
+gateway-check -> mesh-check -> networkpolicy-check -> final-state-check
+-> day7-final-state-check`.
+After a host/WSL/Docker restart, `make day7-resume-check` re-proves
+Cilium, context, mesh and per-Pod ambient listeners **before** rollout
+readiness is trusted, then which build every container runs
+(`day7-running-images`). `day7-final-state-check` verifies Helm values and
+manifest digest, no candidate leftovers, gateway 3/3, app 3/3, state
+1/1 with unchanged UIDs **and generations**, the route (baseline UID)
+and Gateway current, external stable responses and a wrong-Host 404,
+storage identities, and no leaked probes, port-forwards or helm
+processes; `final-state-check` (run just before it) verifies the
+`/state` value and PVC/PV identities against the suite baseline.
+`day7-stable-check` (read-only, independent of the experiment's own
+restoration) runs after each of the three experiments.
+
+**The Day 7 gate never depends on older clusters.** Under the Day 7
+profile `final-state-check` does not list or contact any older kind
+cluster (the Day 6 profile keeps its unchanged Day 1-5 existence
+check), so the gate passes on a healthy Day 7 cluster whether older
+clusters run, are stopped, or are absent. History is checked
+separately by the optional `make day7-history-audit`: Git/static
+integrity (`v0.6.0` peels to `19d6b28`; frozen sources identical to
+`v0.6.0`; Day 1-6 records identical to the post-release commit
+`74832c4`, since PR #9 added the Day 6 post-release record after the
+tag; workload sources identical to `v0.6.0`) plus, existence-only,
+`kind get clusters`. It is in no gate.
+
+**Dry runs.** GNU make executes recipe lines that reference `$(MAKE)`
+even under `make -n`, so the lock wrappers used to run (and create
+their lock file) during a dry run. The lock prefix is now empty when
+make's own flags contain `n`; nested makes inherit `-n` and only print.
+Real runs always resolve the real lock (tested). `make day7-plan`
+(`scripts/make_sequence.py`) prints the sequence from the Makefile text
+without running anything.
+
+### Post-reboot recovery of ambient enrollment (manual, owner-approved)
+
+After the 2026-09-29 host reboot Docker Desktop auto-restarted every
+kind node container; three Day 7 Pods on one worker came back without
+ztunnel in-Pod listeners (the restarted istio-cni agent's startup
+reconcile ran before their sandboxes had a netns and only sent `keep`
+to ztunnel - the missing-conflist step is inference). The procedure
+that was used, and is the only one documented:
+
+1. `MAOPS_CLUSTER_PROFILE=day7 PATH=/usr/bin:$PATH make
+   day7-resume-check` - it stops at `ambient-workload-check` naming the
+   Pods without listeners. A failed check is evidence; change nothing.
+2. Read-only reproduction capture: Pod UIDs, nodes, container/image IDs,
+   listeners, `/readyz` responses, events, and the istio-cni/ztunnel
+   logs since boot (kept under `~/.local/state/.../day7-logs/`).
+3. With the owner's approval only: delete **one** affected stateless
+   gateway/app Pod at a time, after re-verifying it is still the
+   identified Pod (UID) owned by ReplicaSet -> the expected Deployment,
+   still unready and still without listeners; wait for the controller's
+   replacement and require a different UID, listeners
+   15001/15006/15008, Ready (still Ready 10s later), and all other
+   workloads unchanged; stop on any failure. Never recreate
+   `maops-state-0`, restart Istio/Cilium/Docker, or delete the cluster
+   for this. There is no Make target for this step (the 2026-09-29
+   recovery used a one-off helper kept only with the private evidence);
+   the manual equivalent, per Pod:
+
+   ```bash
+   K="kubectl --kubeconfig $HOME/.kube/maops-k8s-day7.config --context kind-maops-k8s-day7 -n maops-platform"
+   POD=<identified pod>; UID_EXPECTED=<its recorded uid>
+   $K get pod "$POD" -o jsonpath='{.metadata.uid} {.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}{"\n"}'
+   # must print $UID_EXPECTED ReplicaSet/<a maops-gateway-* or maops-app-* ReplicaSet>; stop otherwise
+   $K get rs <that ReplicaSet> -o jsonpath='{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}{"\n"}'
+   # must print Deployment/maops-gateway or Deployment/maops-app - never a StatefulSet
+   make CLUSTER_NAME=maops-k8s-day7 KUBECONFIG_PATH=$HOME/.kube/maops-k8s-day7.config ambient-workload-check
+   # must still report $POD without listeners
+   $K delete pod "$POD" --wait=false
+   $K get pods -w   # until the new Pod from the same ReplicaSet is Ready (Ctrl-C when it is)
+   make CLUSTER_NAME=maops-k8s-day7 KUBECONFIG_PATH=$HOME/.kube/maops-k8s-day7.config ambient-workload-check
+   # the replacement must have 15001/15006/15008 before the next Pod
+   ```
+4. Re-run `day7-resume-check` (it then includes `day7-running-images`).
+
+Recovery alone proves neither the ambient cause nor the image mechanism
+(a replacement runs whatever its pinned - or, before pinning, mutable -
+tag resolves to).
+
+### What Day 7 does not claim (accepted limits)
+
+Production readiness (no HA, no load balancer, no TLS, no autoscaling -
+Day 8); a different application release (0.7.0 images are rebuilds of
+the unchanged v0.6.0 sources; the candidate is a configuration variant);
+per-version mesh identity (stable and candidate share one principal);
+exact traffic percentages from a finite sample; zero-downtime Recreate
+(the gating run observed a ~41 s planned outage); that a PDB protects a
+Recreate rollout; layer attribution of the mesh-path denials (mesh-check
+remains the AuthorizationPolicy-layer evidence for stable workloads;
+the validation-client -> candidate denial is proven live at the Cilium
+NetworkPolicy layer only); a live upgrade onto *different* image bytes
+(proven statically; live runs proved a pinned fresh install and a
+reference-only rollout); automated post-reboot mesh-enrollment recovery;
+coexistence with running Day 1-6 clusters (they were stopped); data or
+Secret continuity across cluster recreation; or reliability beyond one
+successful fresh creation on one host.
+
+## DAY7: live validation record
+
+**Gating run: `6b0029cc63724291a00bba6ed52ea7a9` (2026-09-30, fresh
+cluster, make exit 0).** Full evidence, including every earlier run and
+failed attempt:
+[`docs/engineering-reviews/day-07-live-validation-record.md`](engineering-reviews/day-07-live-validation-record.md).
+
+| Gate | Result |
+|---|---|
+| Freshness | `kind create` ran; new node containers; app release from REVISION 1; new namespace/PVC/PV |
+| Build | `fdb68741...` (gateway `62df7c01...`, app `b035e264...`, state `aafa33a4...`), pinned in every stage; candidate image + digest verified before every route change |
+| Blue/Green | 143/143 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 55/55 |
+| Canary | 212/212 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 55/55 (179 stable / 21 candidate of 200, 0 errors) |
+| Recreate (candidate only) | 182/182 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 55/55 (162 failed requests over ~41 s - planned) |
+| `day7-final-gate` | cni 4/4, context 6/6, mesh-status 4/4, ambient 67/67, rollout 35/35, running images 47/47, gateway 8/8, mesh 45/45, NetworkPolicy 37/37, final-state 38/38, Day 7 final 86/86 |
+
+Other runs (all preserved in the record): `ce55f5fb...` (one-shot on the
+existing cluster - PASS, exposed the image-contract defect), the live
+validation-client probe (PASS), `c252aa3d...` (pinned rollout; its first
+running-image gate FAILED on a checker assumption, corrected, then PASS),
+`5750593984...` (FAILED at `day7-image-load` - Makefile profile defect,
+fixed), `985c466a...` (existing cluster, PASS). The first staged run
+follows, unchanged.
+
+### First staged run (historical)
+
+Run `dd99769f587d4a869628d51b9725b458`, 2026-09-28, on
+`maops-k8s-day7` with the Day 7 implementation unstaged at HEAD
+`74832c4`. Full table, per-strategy evidence and history:
+[`docs/engineering-reviews/day-07-live-validation-record.md`](engineering-reviews/day-07-live-validation-record.md).
+Private evidence: `~/.local/state/maops-kubernetes-platform/day7-logs/dd99769f587d4a869628d51b9725b458/`
+(step logs) and `~/.local/state/maops-kubernetes-platform/day7-runs/dd99769f587d4a869628d51b9725b458/`
+(baselines, 0700/0600, unchanged after the run).
+
+| Gate | Result |
+|---|---|
+| Blue/Green | 83/83 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 8/8 |
+| Canary | 105/105 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 8/8 |
+| Recreate (candidate only) | 107/107 - PRIMARY PASS, RESTORATION PASS; `day7-stable-check` 8/8 |
+| `day7-final-gate` | cni 4/4, context 6/6, mesh-status 4/4, ambient 67/67, rollout 35/35, gateway 8/8, mesh 45/45, NetworkPolicy 37/37, final-state 38/38, Day 7 final 39/39 |
+
+- **Canary:** 200 successful requests, 185 stable / 15 candidate, 0
+  errors - a finite observation, not an exact 90/10 distribution; the
+  unready candidate was refused at the readiness gate with no path probe.
+- **Recreate:** observed interruption of 160 failed requests between
+  t=5.1 s and t=45.8 s, then recovery; old Pods last seen at t=34.8 s,
+  first new Pod at t=35.9 s in 50 samples ~0.5 s apart - consistent with
+  the controller's Recreate ordering, which sampling cannot prove.
+- **Path checks** (enforced before every promotion): allowed paths HTTP
+  200; denied paths no HTTP response (`reset`) from verified, ready
+  destinations - reachability outcomes, not layer attribution.
+- **Failed gates, kept as history:** `cni-status` 3/4 at 09:33:21 (1/3
+  nodes Ready; both workers Ready at 09:33:25) - re-run 4/4 at 09:48:53;
+  the cold-start race is now closed by `day7-nodes-ready` (a bounded
+  Day 7-only wait before the unchanged single-snapshot `cni-status`,
+  also the first step of `day7-resume-check`), verified read-only
+  against the already-Ready cluster only.
+- **Final-check count:** "39/39" counts 39 distinct assertions; two leak
+  lines were printed twice in the run's output (fixed afterwards). Two
+  `day7-preflight` rechecks failed 12/13 (MemAvailable 3.0 and 3.2 GiB)
+  after the Day 6 containers were started externally at 09:47:11; after
+  the operator explicitly stopped them (10:38:13), preflight passed
+  13/13 (5.0 GiB).
+- **Day 6:** its containers were already stopped (exit 137, 09:22:13,
+  cause unconfirmed) before the run; the automated run never started,
+  stopped, modified or contacted Day 6; stopping it at 10:38 was the
+  operator's explicit, one-time action.
+
+**Second run - one-shot `make day7-check` on the existing cluster**
+(run `ce55f5fb51614b419d0ed4264afb7e79`, 2026-09-28 15:31-15:56, exit 0).
+The cluster was reused, so this is not proof of a fresh-cluster start.
+Every gate passed with the same strategy counts: Blue/Green 83/83,
+Canary 105/105, Recreate 107/107 (each PRIMARY and RESTORATION PASS,
+`day7-stable-check` 8/8), then the final gate (final-state 38/38, Day 7
+final 39/39). Afterwards, the optional `make
+day7-validation-client-probe` passed 84/84 (PRIMARY and RESTORATION):
+- A same-source positive control reached the ingress Gateway (HTTP 200).
+- There was no HTTP response from the candidate, correlated with 8
+  Cilium `Policy denied` drops from the probe Pod to both candidate
+  Pods on :8080, with source and destination identities resolved.
+- This proves the NetworkPolicy layer; AuthorizationPolicy is not
+  reached on this path.
+
+**Image-contract gap found in this run:** the stable gateway/app/state
+Pods were not running this run's images. `image-build` produced new
+config digests, and `day7-image-verify-nodes` proved every node held
+them. But `day7-deploy` was a no-op Helm upgrade (same `:0.7.0` tag, no
+template change), so nothing rolled out. The stable Pods, created in the
+first run, kept the first run's images, which remained on the nodes
+untagged. Only Pods created during the experiments (the candidates) ran
+the new build. No Day 7 gate compares running Pods' image IDs with the
+loaded images, so this passed unnoticed. Full detail is in the live
+record.

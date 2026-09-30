@@ -47,7 +47,7 @@ import kube
 from http_checks import is_nonempty_identity
 from kube import CONTEXT
 
-NAMESPACE = "maops-day4-storage-hardening"
+NAMESPACE = kube.STORAGE_HARDENING_NAMESPACE  # DAY7: profile-driven (Day 6 profile keeps the Day 4 name)
 PVC_NAME = "storage-hardening-data"
 POSITIVE_POD = "storage-hardening-positive"
 NEGATIVE_POD = "storage-hardening-negative"

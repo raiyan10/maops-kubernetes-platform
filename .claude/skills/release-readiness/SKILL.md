@@ -15,8 +15,8 @@ say so directly.
 
 1. **VERSION file.** Exact match to the day's target version (current
    RELEASED baseline: `0.6.0` for Day 6, released 2026-09-25 as a local
-   kind reference platform; the next target is `1.0.0` for Day 7, not
-   yet started; use whatever
+   kind reference platform; the current target is `0.7.0` for Day 7
+   (release candidate), then `1.0.0` for Day 8; use whatever
    `docs/roadmap.md` names for the day actually under review) -
    `cat VERSION` and compare byte-for-byte (no trailing newline
    surprises, no `v` prefix). Also re-run `make version-check` and
@@ -83,9 +83,10 @@ say so directly.
    `docs/architecture.md` describes the probes/resources/security/
    identity/network/scheduling/rollout/PDB/storage fields that are
    actually deployed; `docs/roadmap.md` still contains the intact
-   seven-stage plan (Day 1 v0.1.0 through Day 7 v1.0.0), with each day's
-   status accurately marked (released/frozen, in development, or
-   future) - unless the user explicitly asked to change it.
+   eight-stage plan (Day 1 v0.1.0 through Day 7 v0.7.0 and Day 8
+   v1.0.0), with each day's status accurately marked (released/frozen,
+   release candidate / gate passed, in development, or future) - unless
+   the user explicitly asked to change it.
 7. **Scope boundaries.** Nothing from a later day leaked in early, and
    nothing required for the current day is missing. As of the frozen
    `v0.5.0` baseline, `k8s/base` should still show dedicated
@@ -104,9 +105,12 @@ say so directly.
    `k8s/base` and the Helm chart, or between the Helm chart and
    `k8s/day6/`; an Ingress object or second ingress controller; a
    waypoint proxy or Cilium L7 policy; an unpinned infrastructure
-   version. Nothing from Day 7 should appear yet:
-   `HorizontalPodAutoscaler`, Argo Rollouts, or a Recreate/Blue-Green/
-   Canary deployment strategy demonstration. Generic evergreen
+   version. For a Day 6 review, nothing from Day 7 should appear
+   (a Recreate/Blue-Green/Canary demonstration); for a Day 7 review the
+   gateway candidate, `routing.mode`, the `helm-values/day7/` stages
+   and the build-pinning/running-image contract are required, while
+   nothing from Day 8 may appear: `HorizontalPodAutoscaler`, Argo
+   Rollouts, or other autoscaling/final-hardening work. Generic evergreen
    exclusions at any day: an observability stack, TLS/cert-manager, a
    cloud LoadBalancer, Terraform/Ansible/Argo CD files, and
    cloud-provisioning code. A *committed Secret object* is still always
@@ -130,3 +134,30 @@ deferred to a later day (name the day/version it belongs to per
 **ready for independent review** - never that it has been released,
 shipped, tagged, or merged. If any item fails, say so plainly and do not
 round up to "ready."
+
+## Day 7 (v0.7.0) specifics
+
+- VERSION/chart/appVersion/image tags must be `0.7.0`
+  (`make version-check` runs the Day 7 release checks); Day 6 `v0.6.0`
+  must remain released and its tag unmoved.
+- Static evidence: `make ci-check` run through the cluster-blocking
+  shim with 0 blocked calls (it renders every `helm-values/day7/` stage
+  with a synthetic build overlay and proves a stage without one is
+  refused). Live evidence: one uninterrupted `make day7-check` whose
+  make exit status is recorded directly, ending in `day7-final-gate`
+  with the run's own baselines - each experiment's PRIMARY and
+  RESTORATION results must both be PASS, and `day7-running-images`
+  must prove every running container is on the recorded pinned build.
+- The local Kind gate passed on a FRESH cluster in run
+  `6b0029cc63724291a00bba6ed52ea7a9` (kind create ran, new node
+  containers, app release from REVISION 1, new namespace/PVC/PV). A run
+  that reused a cluster is never evidence of a fresh start.
+- "GATE PASSED" means the local Kind reference platform only; PR,
+  merge, merged-main validation and `v0.7.0` publication are separate,
+  later steps this skill never performs or implies.
+- Docs must state the candidate is a configuration variant sharing the
+  stable ServiceAccount/Istio principal, that Recreate has a planned
+  outage, that Canary weights are observed not exact, the accepted
+  limits (docs/engineering-reviews/day-07-final-adjudication.md), and
+  that Day 8 (`v1.0.0`) owns autoscaling/final hardening. No
+  production-readiness claim.

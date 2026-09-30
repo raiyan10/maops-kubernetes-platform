@@ -1,0 +1,23 @@
+{{- if .Values.candidate.enabled }}
+# DAY7: the candidate's own ClusterIP Service. Its selector keys on
+# component=gateway-candidate, so it can only ever select candidate
+# Pods; service/maops-gateway (component=gateway) can never select them.
+# Same port name/number as service/maops-gateway, so the HTTPRoute uses
+# one backend port for both backends.
+apiVersion: v1
+kind: Service
+metadata:
+  name: maops-gateway-candidate
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.containerPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

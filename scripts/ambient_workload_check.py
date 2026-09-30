@@ -286,7 +286,7 @@ def check_workload(workload: Workload) -> bool:
 
 def main() -> int:
     results.clear()
-    print(f"# Day 6 ambient workload check: per-Pod ztunnel listeners (context {kube.CONTEXT}, namespace {kube.NAMESPACE})")
+    print(f"# Day {kube.PROFILE_DAY} ambient workload check: per-Pod ztunnel listeners (context {kube.CONTEXT}, namespace {kube.NAMESPACE})")
     try:
         kube.verify_context()
     except RuntimeError as exc:

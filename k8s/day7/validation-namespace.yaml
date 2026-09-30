@@ -1,0 +1,21 @@
+# DAY7: the isolated maops-k8s-day7 cluster's copy of k8s/day6/validation-namespace.yaml.
+#
+# Same spec as the Day 6 file (which stays unchanged and documents the
+# full design rationale); only the identities Day 7 creates differ:
+# app.kubernetes.io/instance maops-kubernetes-platform-day7, version
+# 0.7.0, and the Day 7 validation namespace maops-day7-validation.
+# Genuinely shared, per-cluster names (maops-platform, maops-ingress,
+# maops-edge, maops-diagnostics, NodePort 30080) are unchanged - each
+# kind cluster has its own. Applied only via the Day 7 profile
+# (`make day7-check` / DAY7_MAKE -> PLATFORM_K8S=k8s/day7).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: maops-day7-validation
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day7
+    app.kubernetes.io/version: "0.7.0"
+    app.kubernetes.io/component: validation
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl

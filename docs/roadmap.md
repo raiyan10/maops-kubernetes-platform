@@ -1,7 +1,9 @@
 # Roadmap
 
-`maops-kubernetes-platform` is built in seven day-scoped stages, each
-producing a tagged version. Every stage only introduces what its own
+`maops-kubernetes-platform` is built in eight day-scoped stages, each
+producing a tagged version. (The plan originally had seven stages, with
+Day 7 as `v1.0.0`; Day 7 is now `v0.7.0` - deployment strategies - and
+the autoscaling/final-hardening `v1.0.0` release moved to Day 8.) Every stage only introduces what its own
 scope calls for - later capabilities are deliberately deferred, not
 because they're hard, but so each stage's Kubernetes behavior can be
 demonstrated and reviewed in isolation.
@@ -14,7 +16,8 @@ demonstrated and reviewed in isolation.
 | 4 | v0.4.0 | StatefulSet, PVC, persistence/recovery |
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
 | 6 | v0.6.0 | Helm, CI, automated kind validation, service mesh |
-| 7 | v1.0.0 | Advanced deployment strategies (Recreate, Blue-Green, Canary), production-readiness hardening, independent reviews, final release |
+| 7 | v0.7.0 | Advanced deployment strategies (Recreate, Blue/Green, Canary) on the Helm/Gateway API/Istio ambient platform, on a separate kind cluster - **release candidate: local Kind gate passed, not yet released** |
+| 8 | v1.0.0 | Autoscaling and final production-readiness hardening, independent reviews, final release |
 
 ## Day 1 / v0.1.0 - Kubernetes foundation
 
@@ -284,16 +287,75 @@ adjudicated RELEASE READY as a local kind reference platform and then
 released as `v0.6.0` the same day, after PR #8 merged the release-gate
 documentation. The cause of the lost listeners remains unproven.
 
-## Day 7 / v1.0.0 - Advanced deployment strategies, production-readiness hardening
+## Day 7 / v0.7.0 - Advanced deployment strategies (Recreate, Blue/Green, Canary)
 
-**FUTURE - not yet implemented.** Advanced deployment strategy
-demonstrations - Recreate, Blue-Green, and Canary - compared against
-Day 3's RollingUpdate; independent review passes across architecture,
-security, and testing; closing gaps found; final hardening pass; final
-tagged `v1.0.0` release. Argo Rollouts is explicitly never introduced in
-this project - the advanced-strategy demonstrations use native
-Kubernetes primitives only. Service mesh is Day 6 scope, not Day 7 -
-Day 7 builds on the mesh Day 6 introduces rather than introducing it.
+**RELEASE CANDIDATE - local Kind gate PASSED (2026-09-30); not yet
+released.** The gating run was one uninterrupted `make day7-check` on a
+**freshly created** `maops-k8s-day7`:
+- **Run:** `6b0029cc63724291a00bba6ed52ea7a9`, make exit 0.
+- **Freshness:** `kind create` ran; new node containers; the app
+  release started at revision 1; new namespace, PVC and PV.
+- **Strategies:** Blue/Green 143/143, Canary 212/212 and Recreate
+  182/182, each PRIMARY PASS and RESTORATION PASS, under one pinned
+  build (`fdb68741...`).
+- **Stable checks:** an independent stable check (55/55) after each
+  experiment, then the final gate (Day 7 final checks 86/86).
+
+Still pending: the PR, merge, merged-`main` validation, and publication
+of `v0.7.0`. The evidence, including every earlier run and failed
+attempt, is in:
+- `docs/engineering-reviews/day-07-live-validation-record.md`;
+- `docs/engineering-reviews/day-07-final-adjudication.md`;
+- `docs/engineering-reviews/day-07-independent-reviews.md`.
+
+Day 6 `v0.6.0` is released and unchanged. Day 7 does not claim
+production readiness.
+
+Demonstrates Recreate, Blue/Green and Canary on the existing Helm +
+Gateway API + Istio ambient platform, with native primitives only (no
+Argo Rollouts, no VirtualService, no second Gateway/HTTPRoute, no
+waypoint, no Ingress):
+
+- **Gateway candidate:** an OPTIONAL, label-isolated candidate
+  (`maops-gateway-candidate`, `component=gateway-candidate`), disabled
+  by default. It is a configuration variant of the same gateway image
+  (distinct `APP_MESSAGE`) that shares the stable gateway's
+  ServiceAccount, and therefore its Istio principal, with its own
+  candidate-only NetworkPolicies and AuthorizationPolicy.
+- **One HTTPRoute:** explicit `routing.mode` = `stable` | `candidate` |
+  `weighted` (integer weights 1-99 summing to 100), enforced by the
+  values schema and a template guard.
+- **Explicit Helm stages:** stage files in `helm-values/day7/`, always
+  `--reset-values -f <stage> -f <verified build overlay>`. A live
+  candidate preflight gate, including the candidate's pinned image and
+  running config digest, must pass before any traffic moves. The
+  experiments are bounded, each with a verified restoration (`make
+  day7-blue-green`, `day7-canary`, `day7-recreate`), followed by a
+  baseline-backed final gate.
+- **Build pinning:** each image is tagged
+  `<repo>:0.7.0-cfg-<config digest>`, and the chart refuses a Day 7
+  stage without these tags. `make day7-running-images` maps every
+  running container's imageID to the build's config digest.
+- **Separate cluster:** a pinned kind cluster, `maops-k8s-day7`
+  (`kind/cluster-day7.yaml`, host port 18081), separate from the
+  released Day 6 cluster. No Day 7 target ever stops, deletes or
+  deploys to Day 6.
+
+Recreate is demonstrated on the candidate Deployment only, with a
+planned outage for traffic routed to it: about 40 s in the gating run.
+The stable gateway keeps RollingUpdate, and no experiment touches the
+state StatefulSet. See `docs/architecture.md`, "DAY7: deployment
+strategies (v0.7.0, release candidate)", for the full design, evidence
+rules, accepted limits and non-claims.
+
+## Day 8 / v1.0.0 - Autoscaling and final production-readiness hardening
+
+**FUTURE - not yet implemented.** Autoscaling (the platform has no
+metrics pipeline or HPA today - istiod's own HPA is deliberately
+disabled), final hardening, independent review passes across
+architecture, security, and testing, closing the gaps they find, and
+the final tagged `v1.0.0` release. Argo Rollouts is never introduced in
+this project.
 
 ## Explicitly out of scope for this project
 

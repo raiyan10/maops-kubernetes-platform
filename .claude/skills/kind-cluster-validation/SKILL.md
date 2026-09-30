@@ -330,3 +330,55 @@ assertions to force a pass.
   independent review. If host resource pressure requires freeing
   capacity, stop a superseded earlier-day cluster before stopping the
   current one.
+
+## Day 7 (v0.7.0 release candidate - local Kind gate passed, fresh-cluster run `6b0029cc...`) - the isolated `maops-k8s-day7` cluster
+
+- Day 7 live work targets ONLY `maops-k8s-day7` (host `127.0.0.1:18081`)
+  through the `day7-*` Makefile targets / `DAY7_MAKE`; scripts run with
+  `MAOPS_CLUSTER_PROFILE=day7` and refuse any other profile. Never stop,
+  recreate, delete or deploy to `maops-k8s-day6`. Run `make
+  day7-preflight` (read-only: port, Docker, clusters, WSL headroom)
+  before creating anything.
+- Every chart change is a Helm stage (`--reset-values -f
+  helm-values/day7/<stage>.yaml -f <verified build overlay>`; the chart
+  refuses a Day 7 stage without the overlay); never `kubectl patch`
+  chart-owned objects, never `--reuse-values`, never `rollout restart`. Route-changing stages only go
+  through the candidate preflight gate.
+- Routing proof = live HTTPRoute backendRefs + Accepted/ResolvedRefs for
+  the CURRENT generation + real external requests; cleanup proof =
+  explicit absence of every candidate-only object. A Helm exit code or
+  `rollout status` is never proof on its own.
+- Canary evidence is counts from a bounded sample (both versions seen,
+  zero errors) - never an exact percentage. Recreate interruption is
+  reported only if sampled; otherwise say sampling missed it.
+- Images: `image-build` -> `day7-image-verify-local` ->
+  `day7-build-record` -> `image-load` + `day7-image-load` (Day 7 cluster
+  only) -> `day7-image-verify-nodes` must all pass before `day7-deploy`,
+  which carries the verified build overlay (`<version>-cfg-<config
+  digest>` tags); then `day7-running-images` must prove every running
+  gateway/app/state (and candidate) container runs that build - a node
+  holding the right image is not proof of what runs. Compare CONFIG digests (docker save vs node crictl),
+  never `docker inspect .Id`.
+- Day 7 gates never require older kind clusters; `make
+  day7-history-audit` is optional. Inspect sequences with `make
+  day7-plan` (read-only).
+- After a restart: `make day7-resume-check` (node-Ready wait -> Cilium ->
+  context -> mesh -> per-Pod ambient listeners -> rollout -> running
+  images -> routing), and re-check a run with `make day7-final-gate
+  DAY7_RUN_ID=<run>` - never recapture a missing baseline.
+- If `ambient-workload-check` reports Pods WITHOUT ztunnel in-Pod
+  listeners after a restart (the 2026-09-29 istio-cni startup-reconcile
+  race), capture the reproduction read-only first (Pod UIDs, nodes,
+  listeners, `/readyz`, events, istio-cni/ztunnel logs); recover only
+  with the owner's approval, only stateless gateway/app Pods, one at a
+  time, verifying owner chain + identity before each delete and a
+  new-UID Ready replacement with listeners after it. Never recreate
+  `maops-state-0`, restart Istio/Cilium, or delete the cluster for this.
+  A replacement picks up whatever the pinned (or, pre-pinning, mutable)
+  tag resolves to - recovery alone proves neither the ambient cause nor
+  the image mechanism.
+- Fresh-cluster proof requires: a real `kind create`, new node container
+  IDs, the app release starting at REVISION 1, and new namespace/PVC/PV
+  UIDs (docs/engineering-reviews/day-07-fresh-cluster-plan.md). Deleting
+  `maops-k8s-day7` destroys its PVC/PV data (anonymous node volumes,
+  reclaim Delete) - never claim a bound PVC survives `kind delete`.

@@ -1,0 +1,40 @@
+# DAY7: the isolated maops-k8s-day7 cluster's copy of k8s/day6/gateway.yaml.
+#
+# Same spec as the Day 6 file (which stays unchanged and documents the
+# full design rationale); only the identities Day 7 creates differ:
+# app.kubernetes.io/instance maops-kubernetes-platform-day7, version
+# 0.7.0, and the Day 7 validation namespace maops-day7-validation.
+# Genuinely shared, per-cluster names (maops-platform, maops-ingress,
+# maops-edge, maops-diagnostics, NodePort 30080) are unchanged - each
+# kind cluster has its own. Applied only via the Day 7 profile
+# (`make day7-check` / DAY7_MAKE -> PLATFORM_K8S=k8s/day7).
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: maops-edge
+  namespace: maops-ingress
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day7
+    app.kubernetes.io/version: "0.7.0"
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  gatewayClassName: istio
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: maops-edge-gateway-values
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: maops.local
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: maops-platform

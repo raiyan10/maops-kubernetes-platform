@@ -1,0 +1,33 @@
+# DAY7: the isolated maops-k8s-day7 cluster's copy of k8s/day6/cilium-ambient-probe-policy.yaml.
+#
+# Same spec as the Day 6 file (which stays unchanged and documents the
+# full design rationale); only the identities Day 7 creates differ:
+# app.kubernetes.io/instance maops-kubernetes-platform-day7, version
+# 0.7.0, and the Day 7 validation namespace maops-day7-validation.
+# Genuinely shared, per-cluster names (maops-platform, maops-ingress,
+# maops-edge, maops-diagnostics, NodePort 30080) are unchanged - each
+# kind cluster has its own. Applied only via the Day 7 profile
+# (`make day7-check` / DAY7_MAKE -> PLATFORM_K8S=k8s/day7).
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: maops-allow-ambient-health-probes
+  labels:
+    app.kubernetes.io/name: maops-kubernetes-platform
+    app.kubernetes.io/instance: maops-kubernetes-platform-day7
+    app.kubernetes.io/version: "0.7.0"
+    app.kubernetes.io/part-of: maops-kubernetes-platform
+    app.kubernetes.io/managed-by: kubectl
+spec:
+  description: "Allow Istio ztunnel's SNAT'd (169.254.7.127, IPv4-only - this cluster has no IPv6 stack) kubelet health-probe traffic to reach maops-kubernetes-platform workload container ports (8080) under ambient mode + Cilium default-deny NetworkPolicy. Narrowly scoped to maops-platform namespace + this project's own workload label only."
+  endpointSelector:
+    matchLabels:
+      k8s:io.kubernetes.pod.namespace: maops-platform
+      app.kubernetes.io/part-of: maops-kubernetes-platform
+  ingress:
+    - fromCIDR:
+        - "169.254.7.127/32"
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP

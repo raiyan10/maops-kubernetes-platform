@@ -1,0 +1,30 @@
+{{- if and .Values.candidate.enabled .Values.meshPolicy.enabled }}
+# DAY7: the candidate needs its OWN ALLOW policy. maops-gateway-authz
+# selects component=gateway only; an ambient workload that no ALLOW
+# policy selects accepts ANY authenticated mesh identity - so without
+# this object the candidate would be reachable in-mesh by, e.g., maops-app
+# or any other enrolled workload. Same single allowed principal as the
+# stable gateway: the Istio ingress Gateway's ServiceAccount.
+#
+# The candidate's OUTBOUND identity is shared with stable
+# (serviceAccountName maops-gateway), so maops-app-authz already admits
+# candidate -> app, and maops-state-authz already denies candidate ->
+# state; no change to either policy is needed or made.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: maops-gateway-candidate-authz
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway-candidate") | nindent 6 }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ include "maops.principal" (dict "namespace" .Values.routing.gateway.namespace "serviceAccount" .Values.routing.gateway.serviceAccountName) }}
+{{- end }}
