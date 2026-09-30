@@ -81,6 +81,17 @@ EXPECTED_MIN_AVAILABLE = 2
 EXPECTED_STATE_CLAIM_STORAGE = "256Mi"
 OTHER_DAY_CLUSTERS = ["maops-k8s-day1", "maops-k8s-day2", "maops-k8s-day3", "maops-k8s-day4", "maops-k8s-day5"]
 
+
+def older_cluster_existence_required() -> bool:
+    """DAY7 remediation: the older-cluster existence check is part of the
+    Day 6 profile's final gate only (unchanged Day 6 behavior). Under the
+    Day 7 profile this operational gate must pass on a healthy Day 7
+    cluster whether or not older kind clusters are running, stopped or
+    absent - so it never lists or contacts them. Older-cluster existence
+    is available separately, explicitly optional, via `make
+    day7-history-audit` (scripts/day7_history_audit.py)."""
+    return kube.PROFILE == "day6"
+
 results: list[tuple[bool, str]] = []
 
 
@@ -310,7 +321,7 @@ def check_suite_state_baseline_restored() -> None:
     record(
         matches,
         f"suite-level state baseline restored: independent GET /state matches the run {run_id!r} baseline "
-        f"captured before any Day 6 mutating experiment (value={actual_value!r}, expected {baseline['value']!r})"
+        f"captured before any Day {kube.PROFILE_DAY} mutating experiment (value={actual_value!r}, expected {baseline['value']!r})"
         + (f", schema error: {err}" if not ok else ""),
     )
 
@@ -362,7 +373,7 @@ def check_no_leaked_port_forwards() -> None:
         for line in result.stdout.splitlines()
         if "kubectl" in line and "port-forward" in line and kube.CONTEXT in line and kube.NAMESPACE in line
     ]
-    record(not leaked, f"no leaked Day 6 ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
+    record(not leaked, f"no leaked Day {kube.PROFILE_DAY} ({kube.CONTEXT}/{kube.NAMESPACE}) kubectl port-forward processes (found {len(leaked)}: {leaked})")
 
 
 def check_no_leaked_mesh_probe_namespace() -> None:
@@ -452,7 +463,7 @@ def check_other_day_clusters_still_exist() -> None:
 
 
 def main() -> int:
-    print(f"# Day 6 final restored-state validation against context {kube.CONTEXT}")
+    print(f"# Day {kube.PROFILE_DAY} final restored-state validation against context {kube.CONTEXT}")
     try:
         kube.verify_context()
     except RuntimeError as exc:
@@ -479,7 +490,10 @@ def main() -> int:
     check_no_leaked_port_forwards()
     check_no_leaked_mesh_probe_namespace()
     check_no_leaked_networkpolicy_probe_pods()
-    check_other_day_clusters_still_exist()
+    if older_cluster_existence_required():
+        check_other_day_clusters_still_exist()
+    else:
+        print(f"[INFO] older kind clusters are not part of the {kube.PROFILE} final gate (not listed, not contacted); see `make day7-history-audit`")
 
     all_results = results + scheduling_check.results
     failures = [m for ok, m in all_results if not ok]
@@ -488,7 +502,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} final-state check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: Day 6 cluster fully restored to its normal healthy baseline state")
+    print(f"PASS: Day {kube.PROFILE_DAY} cluster fully restored to its normal healthy baseline state")
     return 0
 
 

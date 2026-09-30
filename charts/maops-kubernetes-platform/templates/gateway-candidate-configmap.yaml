@@ -1,0 +1,26 @@
+{{- if .Values.candidate.enabled }}
+# DAY7: the OPTIONAL gateway candidate's own ConfigMap. Every key is
+# rendered from the SAME values as maops-gateway-config except
+# APP_MESSAGE, which comes from candidate.config.appMessage and must
+# differ from the stable message (enforced by
+# "maops.validateDay7State"). The distinct message is what identifies a
+# candidate response externally - this is a configuration variant of the
+# same gateway image, not a different application release.
+# BACKEND_HOST/BACKEND_PORT stay maops-app:8080: gateway/server.py's
+# in-process allowlist refuses any other target.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maops-gateway-candidate-config
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+data:
+  BACKEND_HOST: "maops-app"
+  BACKEND_PORT: {{ .Values.app.containerPort | quote }}
+  BACKEND_TIMEOUT_SECONDS: {{ .Values.gateway.config.backendTimeoutSeconds | quote }}
+  APP_NAME: {{ .Values.gateway.config.appName | quote }}
+  APP_ENVIRONMENT: {{ .Values.gateway.config.appEnvironment | quote }}
+  APP_MESSAGE: {{ .Values.candidate.config.appMessage | quote }}
+  APP_LOG_LEVEL: {{ .Values.gateway.config.appLogLevel | quote }}
+{{- end }}

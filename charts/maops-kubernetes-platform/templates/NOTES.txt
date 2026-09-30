@@ -1,4 +1,10 @@
-maops-kubernetes-platform ({{ .Chart.AppVersion }}) - Day 6 - has been installed/upgraded.
+{{- /* Day 7 mode is inferred from build.requirePinnedTags, which every
+helm-values/day7 stage sets (and the chart refuses an unpinned Day 7
+stage); the Day 6 defaults keep it false. */ -}}
+{{- $day7 := and .Values.build .Values.build.requirePinnedTags -}}
+{{- $cluster := ternary "maops-k8s-day7" "maops-k8s-day6" (not (not $day7)) -}}
+{{- $port := ternary "18081" "18080" (not (not $day7)) }}
+maops-kubernetes-platform ({{ .Chart.AppVersion }}) - {{ if $day7 }}Day 7 stage (pinned build){{ else }}Day 6{{ end }} - has been installed/upgraded.
 
 Release:    {{ .Release.Name }}
 Namespace:  {{ .Release.Namespace }}
@@ -13,12 +19,21 @@ Helm charts applied separately (see k8s/day6/ and the Makefile's
 cni-install/gateway-api-install/mesh-install targets).
 
 Check rollout status (explicit kubeconfig/context, as the Makefile uses):
-  kubectl --kubeconfig ~/.kube/maops-k8s-day6.config --context kind-maops-k8s-day6 \
+  kubectl --kubeconfig ~/.kube/{{ $cluster }}.config --context kind-{{ $cluster }} \
     -n {{ .Release.Namespace }} get deployment,statefulset
 
 Reach the application through its normal entry point, the Istio
-ingress Gateway (kind maps host 127.0.0.1:18080 to its NodePort):
-  curl -H "Host: {{ .Values.routing.hostname }}" http://127.0.0.1:18080/
+ingress Gateway (kind maps host 127.0.0.1:{{ $port }} to its NodePort):
+  curl -H "Host: {{ .Values.routing.hostname }}" http://127.0.0.1:{{ $port }}/
+{{- if $day7 }}
+
+Day 7: all three images are pinned to one verified build:
+  gateway {{ .Values.images.gateway.tag }}
+  app     {{ .Values.images.app.tag }}
+  state   {{ .Values.images.state.tag }}
+Prove what actually runs with `make day7-running-images`; see
+docs/architecture.md's "DAY7" section for the stage/restoration contract.
+{{- end }}
 
 A bounded `kubectl port-forward` to service/maops-gateway remains
 available for debugging and is what `make smoke` uses; it bypasses the
@@ -28,5 +43,5 @@ List everything this release owns:
   helm get manifest {{ .Release.Name }} --namespace {{ .Release.Namespace }}
 
 This is a local kind development install - no production-readiness,
-HA, or TLS claim is made. See docs/architecture.md's Day 6 section for
+HA, or TLS claim is made. See docs/architecture.md's Day 6{{ if $day7 }} and DAY7 sections{{ else }} section{{ end }} for
 the full list of accepted limitations.

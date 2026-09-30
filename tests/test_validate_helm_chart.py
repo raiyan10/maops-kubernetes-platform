@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from validate_helm_chart import run_checks
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 INSTANCE = "maops-kubernetes-platform-day6"
 NAMESPACE = "maops-platform"
 VALIDATION_NAMESPACE = "maops-day6-validation"
@@ -94,11 +94,17 @@ def _config_checksum(name: str) -> str:
 
 
 def _workload(kind: str, name: str, component: str, image_repo: str, secret_names: tuple[str, ...] = ()) -> dict:
+    # DAY7: selector and (Deployment-only) strategy mirror the real
+    # render - the Day 7 selector-isolation and "stable gateway stays
+    # RollingUpdate" checks read them.
+    strategy = {"strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 1}}} if kind == "Deployment" else {}
     return {
         "apiVersion": "apps/v1",
         "kind": kind,
         "metadata": {"name": name, "namespace": NAMESPACE, "labels": _labels(component)},
         "spec": {
+            **strategy,
+            "selector": {"matchLabels": _selector(component)},
             "template": {
                 "metadata": {
                     "annotations": {"checksum/config": _config_checksum(name)},
@@ -136,7 +142,14 @@ def _configmap(name: str, component: str) -> dict:
 
 
 def _service(name: str, component: str) -> dict:
-    return {"apiVersion": "v1", "kind": "Service", "metadata": {"name": name, "namespace": NAMESPACE, "labels": _labels(component)}, "spec": {}}
+    # DAY7: selector/ports mirror the real render (route backend ports are
+    # checked against the referenced Service's ports).
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"name": name, "namespace": NAMESPACE, "labels": _labels(component)},
+        "spec": {"selector": _selector(component), "ports": [{"name": "http", "port": 8080, "targetPort": "http", "protocol": "TCP"}]},
+    }
 
 
 def _pdb(name: str, component: str) -> dict:

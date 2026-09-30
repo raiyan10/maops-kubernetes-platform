@@ -84,7 +84,7 @@ def check_daemonset(label_selector: str, description: str, expected_count: int) 
 
 
 def main() -> int:
-    print(f"# Day 6 mesh status check: istiod/istio-cni/ztunnel (context {kube.CONTEXT}) - READ ONLY, never mutates")
+    print(f"# Day {kube.PROFILE_DAY} mesh status check: istiod/istio-cni/ztunnel (context {kube.CONTEXT}) - READ ONLY, never mutates")
     try:
         kube.verify_context()
     except RuntimeError as exc:

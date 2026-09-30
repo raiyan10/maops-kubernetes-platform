@@ -1,3 +1,6 @@
+{{- include "maops.validateDay7State" . }}
+{{- include "maops.validatePinnedBuild" . }}
+{{- $mode := .Values.routing.mode }}
 # DAY6: the application chart owns this HTTPRoute (it is
 # application-routing configuration, not cluster/platform
 # infrastructure) - it attaches to the `{{ .Values.routing.gateway.name }}`
@@ -26,6 +29,22 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      # DAY7: routing.mode selects the backend set (see values.yaml).
+      # There is still exactly ONE HTTPRoute, one parentRef, one
+      # hostname and one rule - only backendRefs vary. `stable` renders
+      # the identical single, unweighted backendRef Day 6 rendered.
       backendRefs:
+{{- if eq $mode "stable" }}
         - name: maops-gateway
           port: {{ .Values.gateway.containerPort }}
+{{- else if eq $mode "candidate" }}
+        - name: maops-gateway-candidate
+          port: {{ .Values.gateway.containerPort }}
+{{- else }}
+        - name: maops-gateway
+          port: {{ .Values.gateway.containerPort }}
+          weight: {{ int .Values.routing.stableWeight }}
+        - name: maops-gateway-candidate
+          port: {{ .Values.gateway.containerPort }}
+          weight: {{ int .Values.routing.candidateWeight }}
+{{- end }}

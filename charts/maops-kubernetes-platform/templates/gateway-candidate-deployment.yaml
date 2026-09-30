@@ -1,0 +1,148 @@
+{{- if .Values.candidate.enabled }}
+# DAY7: OPTIONAL gateway candidate Deployment (disabled by default).
+#
+# Selector isolation: spec.selector keys on
+# app.kubernetes.io/component=gateway-candidate. maops-gateway's own
+# immutable selector keys on component=gateway, so the two selectors
+# share the component KEY with different VALUES - no Pod can ever match
+# both. This Deployment's selector is new and independent; maops-gateway's
+# selector is unchanged.
+#
+# Parity with maops-gateway (checked by scripts/validate_helm_chart.py):
+# same image, ServiceAccount, token automount, Pod/container security
+# context (runAsUser/runAsGroup/fsGroup 10001, read-only root FS, all
+# capabilities dropped, RuntimeDefault seccomp), resources, worker-only
+# node affinity, internal-auth Secret mount (mode 0440), port, startup/
+# liveness probes, and readiness probe (except under the explicit
+# faultInjection.failReadiness negative-test knob). Ambient enrollment is
+# namespace-level, so the candidate is enrolled exactly like the stable
+# gateway.
+#
+# SHARED IDENTITY: serviceAccountName is maops-gateway, the SAME
+# ServiceAccount as the stable gateway, so both present the SAME Istio
+# principal (cluster.local/ns/<namespace>/sa/maops-gateway). App's
+# AuthorizationPolicy therefore admits the candidate without change,
+# and nothing at the mesh-identity layer distinguishes candidate from
+# stable traffic.
+#
+# No PodDisruptionBudget is rendered for the candidate, so it has no
+# voluntary-eviction protection (e.g. `kubectl drain`) at any time while
+# enabled - accepted for a transient demonstration workload. During a
+# Recreate rollout specifically a PDB would not protect it anyway: PDBs
+# constrain voluntary evictions through the Eviction API, while the
+# Deployment controller scales ReplicaSets down directly.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maops-gateway-candidate
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  replicas: {{ .Values.candidate.replicas }}
+  strategy:
+{{- if eq .Values.candidate.strategy "Recreate" }}
+    # Recreate: every old candidate Pod is terminated before any
+    # replacement is created - a planned interruption for traffic routed
+    # to this candidate. No rollingUpdate block is valid here.
+    type: Recreate
+{{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+{{- end }}
+  minReadySeconds: 5
+  progressDeadlineSeconds: 120
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway-candidate") | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Checksum of the candidate's OWN ConfigMap render only - a
+        # candidate.config.appMessage change is a Pod-template change
+        # (and therefore a real rollout), while stable config changes
+        # never touch this value.
+        checksum/config: {{ include (print $.Template.BasePath "/gateway-candidate-configmap.yaml") . | sha256sum | quote }}
+      labels:
+        {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 8 }}
+    spec:
+      serviceAccountName: maops-gateway
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        fsGroup: {{ .Values.podSecurityContext.runAsGroup }}
+        fsGroupChangePolicy: OnRootMismatch
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeAffinityPolicy: Honor
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              {{- include "maops.selectorLabels" (dict "root" $ "component" "gateway-candidate") | nindent 14 }}
+      containers:
+        - name: maops-gateway
+          image: "{{ .Values.images.gateway.repository }}:{{ .Values.images.gateway.tag }}"
+          imagePullPolicy: {{ .Values.images.gateway.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: maops-gateway-candidate-config
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          resources:
+            {{- toYaml (.Values.gateway.resources | default .Values.resources) | nindent 12 }}
+          volumeMounts:
+            - name: internal-auth
+              mountPath: /var/run/secrets/maops
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 2
+            failureThreshold: 15
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              {{- if .Values.candidate.faultInjection.failReadiness }}
+              # NEGATIVE TEST ONLY (candidate.faultInjection.failReadiness):
+              # gateway/server.py answers unknown paths with 404, so this
+              # Pod stays live but never Ready.
+              path: /maops-day7-forced-unready
+              {{- else }}
+              path: /readyz
+              {{- end }}
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 7
+            failureThreshold: 3
+      volumes:
+        - name: internal-auth
+          secret:
+            secretName: {{ .Values.secrets.internalAuthName }}
+            defaultMode: 288
+{{- end }}

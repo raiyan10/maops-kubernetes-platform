@@ -3,8 +3,25 @@ SHELL := /bin/bash
 
 CLUSTER_NAME := maops-k8s-day6
 KCONTEXT := kind-$(CLUSTER_NAME)
+
+# DAY7: cluster PROFILE, derived from CLUSTER_NAME so the kubectl/helm
+# context a recipe uses and the context scripts/kube.py verifies can
+# never disagree. `make X` keeps addressing the released Day 6 cluster
+# exactly as before; the Day 7 targets below re-invoke the SAME recipes
+# with `CLUSTER_NAME=maops-k8s-day7` (see DAY7_MAKE). Any other cluster
+# name fails closed at parse time, before any recipe runs. The profile
+# also selects the kind config, the Helm release/instance name, and the
+# mutation lock (scripts/day6_lock.py vs scripts/day7_lock.py - two
+# independent locks).
+ifeq ($(filter $(CLUSTER_NAME),maops-k8s-day6 maops-k8s-day7),)
+$(error CLUSTER_NAME=$(CLUSTER_NAME) is not a supported cluster (expected maops-k8s-day6 or maops-k8s-day7))
+endif
+CLUSTER_PROFILE := $(if $(filter maops-k8s-day7,$(CLUSTER_NAME)),day7,day6)
+MAOPS_CLUSTER_PROFILE := $(CLUSTER_PROFILE)
+export MAOPS_CLUSTER_PROFILE
+KIND_CONFIG := kind/cluster-$(CLUSTER_PROFILE).yaml
 NAMESPACE := maops-platform
-VALIDATION_NAMESPACE := maops-day6-validation
+VALIDATION_NAMESPACE := maops-$(CLUSTER_PROFILE)-validation
 INGRESS_NAMESPACE := maops-ingress
 
 # Overridable kubeconfig path - every kubectl/helm invocation below,
@@ -18,16 +35,29 @@ INGRESS_NAMESPACE := maops-ingress
 KUBECONFIG_PATH ?= $(HOME)/.kube/$(CLUSTER_NAME).config
 export KUBECONFIG_PATH
 BASE := k8s/base
-DAY6_K8S := k8s/day6
+# DAY7: the cluster/platform manifests follow the profile - k8s/day6 for
+# the Day 6 cluster (unchanged), k8s/day7 (same objects, Day 7
+# identities) for maops-k8s-day7.
+PLATFORM_K8S := k8s/$(CLUSTER_PROFILE)
 CHART := charts/maops-kubernetes-platform
-HELM_RELEASE := maops-kubernetes-platform-day6
+HELM_RELEASE := maops-kubernetes-platform-$(CLUSTER_PROFILE)
 
 # DAY6: a minimal process-held local mutual-exclusion lock
 # (scripts/day6_lock.py), independent of Day 4's/Day 5's own preserved
 # locks - see day6_lock.py's own module docstring for the full
 # fd-inheritance/lifetime design (carried forward unchanged from Day
 # 5's own hardened design).
-DAY6_LOCK := python3 scripts/day6_lock.py run --
+# DAY7 remediation (dry-run side effect): GNU make still EXECUTES a
+# recipe line that references $(MAKE) under `make -n`, so that nested
+# makes can print their own commands. Such a line here is always a lock
+# wrapper around nested makes, so `make -n day6-check`/`day7-check` used
+# to take (and create) the real lock file. Under -n/--dry-run the lock
+# prefix is therefore empty: the nested makes inherit -n and only print,
+# so nothing that needs mutual exclusion runs. A real (non -n) run
+# always gets the real lock - DRY_RUN is derived only from make's own
+# flag letters in MAKEFLAGS.
+DRY_RUN := $(findstring n,$(firstword -$(MAKEFLAGS)))
+DAY6_LOCK := $(if $(DRY_RUN),,python3 scripts/$(CLUSTER_PROFILE)_lock.py run --)
 
 # DAY6 (unchanged design from Day 4/5): run-specific suite-level
 # `/state` baseline identity (see scripts/suite_baseline.py for the
@@ -46,6 +76,16 @@ DAY6_RUN_ID := $(if $(DAY6_RUN_ID),$(DAY6_RUN_ID),$(shell python3 -c "import uui
 DAY6_SUITE_BASELINE_PATH := $(if $(DAY6_SUITE_BASELINE_PATH),$(DAY6_SUITE_BASELINE_PATH),/tmp/maops-day6-suite-baseline-$(DAY6_RUN_ID).json)
 export DAY6_RUN_ID
 export DAY6_SUITE_BASELINE_PATH
+
+# DAY7: Day 6-only targets. These either deploy with implicit values
+# (`deploy` - Helm would reuse the previous release's values) or mutate
+# chart-owned objects outside Helm / with --reuse-values (the inherited
+# Day 3-6 experiments). None of them belongs to the Day 7 cluster, where
+# every chart-owned change is an explicit Helm stage - so each refuses to
+# run under the day7 profile, before any mutation.
+define require_day6_profile
+	@if [ "$(CLUSTER_PROFILE)" != "day6" ]; then echo "FAIL: '$@' is a Day 6-only target and refuses to run against $(CLUSTER_NAME) - use the day7-* targets" >&2; exit 1; fi
+endef
 
 # DAY1-REL-I1 (closed): VERSION is read once, and all three image names
 # derive from it - nothing hardcodes the literal version string a
@@ -82,10 +122,16 @@ ISTIO_NAMESPACE := istio-system
         gateway-check mesh-check rbac-check networkpolicy-check smoke \
         dependency-check scaling-check rolling-update-check pdb-check \
         state-check persistence-check retention-check helm-lifecycle-check \
-        final-state-check controller-check ci-check day6-check
+        final-state-check controller-check ci-check day6-check \
+        day7-preflight day7-cluster-create day7-cluster-delete day7-deploy \
+        day7-baseline-init day7-baseline day7-blue-green day7-canary day7-recreate \
+        day7-final-state-check day7-resume-check day7-final-gate day7-check \
+        day7-image-verify-local day7-image-verify-nodes day7-stable-check \
+        day7-history-audit day7-plan day7-nodes-ready day7-validation-client-probe \
+        day7-build-record day7-image-load day7-running-images
 
 help: ## Show this help
-	@echo "MAOps Kubernetes Platform - Day 6 - available targets:"
+	@echo "MAOps Kubernetes Platform - Day 6 (v0.6.0) and Day 7 (v0.7.0 release candidate) - available targets:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-26s %s\n", $$1, $$2}'
 
 tool-check: ## Verify the required local toolchain is present and correctly resolved
@@ -119,8 +165,10 @@ manifest-render: ## Render the frozen Day 5 Kustomize base with kubectl kustomiz
 manifest-check: ## Run repository-owned static validation against the frozen Day 5 k8s/base render (unchanged Day 5 behavior - proves k8s/base was not touched)
 	python3 scripts/manifest_check.py $(BASE)
 
-helm-lint: ## Run `helm lint` against the Day 6 application chart (pure local static check, no cluster contact)
+helm-lint: ## Run `helm lint` against the application chart with default values AND with every Day 7 stage file (pure local static check, no cluster contact)
 	helm lint $(CHART)
+	@overlay=$$(mktemp) && trap 'rm -f "$$overlay"' EXIT && python3 scripts/day7_build.py sample-overlay > "$$overlay" && \
+	for f in $(DAY7_STAGE_DIR)/*.yaml; do echo "helm lint $(CHART) -f $$f -f <synthetic build overlay>"; helm lint --quiet $(CHART) -f "$$f" -f "$$overlay" || exit 1; done
 
 helm-template: ## Render the Day 6 application chart with `helm template` (pure local render, no cluster contact)
 	helm template $(HELM_RELEASE) $(CHART) --namespace $(NAMESPACE)
@@ -135,17 +183,17 @@ image-build: ## Build all three workload container images (gateway, app, state)
 		docker build $(IMAGE_BUILD_FLAGS) -t $(STATE_IMAGE) -f state/Dockerfile state/ \
 	'
 
-cluster-create: ## Create the scoped kind cluster (idempotent, never recreated if present) - maops-k8s-day6 only, 1 control-plane + 2 workers, host 127.0.0.1:18080 -> control-plane:30080
+cluster-create: ## Create the scoped kind cluster (idempotent, never recreated if present) - $(CLUSTER_NAME) only (default maops-k8s-day6: host 127.0.0.1:18080; day7-cluster-create: maops-k8s-day7, host 127.0.0.1:18081), 1 control-plane + 2 workers -> control-plane:30080
 	$(DAY6_LOCK) sh -c '\
 		if kind get clusters 2>/dev/null | grep -qx "$(CLUSTER_NAME)"; then \
 			echo "kind cluster $(CLUSTER_NAME) already exists, skipping create"; \
 		else \
-			kind create cluster --name $(CLUSTER_NAME) --config kind/cluster-day6.yaml --kubeconfig $(KUBECONFIG_PATH); \
+			kind create cluster --name $(CLUSTER_NAME) --config $(KIND_CONFIG) --kubeconfig $(KUBECONFIG_PATH); \
 		fi; \
 		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) get nodes \
 	'
 
-cluster-delete: ## Delete ONLY the maops-k8s-day6 kind cluster
+cluster-delete: ## Delete ONLY the $(CLUSTER_NAME) kind cluster (default maops-k8s-day6)
 	$(DAY6_LOCK) kind delete cluster --name $(CLUSTER_NAME) --kubeconfig $(KUBECONFIG_PATH)
 
 context-check: ## Fail closed unless kubectl is verified against the isolated Day 6 cluster at the pinned node version
@@ -255,7 +303,7 @@ mesh-install: ## Install Istio ambient (pinned 1.31.0, from https://blob.istio.i
 			echo "--- recent events ($(ISTIO_NAMESPACE)) ---"; kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) -n $(ISTIO_NAMESPACE) get events --sort-by=.lastTimestamp | tail -n 40 || true; \
 			exit 1; \
 		}; \
-		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply -f $(DAY6_K8S)/cilium-ambient-probe-policy.yaml \
+		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply -f $(PLATFORM_K8S)/cilium-ambient-probe-policy.yaml \
 	'
 
 mesh-status: ## Read-only: verify istiod/istio-cni/ztunnel are Running/Ready (never mutates) - deeper mTLS/identity proof is `make mesh-check`
@@ -270,16 +318,16 @@ storage-hardening-check: ## Prove the storage bootstrap actually changed access 
 namespace-apply: ## Apply ONLY the three Day 6 platform Namespaces (maops-platform, maops-day6-validation, maops-ingress) and the diagnostics ServiceAccount to the explicit Day 6 context (must precede secret-bootstrap/gateway-apply/deploy)
 	$(DAY6_LOCK) sh -c '\
 		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply \
-			-f $(DAY6_K8S)/platform-namespace.yaml \
-			-f $(DAY6_K8S)/validation-namespace.yaml \
-			-f $(DAY6_K8S)/ingress-namespace.yaml && \
-		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply -f $(DAY6_K8S)/diagnostics-serviceaccount.yaml \
+			-f $(PLATFORM_K8S)/platform-namespace.yaml \
+			-f $(PLATFORM_K8S)/validation-namespace.yaml \
+			-f $(PLATFORM_K8S)/ingress-namespace.yaml && \
+		kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply -f $(PLATFORM_K8S)/diagnostics-serviceaccount.yaml \
 	'
 
 gateway-apply: ## Apply the Istio Gateway infrastructure ConfigMap and the Gateway API `Gateway` object (maops-edge, in maops-ingress) - cluster/platform objects, not part of the Helm chart
 	$(DAY6_LOCK) kubectl --kubeconfig $(KUBECONFIG_PATH) --context $(KCONTEXT) apply \
-		-f $(DAY6_K8S)/gateway-values-configmap.yaml \
-		-f $(DAY6_K8S)/gateway.yaml
+		-f $(PLATFORM_K8S)/gateway-values-configmap.yaml \
+		-f $(PLATFORM_K8S)/gateway.yaml
 
 secret-bootstrap: ## Create (or preserve) both runtime Secrets - maops-internal-auth and maops-state-auth - never committed, never printed
 	$(DAY6_LOCK) python3 scripts/secret_bootstrap.py all
@@ -292,6 +340,7 @@ image-load: ## Load all three locally built images into every node of the kind c
 	'
 
 deploy: ## Apply the Day 6 Helm chart (`helm upgrade --install`) - the SOLE Day 6 application deployment source; never applies k8s/base
+	$(require_day6_profile)
 	$(DAY6_LOCK) helm upgrade --install $(HELM_RELEASE) $(CHART) \
 		--namespace $(NAMESPACE) \
 		--kubeconfig $(KUBECONFIG_PATH) \
@@ -329,33 +378,41 @@ smoke: ## Port-forward service/maops-gateway and exercise /, /livez, /readyz, /c
 	python3 scripts/smoke.py
 
 dependency-check: ## Prove gateway liveness vs. dependency-aware readiness by scaling maops-app to 0 and back (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/dependency_check.py
 
 scaling-check: ## Prove real scaling behavior (3 -> 4 -> 3) for gateway/app, with guaranteed restoration (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/scaling_check.py
 
 rolling-update-check: ## Prove a real rolling update and `kubectl rollout undo` rollback for gateway/app (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/rollout_check.py
 
 pdb-check: ## Prove real PodDisruptionBudget/Eviction-API behavior for gateway/app (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/pdb_check.py
 
 state-check: ## Prove maops-state StatefulSet/PVC/Service runtime identity, security, and storage binding (unchanged Day 5 behavior; captures the run-specific suite-level /state baseline used by final-state-check)
 	python3 scripts/state_check.py
 
 persistence-check: ## Prove data survives maops-state-0 pod deletion/rescheduling (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/persistence_check.py
 
 retention-check: ## Prove PVC/PV retention and app/gateway degraded-but-live behavior across a state 1 -> 0 -> 1 cycle (unchanged Day 5 behavior)
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/retention_check.py
 
 helm-lifecycle-check: ## Bounded live proof of a real Helm upgrade + rollback (release revision/config/health before and after, external routed behavior, PVC data preserved throughout); this is Helm release rollback, never the Day 7 Recreate/Blue-Green/Canary demonstration
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/helm_lifecycle_check.py
 
 final-state-check: ## Independently prove the cluster is fully restored to its normal Day 6 baseline after all mutating experiments
 	python3 scripts/final_state_check.py
 
 controller-check: ## (Bonus, not part of day6-check) Prove Deployment controller reconciliation for maops-app
+	$(require_day6_profile)
 	$(DAY6_LOCK) python3 scripts/reconcile_check.py
 
 ci-check: ## Cluster-free static validation sequence only - unit tests, version check, k8s/base manifest check, Helm lint/template/static-check. Never creates a cluster, never touches Docker images, Cilium, or Istio - safe for GitHub Actions
@@ -414,3 +471,189 @@ day6-check: ## Authoritative Day 6 validation sequence - explicitly sequential v
 	'
 	@echo ""
 	@echo "PASS: day6-check completed the full authoritative validation sequence"
+
+# ---------------------------------------------------------------------------
+# DAY7: deployment strategies (v0.7.0 release candidate; local Kind gate passed) on a SEPARATE,
+# isolated kind cluster. Nothing below ever addresses maops-k8s-day6:
+# every live step either re-invokes an existing recipe through DAY7_MAKE
+# (CLUSTER_NAME=maops-k8s-day7 -> day7 profile, day7 lock, day7 kind
+# config/release/kubeconfig) or runs a Day 7 script under
+# MAOPS_CLUSTER_PROFILE=day7 (scripts refuse any other profile).
+# ---------------------------------------------------------------------------
+DAY7_CLUSTER_NAME := maops-k8s-day7
+DAY7_KCONTEXT := kind-$(DAY7_CLUSTER_NAME)
+DAY7_KUBECONFIG_PATH ?= $(HOME)/.kube/$(DAY7_CLUSTER_NAME).config
+DAY7_HELM_RELEASE := maops-kubernetes-platform-day7
+DAY7_STAGE_DIR := helm-values/day7
+DAY7_LOCK := $(if $(DRY_RUN),,python3 scripts/day7_lock.py run --)
+DAY7_MAKE := $(MAKE) CLUSTER_NAME=$(DAY7_CLUSTER_NAME) KUBECONFIG_PATH=$(DAY7_KUBECONFIG_PATH)
+DAY7_ENV := MAOPS_CLUSTER_PROFILE=day7 KUBECONFIG_PATH=$(DAY7_KUBECONFIG_PATH)
+
+# DAY7: one run ID per top-level invocation (inherited by every nested
+# $(MAKE) through the environment, like DAY6_RUN_ID). All of a run's
+# evidence lives in ONE private directory outside /tmp and outside the
+# repository - created exclusively with mode 0700 by
+# `day7-baseline-init`; each baseline file inside is created O_EXCL with
+# mode 0600 and is never overwritten or recaptured. To re-check a run
+# later (e.g. after a host restart), pass the SAME DAY7_RUN_ID on the
+# command line - the directory and file paths derive from it.
+DAY7_RUN_ID := $(if $(DAY7_RUN_ID),$(DAY7_RUN_ID),$(shell python3 -c "import uuid; print(uuid.uuid4().hex)"))
+DAY7_BASELINE_ROOT ?= $(HOME)/.local/state/maops-kubernetes-platform/day7-runs
+DAY7_BASELINE_DIR := $(DAY7_BASELINE_ROOT)/$(DAY7_RUN_ID)
+DAY7_SUITE_BASELINE_PATH := $(DAY7_BASELINE_DIR)/suite-baseline.json
+DAY7_STRATEGY_BASELINE_PATH := $(DAY7_BASELINE_DIR)/strategy-baseline.json
+export DAY7_RUN_ID
+export DAY7_BASELINE_DIR
+export DAY7_SUITE_BASELINE_PATH
+export DAY7_STRATEGY_BASELINE_PATH
+# DAY7 image contract: verified builds (scripts/day7_build.py) - one
+# private 0700 directory per build, named by its content, plus
+# current.json naming the build the next Day 7 deploy carries.
+DAY7_BUILD_ROOT ?= $(HOME)/.local/state/maops-kubernetes-platform/day7-builds
+export DAY7_BUILD_ROOT
+
+day7-preflight: ## Read-only host preflight for the isolated Day 7 cluster - kind/cluster-day7.yaml identity, Docker, existing kind clusters (Day 6 is reported and left alone), host port 18081 free (or owned by maops-k8s-day7), WSL memory/CPU/disk/inotify headroom
+	python3 scripts/day7_preflight.py
+
+day7-image-verify-local: ## Cluster-free: prove the three $(VERSION) images exist locally as single-platform linux/amd64 images and record their CONFIG digests (from `docker save`, the digest kind a kind node's containerd reports) - run right after image-build
+	python3 scripts/day7_image_check.py local
+
+day7-image-verify-nodes: ## Read-only: prove every maops-k8s-day7 node (and only Day 7 nodes) holds each $(VERSION) image under its tag with the SAME config digest as the local build, AND every pinned <repo>:$(VERSION)-cfg-<digest> tag of the current verified build with the digest its name carries - run after image-load + day7-image-load; fails before deploy if any image is missing or different
+	python3 scripts/day7_image_check.py nodes
+
+day7-nodes-ready: ## Read-only, Day 7 only: bounded wait (default 180s) until all 3 maops-k8s-day7 nodes report Ready after cni-install - closes the cold-start race before the single-snapshot cni-status; fails on timeout, API error, or any non-Day-7 context
+	env $(DAY7_ENV) python3 scripts/day7_nodes_ready.py
+
+day7-cluster-create: ## Create maops-k8s-day7 (kind/cluster-day7.yaml, host 127.0.0.1:18081) alongside - never instead of - maops-k8s-day6; idempotent, never recreated
+	$(DAY7_MAKE) cluster-create
+
+day7-cluster-delete: ## Delete ONLY the maops-k8s-day7 kind cluster (never Day 6, never any other cluster)
+	$(DAY7_MAKE) cluster-delete
+
+day7-deploy: ## Install/upgrade the Day 7 release at the STABLE stage - explicit --reset-values -f helm-values/day7/stable.yaml -f <current verified build overlay> (candidate disabled, 100% stable route, every image tag pinned to its config digest so a new build ALWAYS changes the Pod templates), bounded wait - run day7-running-images afterwards
+	$(DAY7_LOCK) sh -c '\
+		build_values=$$(python3 scripts/day7_build.py values-path) && \
+		helm upgrade --install $(DAY7_HELM_RELEASE) $(CHART) \
+			--namespace $(NAMESPACE) \
+			--kubeconfig $(DAY7_KUBECONFIG_PATH) \
+			--kube-context $(DAY7_KCONTEXT) \
+			--reset-values \
+			-f $(DAY7_STAGE_DIR)/stable.yaml \
+			-f "$$build_values" \
+			--wait \
+			--timeout 300s \
+	'
+
+day7-build-record: ## Cluster-free: pin today's verified local images to content-derived tags <repo>:$(VERSION)-cfg-<config digest> (local `docker tag`, digest re-derived from the new tag) and record the build (private $(DAY7_BUILD_ROOT)/<build id>/, current.json) - run after day7-image-verify-local
+	$(DAY7_LOCK) python3 scripts/day7_build.py record
+
+day7-image-load: ## Load the current verified build's pinned tags into maops-k8s-day7 ONLY (kind load) - day7-image-verify-nodes then proves each node holds them
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_build.py load-kind
+
+day7-running-images: ## Read-only: prove every running stable gateway/app/state container (and candidate container, if enabled) runs the current verified build - exact Pod counts, Ready, pinned image reference, and the Kubernetes imageID mapped through the node's containerd record to the build's config digest
+	env $(DAY7_ENV) python3 scripts/day7_running_images.py
+
+day7-baseline-init: ## Create this run's private evidence directory ($(DAY7_BASELINE_ROOT)/<DAY7_RUN_ID>, mode 0700) - refuses to reuse an existing one
+	$(DAY7_LOCK) python3 scripts/private_run_dir.py init
+
+day7-baseline: ## Capture the Day 7 strategy baseline ONCE (Helm revision/values/manifest digest, the verified build, route, workload/Service/PDB and storage identities) - only after every running container is verified on that build; requires day7-baseline-init and the run's state-check suite baseline; never overwrites
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_baseline.py capture
+
+day7-blue-green: ## Bounded Blue/Green: prepare candidate (route 100% stable) -> preflight gate -> mesh path probes -> Helm cutover to 100% candidate -> external proof -> verified restoration to stable
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_blue_green.py
+
+day7-canary: ## Bounded Canary: gate -> ONE HTTPRoute weighted stable 90 / candidate 10 -> live backendRefs/status/endpoints -> bounded external sample (both versions observed, counts only) -> candidate-unready negative gate -> verified restoration
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_canary.py
+
+day7-recreate: ## Bounded Recreate on the CANDIDATE Deployment only: candidate serves 100% -> ConfigMap-only change under strategy Recreate, observing Pods/endpoints/external traffic -> ordering + interruption report -> verified restoration
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_recreate.py
+
+day7-validation-client-probe: ## OPTIONAL, never part of day7-check - bounded live proof that a validation-client Pod cannot reach the gateway CANDIDATE: green-prepared stage (route stays 100% stable) -> same-source positive control via the ingress Gateway -> negative probe correlated with Cilium 'Policy denied' drops -> probe Pod deleted -> verified restoration to stable (requires this run's day7-baseline)
+	$(DAY7_LOCK) env $(DAY7_ENV) python3 scripts/day7_validation_client_probe.py
+
+day7-stable-check: ## Read-only, independent check that an experiment left the Day 7 release restored - Helm values == stable.yaml + the run's build image tags, no candidate objects, every stable container on the run's build, route 100% stable and current, Gateway current, external stable responses (run after EACH experiment)
+	env $(DAY7_ENV) python3 scripts/day7_stable_check.py
+
+day7-history-audit: ## OPTIONAL, never part of any Day 7 gate - Git/static history integrity (v0.6.0 tag, frozen Day 1-6 sources, unchanged workload sources vs v0.6.0) plus existence of the older kind clusters (kind get clusters only; never contacts them)
+	python3 scripts/day7_history_audit.py
+
+day7-plan: ## Read-only: print the day7-check / day7-final-gate step order parsed from this Makefile (runs nothing, takes no lock)
+	python3 scripts/make_sequence.py day7-check day7-final-gate
+
+day7-final-state-check: ## Read-only Day 7 final gate against the run's strategy baseline - Helm values (stable + the run's build)/manifest, no candidate leftovers, 3/3 + 3/3 + 1/1, every container on the run's build, unchanged workload/route/storage identities, external stable responses, no leaked probes/processes
+	env $(DAY7_ENV) python3 scripts/day7_final_check.py
+
+day7-resume-check: ## Read-only Day 7 health after a host/WSL/Docker restart - bounded node-Ready wait, then Cilium, context, mesh, then per-Pod ambient listeners BEFORE rollout readiness is trusted, then which build every container runs, then external routing
+	$(MAKE) day7-nodes-ready
+	$(DAY7_MAKE) cni-status
+	$(DAY7_MAKE) context-check
+	$(DAY7_MAKE) mesh-status
+	$(DAY7_MAKE) ambient-workload-check
+	$(DAY7_MAKE) rollout-check
+	$(MAKE) day7-running-images
+	$(DAY7_MAKE) gateway-check
+
+day7-final-gate: ## Day 7 final restoration gate for one run (pass the run's DAY7_RUN_ID when invoked standalone) - platform health, listeners, NetworkPolicy and mesh behavior, suite /state + PVC/PV baseline, then day7-final-state-check
+	$(DAY7_LOCK) sh -c '\
+		$(DAY7_MAKE) cni-status && \
+		$(DAY7_MAKE) context-check && \
+		$(DAY7_MAKE) mesh-status && \
+		$(DAY7_MAKE) ambient-workload-check && \
+		$(DAY7_MAKE) rollout-check && \
+		$(MAKE) day7-running-images && \
+		$(DAY7_MAKE) gateway-check && \
+		$(DAY7_MAKE) mesh-check && \
+		$(DAY7_MAKE) networkpolicy-check && \
+		$(DAY7_MAKE) final-state-check && \
+		$(MAKE) day7-final-state-check \
+	'
+
+day7-check: ## Authoritative Day 7 sequence under ONE Day 7 lock - static checks, read-only preflight, image build + local digest check + verified build record (pinned content-derived tags), isolated cluster bootstrap, image load (incl. pinned tags) + per-node digest check (before deploy), stable deploy of the pinned build, listeners before rollout, running-image verification, private baselines recording the build, then Blue/Green, Canary, Recreate each followed by an independent stable check, then the final restoration gate; never touches maops-k8s-day6
+	$(DAY7_LOCK) sh -c '\
+		$(MAKE) tool-check && \
+		$(MAKE) test && \
+		$(MAKE) version-check && \
+		$(MAKE) manifest-check && \
+		$(MAKE) helm-lint && \
+		$(MAKE) helm-template > /dev/null && \
+		$(MAKE) helm-check && \
+		$(MAKE) day7-preflight && \
+		$(DAY7_MAKE) image-build && \
+		$(MAKE) day7-image-verify-local && \
+		$(MAKE) day7-build-record && \
+		$(DAY7_MAKE) cluster-create && \
+		$(DAY7_MAKE) gateway-api-install && \
+		$(DAY7_MAKE) cni-install && \
+		$(MAKE) day7-nodes-ready && \
+		$(DAY7_MAKE) cni-status && \
+		$(DAY7_MAKE) context-check && \
+		$(DAY7_MAKE) mesh-install && \
+		$(DAY7_MAKE) mesh-status && \
+		$(DAY7_MAKE) image-load && \
+		$(MAKE) day7-image-load && \
+		$(MAKE) day7-image-verify-nodes && \
+		$(DAY7_MAKE) storage-bootstrap && \
+		$(DAY7_MAKE) storage-hardening-check && \
+		$(DAY7_MAKE) namespace-apply && \
+		$(DAY7_MAKE) secret-bootstrap && \
+		$(DAY7_MAKE) gateway-apply && \
+		$(MAKE) day7-deploy && \
+		$(DAY7_MAKE) ambient-workload-check && \
+		$(DAY7_MAKE) rollout-check && \
+		$(MAKE) day7-running-images && \
+		$(DAY7_MAKE) gateway-check && \
+		$(DAY7_MAKE) mesh-check && \
+		$(DAY7_MAKE) networkpolicy-check && \
+		$(MAKE) day7-baseline-init && \
+		$(DAY7_MAKE) state-check && \
+		$(MAKE) day7-baseline && \
+		$(MAKE) day7-blue-green && \
+		$(MAKE) day7-stable-check && \
+		$(MAKE) day7-canary && \
+		$(MAKE) day7-stable-check && \
+		$(MAKE) day7-recreate && \
+		$(MAKE) day7-stable-check && \
+		$(MAKE) day7-final-gate \
+	'
+	@echo ""
+	@echo "PASS: day7-check completed - all three strategies ran and the stable state was independently verified"

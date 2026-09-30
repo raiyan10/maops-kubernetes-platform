@@ -1,0 +1,36 @@
+{{- if and .Values.candidate.enabled .Values.networkPolicy.enabled }}
+# DAY7: candidate-only mirror of
+# maops-allow-gateway-ingress-from-istio-ingress-gateway. That stable
+# rule selects component=gateway and therefore does NOT apply to
+# candidate Pods (component=gateway-candidate); without this rule the
+# namespace default-deny would block the Istio ingress Gateway -> candidate
+# path for plaintext/non-ambient delivery. Same peer (maops-ingress
+# namespace + istio.io/gateway-name) and port; no other source is added.
+# Same DAY6 caveat as the stable rule: the ambient-tunneled path is
+# carried over HBONE (peerless TCP 15008 rule) and authorized by
+# maops-gateway-candidate-authz, not by this rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-gateway-candidate-ingress-from-istio-ingress-gateway
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway-candidate
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.routing.gateway.namespace }}
+          podSelector:
+            matchLabels:
+              istio.io/gateway-name: {{ .Values.routing.gateway.name }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.gateway.containerPort }}
+{{- end }}

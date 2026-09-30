@@ -22,8 +22,12 @@ Istio ambient service mesh (strict mTLS, identity-scoped
 request-level/L7 policy, that remains architecturally unavailable
 without a waypoint this project never deploys) are now in scope below,
 not future content. Recreate, Blue-Green, and Canary deployment
-strategy demonstrations belong to Day 7, not yet implemented - nothing
-below should be read as expecting those.
+strategy demonstrations belong to Day 7 (`v0.7.0`, release candidate):
+for a Day 7 review the gateway candidate must share the stable
+gateway's ServiceAccount/security context, carry candidate-only
+NetworkPolicies equal in paths to the stable gateway's and its own
+AuthorizationPolicy, and render nothing when disabled; nothing below
+expects Day 8 (`v1.0.0`) autoscaling/hardening.
 
 **As of Day 6, the static-check target moves from `k8s/base` to
 `charts/maops-kubernetes-platform`** (rendered via `helm template`, not
@@ -357,8 +361,9 @@ Still explicitly **not** expected, and a scope violation if found:
   cert-manager, or a cloud LoadBalancer.
 - A second, Ingress-based routing implementation alongside the Gateway
   API.
-- `HorizontalPodAutoscaler`, Argo Rollouts, or a Recreate/Blue-Green/
-  Canary deployment strategy - Day 7 scope, not yet implemented.
+- `HorizontalPodAutoscaler` (Day 8 scope) or Argo Rollouts (never);
+  for a Day 6 review, a Recreate/Blue-Green/Canary deployment strategy
+  (Day 7 scope).
 
 Flag any of the still-not-expected items above as a scope violation,
 not just a style note.

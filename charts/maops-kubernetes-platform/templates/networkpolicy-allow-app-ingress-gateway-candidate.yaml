@@ -1,0 +1,27 @@
+{{- if and .Values.candidate.enabled .Values.networkPolicy.enabled }}
+# DAY7: app accepts application-port ingress from the candidate too,
+# ONLY while the candidate is enabled. A separate, additive object
+# rather than an edit to maops-allow-app-ingress-from-gateway, so the
+# stable rule's rendered content never changes with the candidate flag.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-app-ingress-from-gateway-candidate
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: gateway-candidate
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.containerPort }}
+{{- end }}

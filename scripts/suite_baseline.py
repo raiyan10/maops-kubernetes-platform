@@ -3,6 +3,11 @@ DAY4: minimal, explicit, run-specific suite-level `/state` baseline.
 DAY6: re-wired (env var names only - the design is unchanged) to the
 Day 6 suite/lock identifiers; Day 4's/Day 5's own DAY4_RUN_ID/
 DAY5_RUN_ID-era runs are historical and not read by this module.
+DAY7: env var names now follow the active cluster profile (DAY6_* by
+default, DAY7_* under MAOPS_CLUSTER_PROFILE=day7), and a Day 7 baseline
+is only captured into / trusted from a private run directory (see
+scripts/private_run_dir.py). The DAY6_* wording below describes the
+default profile.
 
 Distinct from persistence_check.py/retention_check.py's own per-
 experiment restoration proofs (each of which independently verifies
@@ -69,10 +74,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kube
+import private_run_dir
 from http_checks import is_nonempty_identity
 
-RUN_ID_ENV = "DAY6_RUN_ID"
-PATH_ENV = "DAY6_SUITE_BASELINE_PATH"
+# DAY7: the env var NAMES follow the active cluster profile (see
+# scripts/kube.py) - Day 6 keeps DAY6_RUN_ID/DAY6_SUITE_BASELINE_PATH
+# exactly as before; the isolated Day 7 cluster uses DAY7_RUN_ID/
+# DAY7_SUITE_BASELINE_PATH, so a Day 6 run's baseline can never be read
+# by a Day 7 check or vice versa.
+_ENV_NAMES = {
+    "day6": ("DAY6_RUN_ID", "DAY6_SUITE_BASELINE_PATH"),
+    "day7": ("DAY7_RUN_ID", "DAY7_SUITE_BASELINE_PATH"),
+}
+RUN_ID_ENV, PATH_ENV = _ENV_NAMES[kube.PROFILE]
+
+# DAY7: Day 7 baselines must live in the private per-run directory
+# (scripts/private_run_dir.py: under $HOME, outside /tmp and the repo,
+# directory 0700, file 0600). Day 6's behavior is unchanged.
+PRIVATE_LOCATION_REQUIRED = kube.PROFILE == "day7"
 
 _REQUIRED_FIELDS = {"run_id", "context", "namespace", "namespace_uid", "pvc_uid", "pv_uid", "value", "captured_at"}
 
@@ -122,6 +142,11 @@ def capture(
     for label, identity in (("namespace_uid", namespace_uid), ("pvc_uid", pvc_uid), ("pv_uid", pv_uid)):
         if not is_nonempty_identity(identity):
             raise SuiteBaselineError(f"cannot capture suite baseline: {label} was not a nonempty string ({identity!r}) - identity was not reliably captured")
+    if PRIVATE_LOCATION_REQUIRED:
+        try:
+            private_run_dir.validate_run_dir(Path(path).parent)
+        except private_run_dir.PrivateRunDirError as exc:
+            raise SuiteBaselineError(f"refusing to capture the Day 7 suite baseline outside a private run directory: {exc}") from exc
     record = {
         "run_id": run_id,
         "context": context,
@@ -172,6 +197,11 @@ def load_and_validate(
     genuine nonempty string BEFORE comparing them for equality - two
     missing/empty UIDs are never accepted as proof that identity was
     preserved, only as proof that neither side could be read."""
+    if PRIVATE_LOCATION_REQUIRED:
+        try:
+            private_run_dir.validate_private_file(path)
+        except private_run_dir.PrivateRunDirError as exc:
+            raise SuiteBaselineError(f"Day 7 suite baseline is not a trusted private file: {exc}") from exc
     try:
         with open(path, "r") as f:
             raw = f.read()

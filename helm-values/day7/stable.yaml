@@ -1,0 +1,32 @@
+# DAY7 Helm stage: stable (baseline and restoration target) - 100% stable, no candidate objects
+#
+# Applied ONLY as: helm upgrade <day7 release> charts/maops-kubernetes-platform
+#   --reset-values -f helm-values/day7/stable.yaml -f <verified build overlay>
+# (scripts/day7_strategy.py builds that exact command; the overlay from
+# scripts/day7_build.py pins only images.*.tag to <version>-cfg-<config
+# digest>, and the chart refuses this stage without it). --reset-values
+# means the effective values are the chart defaults plus THIS file plus
+# the build's image tags and nothing else - no candidate flag, route mode or weight from a previous
+# stage can carry forward (never --reuse-values). Every Day 7 knob is
+# therefore spelled out below, even where it equals the chart default.
+candidate:
+  enabled: false
+  replicas: 2
+  strategy: RollingUpdate
+  config:
+    appMessage: "Hello from the MAOps Kubernetes Gateway (Day 7 candidate)"
+  faultInjection:
+    failReadiness: false
+routing:
+  mode: stable
+# The Day 7 cluster's own validation namespace (k8s/day7/validation-namespace.yaml):
+# the diagnostics RoleBinding subject must point there, never at Day 6's.
+validation:
+  namespace: maops-day7-validation
+  diagnostics:
+    serviceAccountName: maops-diagnostics
+# DAY7 pinned build: the chart refuses this stage unless the verified build
+# overlay (scripts/day7_build.py, passed as the second -f) pins every image
+# tag to its config digest - never the mutable <version> tag.
+build:
+  requirePinnedTags: true

@@ -58,3 +58,89 @@ usage: {{ include "maops.principal" (dict "namespace" "maops-platform" "serviceA
 {{- define "maops.principal" -}}
 cluster.local/ns/{{ .namespace }}/sa/{{ .serviceAccount }}
 {{- end -}}
+
+{{/*
+DAY7: pinned-build guard. Every Day 7 stage file sets
+build.requirePinnedTags=true, so a Day 7 render FAILS unless every
+workload image tag names one verified build by its content:
+<appVersion>-cfg-<64-hex image CONFIG digest>. The tag is written by
+scripts/day7_build.py (a values overlay passed as a second -f after the
+stage file) and is the digest kind a kind node's containerd reports, so
+a changed build ALWAYS changes the gateway/app/state (and candidate) Pod
+templates - a rebuilt image can never hide behind the mutable
+<appVersion> tag again. Defaults (false) leave the Day 6 render
+unchanged. Rendered output is always empty - it only ever calls `fail`.
+Usage: {{ include "maops.validatePinnedBuild" . }}
+*/}}
+{{- define "maops.validatePinnedBuild" -}}
+{{- $build := .Values.build | default dict -}}
+{{- if $build.requirePinnedTags -}}
+{{- $pattern := printf "^%s-cfg-[0-9a-f]{64}$" (regexQuoteMeta .Chart.AppVersion) -}}
+{{- range $name := list "gateway" "app" "state" -}}
+{{- $tag := toString (index $.Values.images $name).tag -}}
+{{- if not (regexMatch $pattern $tag) -}}
+{{- fail (printf "build.requirePinnedTags=true: images.%s.tag must be a pinned build tag %s-cfg-<64-hex config digest> (pass the verified build overlay from scripts/day7_build.py as a second -f), got %q" $name $.Chart.AppVersion $tag) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+DAY7: fail-closed validation of the candidate/routing state model. The
+values schema (values.schema.json) already rejects every one of these
+states; this template-level guard repeats the checks so they still hold
+under `helm template --skip-schema-validation`, and adds the two checks
+JSON Schema cannot express (weights summing to exactly 100, and the
+candidate message differing from the stable message). Rendered output
+of this helper is always empty - it only ever calls `fail`.
+Usage: {{ include "maops.validateDay7State" . }}
+*/}}
+{{- define "maops.validateDay7State" -}}
+{{- $mode := .Values.routing.mode -}}
+{{- $candidate := .Values.candidate | default dict -}}
+{{- $enabled := $candidate.enabled | default false -}}
+{{- if not (has $mode (list "stable" "candidate" "weighted")) -}}
+{{- fail (printf "routing.mode must be exactly one of stable|candidate|weighted (never empty or defaulted), got %q" (toString $mode)) -}}
+{{- end -}}
+{{- $hasStableWeight := hasKey .Values.routing "stableWeight" -}}
+{{- $hasCandidateWeight := hasKey .Values.routing "candidateWeight" -}}
+{{- if and (ne $mode "stable") (not $enabled) -}}
+{{- fail (printf "routing.mode=%s requires candidate.enabled=true (no candidate Service would exist to route to)" $mode) -}}
+{{- end -}}
+{{- if eq $mode "weighted" -}}
+{{- if not (and $hasStableWeight $hasCandidateWeight) -}}
+{{- fail "routing.mode=weighted requires both routing.stableWeight and routing.candidateWeight" -}}
+{{- end -}}
+{{- $sw := .Values.routing.stableWeight -}}
+{{- $cw := .Values.routing.candidateWeight -}}
+{{- range $label, $w := dict "routing.stableWeight" $sw "routing.candidateWeight" $cw -}}
+{{- if not (or (kindIs "float64" $w) (kindIs "int64" $w) (kindIs "int" $w)) -}}
+{{- fail (printf "%s must be an integer, got %v" $label $w) -}}
+{{- end -}}
+{{- if ne (toString $w) (toString (int $w)) -}}
+{{- fail (printf "%s must be an integer, got %v" $label $w) -}}
+{{- end -}}
+{{- if or (lt (int $w) 1) (gt (int $w) 99) -}}
+{{- fail (printf "%s must be between 1 and 99 in weighted mode, got %v" $label $w) -}}
+{{- end -}}
+{{- end -}}
+{{- if ne (add (int $sw) (int $cw)) 100 -}}
+{{- fail (printf "routing.stableWeight + routing.candidateWeight must equal exactly 100, got %v + %v" $sw $cw) -}}
+{{- end -}}
+{{- else if or $hasStableWeight $hasCandidateWeight -}}
+{{- fail (printf "routing.stableWeight/routing.candidateWeight are only valid with routing.mode=weighted (mode is %s)" $mode) -}}
+{{- end -}}
+{{- if $enabled -}}
+{{- if eq ($candidate.config.appMessage | default "") .Values.gateway.config.appMessage -}}
+{{- fail "candidate.config.appMessage must differ from gateway.config.appMessage - it is how candidate responses are identified" -}}
+{{- end -}}
+{{- end -}}
+{{- if and $candidate.faultInjection $candidate.faultInjection.failReadiness -}}
+{{- if not $enabled -}}
+{{- fail "candidate.faultInjection.failReadiness requires candidate.enabled=true" -}}
+{{- end -}}
+{{- if ne $mode "stable" -}}
+{{- fail (printf "candidate.faultInjection.failReadiness is only allowed with routing.mode=stable (got %s) - a deliberately unready candidate is never a route backend" $mode) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

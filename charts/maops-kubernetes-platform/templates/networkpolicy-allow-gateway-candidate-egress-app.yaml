@@ -1,0 +1,28 @@
+{{- if and .Values.candidate.enabled .Values.networkPolicy.enabled }}
+# DAY7: candidate-only mirror of maops-allow-gateway-egress-to-app -
+# candidate -> app on the app port, nothing else. Deliberately NO egress
+# toward state: candidate -> state stays denied by the default-deny
+# baseline (and, on the ambient path, by maops-state-authz, which only
+# admits maops-app's principal).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: maops-allow-gateway-candidate-egress-to-app
+  namespace: {{ .Values.release.namespace }}
+  labels:
+    {{- include "maops.componentLabels" (dict "root" $ "component" "gateway-candidate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: gateway-candidate
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: {{ .Values.app.containerPort }}
+{{- end }}

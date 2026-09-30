@@ -53,7 +53,7 @@ def record(ok: bool, message: str) -> bool:
 
 
 def main() -> int:
-    print(f"# Day 6 context/topology/node-version verification (expected context: {kube.CONTEXT})")
+    print(f"# Day {kube.PROFILE_DAY} context/topology/node-version verification (expected context: {kube.CONTEXT})")
     try:
         kube.verify_context()
         record(True, f"context {kube.CONTEXT!r} verified against live cluster node identity")
@@ -75,7 +75,7 @@ def main() -> int:
     if failures:
         print(f"FAIL: {len(failures)} context check(s) failed", file=sys.stderr)
         return 1
-    print("PASS: Day 6 context, topology, and node version verified")
+    print(f"PASS: Day {kube.PROFILE_DAY} context, topology, and node version verified")
     return 0
 
 

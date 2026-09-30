@@ -289,8 +289,8 @@ DIAGNOSTICS_PRINCIPAL = f"cluster.local/ns/{kube.VALIDATION_NAMESPACE}/sa/{kube.
 # trivially explained by "it never spoke mTLS at all" (a plaintext
 # rejection, a materially different, weaker proof this script must
 # never present as the stronger one).
-MESH_PROBE_NAMESPACE = "maops-day6-mesh-probe"
-MESH_PROBE_SERVICE_ACCOUNT = "maops-day6-wrong-identity"
+MESH_PROBE_NAMESPACE = kube.MESH_PROBE_NAMESPACE  # DAY7: profile-driven (Day 6 value unchanged)
+MESH_PROBE_SERVICE_ACCOUNT = kube.MESH_PROBE_SERVICE_ACCOUNT
 MESH_PROBE_PRINCIPAL = f"cluster.local/ns/{MESH_PROBE_NAMESPACE}/sa/{MESH_PROBE_SERVICE_ACCOUNT}"
 # DAY6 fourth remediation item 3: the SAME identity, in the SPIFFE form
 # ztunnel's own access logs actually carry (`spiffe://` + the
@@ -590,7 +590,7 @@ metadata:
   name: {MESH_PROBE_NAMESPACE}
   labels:
     app.kubernetes.io/name: maops-kubernetes-platform
-    app.kubernetes.io/instance: maops-kubernetes-platform-day6
+    app.kubernetes.io/instance: {kube.INSTANCE_LABEL}
     app.kubernetes.io/component: mesh-wrong-identity-probe
     app.kubernetes.io/part-of: maops-kubernetes-platform
     {kube.AMBIENT_DATAPLANE_MODE_LABEL}: {kube.AMBIENT_DATAPLANE_MODE_VALUE}
@@ -1262,7 +1262,7 @@ def check_authorization_denial_isolated() -> None:
 
 
 def main() -> int:
-    print(f"# Day 6 mesh check: ambient enrollment, strict mTLS, AuthorizationPolicy identity, isolated wrong-identity denial (context {kube.CONTEXT})")
+    print(f"# Day {kube.PROFILE_DAY} mesh check: ambient enrollment, strict mTLS, AuthorizationPolicy identity, isolated wrong-identity denial (context {kube.CONTEXT})")
     try:
         kube.verify_context()
     except RuntimeError as exc:

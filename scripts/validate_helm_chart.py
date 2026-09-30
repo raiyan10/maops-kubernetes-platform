@@ -23,15 +23,31 @@ NetworkPolicy topology, STRICT PeerAuthentication, exact
 AuthorizationPolicy principals/targets, exact Gateway/HTTPRoute
 references, and no Ingress/waypoint object anywhere in the chart's own
 rendered output.
+
+DAY7: every check is now evaluated against an explicit
+`RenderExpectation` - the render state a given values set must produce
+(candidate on/off, route mode and weights, candidate strategy/replicas/
+fault injection, release instance). The default expectation is the
+stable-only render (candidate disabled, one unweighted stable backend,
+the unchanged 30-object inventory). With the candidate enabled the
+validator additionally proves: the candidate objects exist with the
+stable gateway's security/identity/probe/Secret-mount parity and a
+distinct ConfigMap message; stable and candidate Deployment/Service/PDB/
+AuthorizationPolicy selectors are provably disjoint (a shared label KEY
+with different values - no Pod can satisfy both); every NetworkPolicy
+path the stable gateway has, the candidate has too - and no other
+(no candidate -> state, no widening of app/state/unrelated paths); and
+the single HTTPRoute's backendRefs are exactly the expected Services,
+ports and weights.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 EXPECTED_NAMESPACE = "maops-platform"
-EXPECTED_VERSION = "0.6.0"
+EXPECTED_VERSION = "0.7.0"
 EXPECTED_INSTANCE = "maops-kubernetes-platform-day6"
 
 VALIDATION_NAMESPACE = "maops-day6-validation"
@@ -125,6 +141,65 @@ _SHA256_CHECKSUM_RE = re.compile(r"^[0-9a-f]{64}$")
 # 3 AuthorizationPolicies + 1 HTTPRoute.
 EXPECTED_TOTAL_OBJECT_COUNT = 30
 
+# DAY7: the OPTIONAL gateway candidate. When enabled it adds exactly 7
+# objects: its ConfigMap, Deployment and Service, three candidate-only
+# NetworkPolicies, and its own AuthorizationPolicy (both policy sets are
+# required - see the templates' header comments).
+CANDIDATE_COMPONENT = "gateway-candidate"
+CANDIDATE_DEPLOYMENT = "maops-gateway-candidate"
+CANDIDATE_SERVICE = "maops-gateway-candidate"
+CANDIDATE_CONFIGMAP = "maops-gateway-candidate-config"
+STABLE_CONFIGMAP = "maops-gateway-config"
+AUTHZ_CANDIDATE = "maops-gateway-candidate-authz"
+GATEWAY_PDB = "maops-gateway-pdb"
+NETPOL_ALLOW_CANDIDATE_INGRESS_EXTERNAL = "maops-allow-gateway-candidate-ingress-from-istio-ingress-gateway"
+NETPOL_ALLOW_CANDIDATE_EGRESS_APP = "maops-allow-gateway-candidate-egress-to-app"
+NETPOL_ALLOW_APP_INGRESS_CANDIDATE = "maops-allow-app-ingress-from-gateway-candidate"
+CANDIDATE_NETWORK_POLICY_NAMES = {
+    NETPOL_ALLOW_CANDIDATE_INGRESS_EXTERNAL,
+    NETPOL_ALLOW_CANDIDATE_EGRESS_APP,
+    NETPOL_ALLOW_APP_INGRESS_CANDIDATE,
+}
+CANDIDATE_OBJECT_COUNT = 7
+FORCED_UNREADY_PATH = "/maops-day7-forced-unready"
+BACKEND_PORT = 8080
+ROUTE_MODES = ("stable", "candidate", "weighted")
+
+
+@dataclass(frozen=True)
+class RenderExpectation:
+    """The render state a values set must produce. Defaults describe
+    the chart's default values (stable-only, Day 6-shaped)."""
+
+    instance: str = EXPECTED_INSTANCE
+    # DAY7: the validation namespace the diagnostics RoleBinding subject
+    # must name (Day 6 default; the Day 7 stages use maops-day7-validation).
+    validation_namespace: str = VALIDATION_NAMESPACE
+    candidate_enabled: bool = False
+    route_mode: str = "stable"
+    stable_weight: int | None = None
+    candidate_weight: int | None = None
+    candidate_strategy: str = "RollingUpdate"
+    candidate_replicas: int = 2
+    candidate_fail_readiness: bool = False
+    # DAY7 image contract: image repository -> the pinned build tag the
+    # render must carry (a Day 7 stage rendered with a build overlay).
+    # Empty = the chart default <EXPECTED_VERSION> tag (Day 6 render).
+    image_tags: tuple[tuple[str, str], ...] = ()
+
+    def expected_object_count(self) -> int:
+        return EXPECTED_TOTAL_OBJECT_COUNT + (CANDIDATE_OBJECT_COUNT if self.candidate_enabled else 0)
+
+    def expected_backends(self) -> list[tuple[str, int, int | None]]:
+        if self.route_mode == "stable":
+            return [(GATEWAY_DEPLOYMENT, BACKEND_PORT, None)]
+        if self.route_mode == "candidate":
+            return [(CANDIDATE_SERVICE, BACKEND_PORT, None)]
+        return sorted([(GATEWAY_DEPLOYMENT, BACKEND_PORT, self.stable_weight), (CANDIDATE_SERVICE, BACKEND_PORT, self.candidate_weight)])
+
+
+DEFAULT_EXPECTATION = RenderExpectation()
+
 
 @dataclass
 class Finding:
@@ -138,8 +213,9 @@ class Finding:
 
 
 class _Checker:
-    def __init__(self, docs: list[dict]):
+    def __init__(self, docs: list[dict], expectation: RenderExpectation = DEFAULT_EXPECTATION):
         self.docs = docs
+        self.exp = expectation
         self.findings: list[Finding] = []
 
     def check(self, ok: bool, name: str, detail: str) -> bool:
@@ -165,10 +241,11 @@ def _container(doc: dict, name: str) -> dict | None:
 
 
 def _check_inventory(c: _Checker) -> None:
+    expected_count = c.exp.expected_object_count()
     c.check(
-        len(c.docs) == EXPECTED_TOTAL_OBJECT_COUNT,
+        len(c.docs) == expected_count,
         "inventory.total_object_count",
-        f"expected exactly {EXPECTED_TOTAL_OBJECT_COUNT} rendered objects, found {len(c.docs)}",
+        f"expected exactly {expected_count} rendered objects (candidate {'enabled' if c.exp.candidate_enabled else 'disabled'}), found {len(c.docs)}",
     )
     for kind in FORBIDDEN_KINDS:
         found = c.by_kind(kind)
@@ -192,7 +269,7 @@ def _check_versions(c: _Checker) -> None:
         doc = c.by_kind_name(kind, name)
         container = _container(doc, name) if doc else None
         image = container.get("image") if container else None
-        expected = f"{image_repo}:{EXPECTED_VERSION}"
+        expected = f"{image_repo}:{dict(c.exp.image_tags).get(image_repo, EXPECTED_VERSION)}"
         c.check(image == expected, f"version.{name}.image_tag", f"expected {name} image == {expected!r}, found {image!r}")
 
     for doc in c.docs:
@@ -204,7 +281,7 @@ def _check_versions(c: _Checker) -> None:
         instance = labels.get("app.kubernetes.io/instance")
         if instance is not None:
             name = f"{doc.get('kind')}/{doc.get('metadata', {}).get('name')}"
-            c.check(instance == EXPECTED_INSTANCE, f"version.instance_matches[{name}]", f"expected app.kubernetes.io/instance == {EXPECTED_INSTANCE!r}, found {instance!r}")
+            c.check(instance == c.exp.instance, f"version.instance_matches[{name}]", f"expected app.kubernetes.io/instance == {c.exp.instance!r}, found {instance!r}")
 
 
 def _check_security_context(c: _Checker) -> None:
@@ -321,7 +398,7 @@ def _check_service_accounts_and_rbac(c: _Checker) -> None:
             "expected no application ServiceAccount (gateway/app/state) to ever be a RoleBinding subject",
         )
         subject_namespaces = {s.get("namespace") for s in subjects}
-        c.check(subject_namespaces == {VALIDATION_NAMESPACE}, "rbac.rolebinding.subject_namespace", f"expected {VALIDATION_NAMESPACE!r}, found {subject_namespaces}")
+        c.check(subject_namespaces == {c.exp.validation_namespace}, "rbac.rolebinding.subject_namespace", f"expected {c.exp.validation_namespace!r}, found {subject_namespaces}")
 
 
 def _network_policy(c: _Checker, name: str) -> dict | None:
@@ -331,7 +408,8 @@ def _network_policy(c: _Checker, name: str) -> dict | None:
 def _check_network_policy(c: _Checker) -> None:
     policies = c.by_kind("NetworkPolicy")
     names = {p.get("metadata", {}).get("name") for p in policies}
-    c.check(names == EXPECTED_NETWORK_POLICY_NAMES, "networkpolicy.topology_exact", f"expected exactly {EXPECTED_NETWORK_POLICY_NAMES}, found {names}")
+    expected_names = EXPECTED_NETWORK_POLICY_NAMES | (CANDIDATE_NETWORK_POLICY_NAMES if c.exp.candidate_enabled else set())
+    c.check(names == expected_names, "networkpolicy.topology_exact", f"expected exactly {expected_names}, found {names}")
     c.check(not (names & FORBIDDEN_NETWORK_POLICY_NAMES), "networkpolicy.no_day5_validation_shortcut", f"expected the Day 5 validation-client -> gateway allow to be absent, found {names & FORBIDDEN_NETWORK_POLICY_NAMES}")
 
     default_deny = _network_policy(c, NETPOL_DEFAULT_DENY)
@@ -406,7 +484,8 @@ def _principal_of(policy: dict | None) -> set[str]:
 
 def _check_authorization_policies(c: _Checker) -> None:
     policies = c.by_kind("AuthorizationPolicy")
-    c.check(len(policies) == 3, "mesh.exactly_three_authorizationpolicies", f"expected exactly 3 AuthorizationPolicy objects, found {len(policies)}")
+    expected_authz = 4 if c.exp.candidate_enabled else 3
+    c.check(len(policies) == expected_authz, "mesh.exactly_three_authorizationpolicies" if not c.exp.candidate_enabled else "mesh.exactly_four_authorizationpolicies", f"expected exactly {expected_authz} AuthorizationPolicy objects, found {len(policies)}")
 
     gw_authz = c.by_kind_name("AuthorizationPolicy", AUTHZ_GATEWAY)
     app_authz = c.by_kind_name("AuthorizationPolicy", AUTHZ_APP)
@@ -440,10 +519,20 @@ def _check_authorization_policies(c: _Checker) -> None:
     # validation identity nor a gateway -> state path is ever a listed
     # principal anywhere.
     all_principals = _principal_of(gw_authz) | _principal_of(app_authz) | _principal_of(state_authz)
-    diagnostics_principal = f"cluster.local/ns/{VALIDATION_NAMESPACE}/sa/{DIAGNOSTICS_SERVICE_ACCOUNT}"
+    diagnostics_principal = f"cluster.local/ns/{c.exp.validation_namespace}/sa/{DIAGNOSTICS_SERVICE_ACCOUNT}"
     c.check(diagnostics_principal not in all_principals, "mesh.authz.diagnostics_never_a_principal", f"expected {diagnostics_principal!r} to never appear as an allowed principal")
     gateway_principal = f"cluster.local/ns/{EXPECTED_NAMESPACE}/sa/{GATEWAY_SERVICE_ACCOUNT}"
     c.check(gateway_principal not in _principal_of(state_authz), "mesh.authz.gateway_never_allowed_to_state", f"expected {gateway_principal!r} to never be allowed to reach state")
+
+    candidate_authz = c.by_kind_name("AuthorizationPolicy", AUTHZ_CANDIDATE)
+    if not c.exp.candidate_enabled:
+        c.check(candidate_authz is None, "mesh.authz.candidate_absent_when_disabled", f"expected no {AUTHZ_CANDIDATE} with the candidate disabled")
+        return
+    c.check(candidate_authz is not None, f"mesh.authz.{AUTHZ_CANDIDATE}.exists", f"expected AuthorizationPolicy/{AUTHZ_CANDIDATE}")
+    if candidate_authz is None:
+        return
+    c.check(candidate_authz.get("spec", {}).get("action") == "ALLOW", f"mesh.authz.{AUTHZ_CANDIDATE}.action_allow", "expected action: ALLOW")
+    c.check(_principal_of(candidate_authz) == gw_expected, "mesh.authz.candidate.principal_exact", f"expected only the ingress Gateway principal {gw_expected}, found {_principal_of(candidate_authz)}")
 
 
 def _check_gateway_api(c: _Checker) -> None:
@@ -473,11 +562,7 @@ def _check_gateway_api(c: _Checker) -> None:
             f"expected a PathPrefix '/' match, found {matches!r}",
         )
         backend_refs = rule.get("backendRefs", [])
-        c.check(
-            any(b.get("name") == "maops-gateway" and b.get("port") == 8080 for b in backend_refs),
-            "gateway_api.httproute.backend_ref_exact",
-            f"expected backendRefs to include service/maops-gateway port 8080, found {backend_refs!r}",
-        )
+        _check_route_backends(c, backend_refs)
 
 
 def _check_config_checksum(c: _Checker) -> None:
@@ -512,7 +597,10 @@ def _check_config_checksum(c: _Checker) -> None:
     tests/test_validate_helm_chart.py, which render the chart more than
     once and assert reproducibility directly."""
     checksums: dict[str, str] = {}
-    for kind, name in (("Deployment", GATEWAY_DEPLOYMENT), ("Deployment", APP_DEPLOYMENT), ("StatefulSet", STATE_STATEFULSET)):
+    workloads = [("Deployment", GATEWAY_DEPLOYMENT), ("Deployment", APP_DEPLOYMENT), ("StatefulSet", STATE_STATEFULSET)]
+    if c.exp.candidate_enabled:
+        workloads.append(("Deployment", CANDIDATE_DEPLOYMENT))
+    for kind, name in workloads:
         doc = c.by_kind_name(kind, name)
         if doc is None:
             c.check(False, f"checksum.{name}.exists", f"expected {kind}/{name} to be rendered")
@@ -557,8 +645,8 @@ def _check_config_checksum(c: _Checker) -> None:
             )
 
 
-def run_checks(docs: list[dict]) -> list[Finding]:
-    c = _Checker(docs)
+def run_checks(docs: list[dict], expectation: RenderExpectation | None = None) -> list[Finding]:
+    c = _Checker(docs, expectation or DEFAULT_EXPECTATION)
     _check_inventory(c)
     _check_versions(c)
     _check_security_context(c)
@@ -568,4 +656,340 @@ def run_checks(docs: list[dict]) -> list[Finding]:
     _check_authorization_policies(c)
     _check_gateway_api(c)
     _check_config_checksum(c)
+    _check_candidate(c)
+    _check_selector_isolation(c)
+    _check_network_policy_coverage(c)
+    _check_authorization_coverage(c)
     return c.findings
+
+
+# --------------------------------------------------------------------------
+# DAY7: selector algebra (pure - also used directly by unit tests)
+# --------------------------------------------------------------------------
+
+
+def selector_matches(match_labels: dict, labels: dict) -> bool:
+    """A matchLabels selector matches a label set iff every selector
+    entry is present with the same value. An empty selector matches
+    everything (Kubernetes semantics)."""
+    return all(labels.get(k) == v for k, v in (match_labels or {}).items())
+
+
+def selectors_provably_disjoint(a: dict, b: dict) -> bool:
+    """True iff NO label set can satisfy both matchLabels selectors -
+    i.e. they share at least one key with different values. Two
+    selectors without such a conflict could both match one Pod, so they
+    are NOT provably disjoint (even if today's Pods happen to differ)."""
+    return any(k in (b or {}) and b[k] != v for k, v in (a or {}).items())
+
+
+def _match_labels(obj: dict | None, *path: str) -> tuple[dict | None, bool]:
+    """Returns (matchLabels, analyzable). A selector that uses
+    matchExpressions is reported as not analyzable - this validator
+    never guesses at set-based selectors."""
+    node = obj or {}
+    for key in path:
+        node = (node or {}).get(key) or {}
+    if "matchExpressions" in node:
+        return None, False
+    if "matchLabels" in node:
+        return node.get("matchLabels") or {}, True
+    return node, True  # Service spec.selector is a plain map
+
+
+def _template_labels(doc: dict | None) -> dict:
+    return ((doc or {}).get("spec", {}).get("template", {}).get("metadata", {}).get("labels")) or {}
+
+
+# --------------------------------------------------------------------------
+# DAY7: HTTPRoute backend set
+# --------------------------------------------------------------------------
+
+
+def _check_route_backends(c: _Checker, backend_refs: list) -> None:
+    exp = c.exp
+    normalized = []
+    for b in backend_refs or []:
+        foreign = b.get("kind", "Service") != "Service" or b.get("group", "") not in ("", None) or b.get("namespace") not in (None, EXPECTED_NAMESPACE)
+        normalized.append((("FOREIGN:" if foreign else "") + str(b.get("name")), b.get("port"), b.get("weight")))
+    expected = exp.expected_backends()
+    c.check(
+        sorted(normalized, key=str) == sorted(expected, key=str),
+        "gateway_api.httproute.backend_ref_exact",
+        f"expected route mode {exp.route_mode!r} backendRefs exactly {expected} (name, port, weight), found {normalized}",
+    )
+    if exp.route_mode == "weighted":
+        weights = [w for _, _, w in normalized]
+        c.check(
+            all(isinstance(w, int) and not isinstance(w, bool) and 1 <= w <= 99 for w in weights) and sum(w for w in weights if isinstance(w, int)) == 100,
+            "gateway_api.httproute.weights_valid",
+            f"expected integer weights in 1..99 summing to 100, found {weights}",
+        )
+    else:
+        c.check(all(w is None for _, _, w in normalized), "gateway_api.httproute.unweighted_single_backend", f"expected no weight field in mode {exp.route_mode!r}, found {normalized}")
+    for name, port, _ in normalized:
+        svc = c.by_kind_name("Service", name)
+        c.check(svc is not None, f"gateway_api.httproute.backend[{name}].service_rendered", f"expected backend Service {name!r} to be rendered by this chart")
+        if svc is None:
+            continue
+        ports = {p.get("port") for p in svc.get("spec", {}).get("ports", [])}
+        c.check(port in ports, f"gateway_api.httproute.backend[{name}].port_matches_service", f"expected backend port {port} to be a port of Service/{name} ({sorted(ports)})")
+
+
+# --------------------------------------------------------------------------
+# DAY7: candidate presence, parity and config variant
+# --------------------------------------------------------------------------
+
+_PARITY_POD_FIELDS = ("serviceAccountName", "automountServiceAccountToken", "securityContext", "affinity", "volumes")
+_PARITY_CONTAINER_FIELDS = ("name", "image", "imagePullPolicy", "ports", "securityContext", "resources", "volumeMounts", "startupProbe", "livenessProbe")
+
+
+def _check_candidate(c: _Checker) -> None:
+    candidate_docs = [
+        d for d in c.docs
+        if (d.get("metadata", {}).get("labels") or {}).get("app.kubernetes.io/component") == CANDIDATE_COMPONENT
+        or "candidate" in str(d.get("metadata", {}).get("name", ""))
+    ]
+    stable = c.by_kind_name("Deployment", GATEWAY_DEPLOYMENT)
+    stable_strategy = (stable or {}).get("spec", {}).get("strategy", {})
+    c.check(
+        stable_strategy.get("type") == "RollingUpdate" and stable_strategy.get("rollingUpdate") == {"maxUnavailable": 1, "maxSurge": 1},
+        "strategy.stable_gateway_stays_rollingupdate",
+        f"expected maops-gateway to keep RollingUpdate (maxUnavailable 1, maxSurge 1) in every render - Recreate is candidate-only; found {stable_strategy}",
+    )
+    if not c.exp.candidate_enabled:
+        c.check(not candidate_docs, "candidate.absent_when_disabled", f"expected no candidate object with candidate.enabled=false, found {[d.get('kind') + '/' + d.get('metadata', {}).get('name', '') for d in candidate_docs]}")
+        return
+    c.check(len(candidate_docs) == CANDIDATE_OBJECT_COUNT, "candidate.object_count", f"expected exactly {CANDIDATE_OBJECT_COUNT} candidate objects, found {len(candidate_docs)}")
+    dep = c.by_kind_name("Deployment", CANDIDATE_DEPLOYMENT)
+    svc = c.by_kind_name("Service", CANDIDATE_SERVICE)
+    cm = c.by_kind_name("ConfigMap", CANDIDATE_CONFIGMAP)
+    for kind, name, doc in (("Deployment", CANDIDATE_DEPLOYMENT, dep), ("Service", CANDIDATE_SERVICE, svc), ("ConfigMap", CANDIDATE_CONFIGMAP, cm)):
+        c.check(doc is not None, f"candidate.{kind.lower()}.exists", f"expected {kind}/{name}")
+    if dep is None or stable is None:
+        return
+
+    spec = dep.get("spec", {})
+    c.check(spec.get("replicas") == c.exp.candidate_replicas, "candidate.replicas", f"expected {c.exp.candidate_replicas}, found {spec.get('replicas')!r}")
+    strategy = spec.get("strategy", {})
+    if c.exp.candidate_strategy == "Recreate":
+        c.check(strategy == {"type": "Recreate"}, "candidate.strategy_recreate_without_rollingupdate", f"expected exactly {{'type': 'Recreate'}} (no rollingUpdate block), found {strategy}")
+    else:
+        c.check(strategy == stable_strategy, "candidate.strategy_matches_stable_rollingupdate", f"expected the stable gateway's RollingUpdate settings, found {strategy}")
+
+    pod, stable_pod = spec.get("template", {}).get("spec", {}), stable.get("spec", {}).get("template", {}).get("spec", {})
+    for fld in _PARITY_POD_FIELDS:
+        c.check(pod.get(fld) == stable_pod.get(fld), f"candidate.parity.pod.{fld}", f"expected candidate {fld} identical to maops-gateway's ({stable_pod.get(fld)!r}), found {pod.get(fld)!r}")
+    c.check(pod.get("serviceAccountName") == GATEWAY_SERVICE_ACCOUNT, "candidate.shares_gateway_serviceaccount", f"expected the shared {GATEWAY_SERVICE_ACCOUNT!r} ServiceAccount (one Istio principal for stable and candidate), found {pod.get('serviceAccountName')!r}")
+    tsc, stable_tsc = pod.get("topologySpreadConstraints") or [], stable_pod.get("topologySpreadConstraints") or []
+    strip = lambda items: [{k: v for k, v in i.items() if k != "labelSelector"} for i in items]  # noqa: E731
+    c.check(strip(tsc) == strip(stable_tsc) and len(tsc) == 1, "candidate.parity.topology_spread", "expected the stable gateway's topology spread (same keys/skew), with its own labelSelector")
+    if tsc:
+        own = (tsc[0].get("labelSelector") or {}).get("matchLabels") or {}
+        c.check(own == (spec.get("selector") or {}).get("matchLabels"), "candidate.topology_spread_selects_candidate_only", f"expected the candidate's spread labelSelector to equal its own selector, found {own}")
+
+    cont = next((x for x in pod.get("containers", []) if x.get("name") == GATEWAY_DEPLOYMENT), None)
+    stable_cont = next((x for x in stable_pod.get("containers", []) if x.get("name") == GATEWAY_DEPLOYMENT), None)
+    c.check(cont is not None and len(pod.get("containers", [])) == 1, "candidate.single_gateway_container", "expected exactly one container named maops-gateway")
+    if cont is not None and stable_cont is not None:
+        for fld in _PARITY_CONTAINER_FIELDS:
+            c.check(cont.get(fld) == stable_cont.get(fld), f"candidate.parity.container.{fld}", f"expected candidate container {fld} identical to maops-gateway's ({stable_cont.get(fld)!r}), found {cont.get(fld)!r}")
+        env_from = [e.get("configMapRef", {}).get("name") for e in cont.get("envFrom", [])]
+        c.check(env_from == [CANDIDATE_CONFIGMAP], "candidate.envfrom_own_configmap", f"expected envFrom only {CANDIDATE_CONFIGMAP!r}, found {env_from}")
+        ready, stable_ready = dict(cont.get("readinessProbe") or {}), dict(stable_cont.get("readinessProbe") or {})
+        path = (ready.get("httpGet") or {}).get("path")
+        expected_path = FORCED_UNREADY_PATH if c.exp.candidate_fail_readiness else "/readyz"
+        c.check(path == expected_path, "candidate.readiness_probe_path", f"expected readiness path {expected_path!r} (failReadiness={c.exp.candidate_fail_readiness}), found {path!r}")
+        ready_no_path = {**ready, "httpGet": {k: v for k, v in (ready.get("httpGet") or {}).items() if k != "path"}}
+        stable_no_path = {**stable_ready, "httpGet": {k: v for k, v in (stable_ready.get("httpGet") or {}).items() if k != "path"}}
+        c.check(ready_no_path == stable_no_path, "candidate.parity.readiness_probe_timing", "expected the stable readiness probe's port/timing, only the path may differ")
+
+    stable_cm = c.by_kind_name("ConfigMap", STABLE_CONFIGMAP)
+    if cm is not None and stable_cm is not None:
+        data, stable_data = cm.get("data", {}), stable_cm.get("data", {})
+        c.check(set(data) == set(stable_data), "candidate.configmap.same_keys", f"expected the stable gateway ConfigMap's keys, found {sorted(data)}")
+        others_same = all(data.get(k) == stable_data.get(k) for k in stable_data if k != "APP_MESSAGE")
+        c.check(others_same, "candidate.configmap.only_message_differs", "expected every key except APP_MESSAGE to equal the stable gateway ConfigMap (configuration variant of one key)")
+        c.check(bool(data.get("APP_MESSAGE")) and data.get("APP_MESSAGE") != stable_data.get("APP_MESSAGE"), "candidate.configmap.distinct_message", f"expected a non-empty APP_MESSAGE distinct from stable's ({stable_data.get('APP_MESSAGE')!r}), found {data.get('APP_MESSAGE')!r}")
+        c.check(data.get("BACKEND_HOST") == "maops-app", "candidate.configmap.backend_is_app", f"expected BACKEND_HOST maops-app, found {data.get('BACKEND_HOST')!r}")
+
+
+# --------------------------------------------------------------------------
+# DAY7: selector isolation between stable and candidate
+# --------------------------------------------------------------------------
+
+
+def _check_selector_isolation(c: _Checker) -> None:
+    stable_dep = c.by_kind_name("Deployment", GATEWAY_DEPLOYMENT)
+    stable_sel, ok1 = _match_labels(stable_dep, "spec", "selector")
+    stable_pods = _template_labels(stable_dep)
+    stable_svc_sel, ok2 = _match_labels(c.by_kind_name("Service", GATEWAY_DEPLOYMENT), "spec", "selector")
+    pdb_sel, ok3 = _match_labels(c.by_kind_name("PodDisruptionBudget", GATEWAY_PDB), "spec", "selector")
+    c.check(ok1 and ok2 and ok3, "isolation.stable_selectors_analyzable", "expected stable gateway Deployment/Service/PDB selectors to use matchLabels only")
+    c.check(selector_matches(stable_sel, stable_pods) and selector_matches(stable_svc_sel, stable_pods) and selector_matches(pdb_sel, stable_pods), "isolation.stable_selectors_select_stable_pods", "expected the stable Deployment, Service and PDB selectors to select the stable gateway Pod template")
+    if not c.exp.candidate_enabled:
+        return
+    cand_dep = c.by_kind_name("Deployment", CANDIDATE_DEPLOYMENT)
+    cand_sel, ok4 = _match_labels(cand_dep, "spec", "selector")
+    cand_pods = _template_labels(cand_dep)
+    cand_svc_sel, ok5 = _match_labels(c.by_kind_name("Service", CANDIDATE_SERVICE), "spec", "selector")
+    c.check(ok4 and ok5, "isolation.candidate_selectors_analyzable", "expected candidate Deployment/Service selectors to use matchLabels only")
+    if not (ok1 and ok2 and ok3 and ok4 and ok5) or cand_dep is None:
+        return
+    c.check(selector_matches(cand_sel, cand_pods) and selector_matches(cand_svc_sel, cand_pods), "isolation.candidate_selectors_select_candidate_pods", "expected the candidate Deployment and Service selectors to select the candidate Pod template")
+    c.check(selectors_provably_disjoint(stable_sel, cand_sel), "isolation.deployment_selectors_disjoint", f"expected stable {stable_sel} and candidate {cand_sel} Deployment selectors to conflict on a shared key (no Pod can match both)")
+    c.check(selectors_provably_disjoint(stable_svc_sel, cand_svc_sel), "isolation.service_selectors_disjoint", f"expected stable {stable_svc_sel} and candidate {cand_svc_sel} Service selectors to select disjoint Pods")
+    c.check(selectors_provably_disjoint(pdb_sel, cand_sel) and not selector_matches(pdb_sel, cand_pods), "isolation.stable_pdb_cannot_select_candidate", f"expected the stable PDB selector {pdb_sel} to be unable to select candidate Pods {cand_pods}")
+    c.check(not selector_matches(stable_sel, cand_pods) and not selector_matches(stable_svc_sel, cand_pods), "isolation.stable_selectors_reject_candidate_pods", "expected neither stable Deployment nor stable Service selector to match the candidate Pod template")
+    c.check(not selector_matches(cand_sel, stable_pods) and not selector_matches(cand_svc_sel, stable_pods), "isolation.candidate_selectors_reject_stable_pods", "expected neither candidate selector to match the stable Pod template")
+    others = [(k, n) for k, n in (("Deployment", APP_DEPLOYMENT), ("StatefulSet", STATE_STATEFULSET))]
+    leaks = [n for k, n in others if selector_matches(cand_sel, _template_labels(c.by_kind_name(k, n))) or selector_matches(cand_svc_sel, _template_labels(c.by_kind_name(k, n)))]
+    c.check(not leaks, "isolation.candidate_selectors_reject_other_workloads", f"expected candidate selectors to match no app/state Pod template, matched {leaks}")
+    pdb_selecting = [p.get("metadata", {}).get("name") for p in c.by_kind("PodDisruptionBudget") if selector_matches(_match_labels(p, "spec", "selector")[0] or {"__unanalyzable__": "x"}, cand_pods)]
+    c.check(not pdb_selecting, "isolation.no_pdb_selects_candidate", f"expected no PodDisruptionBudget to select candidate Pods (a PDB would not protect a Recreate rollout anyway), found {pdb_selecting}")
+
+
+# --------------------------------------------------------------------------
+# DAY7: NetworkPolicy coverage (pure evaluation of rendered policies)
+# --------------------------------------------------------------------------
+
+INGRESS_GATEWAY_POD = (INGRESS_NAMESPACE, {"istio.io/gateway-name": GATEWAY_NAME})
+VALIDATION_CLIENT_LABELS = {"app.kubernetes.io/component": "validation-client"}
+VALIDATION_CLIENT_POD = (VALIDATION_NAMESPACE, VALIDATION_CLIENT_LABELS)
+
+
+def _peer_matches(peer: dict, peer_ns: str, peer_labels: dict, own_ns: str) -> bool:
+    if "ipBlock" in peer:
+        return False
+    ns_sel = peer.get("namespaceSelector")
+    pod_sel = peer.get("podSelector")
+    if ns_sel is None:
+        ns_ok = peer_ns == own_ns
+    else:
+        ns_ok = selector_matches(ns_sel.get("matchLabels") or {}, {"kubernetes.io/metadata.name": peer_ns}) and "matchExpressions" not in ns_sel
+    pod_ok = True if pod_sel is None else (selector_matches(pod_sel.get("matchLabels") or {}, peer_labels) and "matchExpressions" not in pod_sel)
+    return ns_ok and pod_ok
+
+
+def network_path_allowed(policies: list[dict], direction: str, target_labels: dict, peer_ns: str, peer_labels: dict, port: int, own_ns: str = EXPECTED_NAMESPACE) -> bool:
+    """Pure NetworkPolicy semantics for one side of a connection: is
+    `direction` ("Ingress" to, or "Egress" from, a Pod with
+    `target_labels` in `own_ns`) allowed for the given peer and TCP
+    port? Isolated only if some policy of that type selects the Pod;
+    then allowed iff some rule of a selecting policy admits the peer and
+    port (standard additive semantics)."""
+    rule_key, peer_key = ("ingress", "from") if direction == "Ingress" else ("egress", "to")
+    selecting = [
+        p for p in policies
+        if direction in (p.get("spec", {}).get("policyTypes") or [])
+        and "matchExpressions" not in (p.get("spec", {}).get("podSelector") or {})
+        and selector_matches((p.get("spec", {}).get("podSelector") or {}).get("matchLabels") or {}, target_labels)
+    ]
+    if not selecting:
+        return True
+    for policy in selecting:
+        for rule in policy.get("spec", {}).get(rule_key) or []:
+            peers = rule.get(peer_key)
+            ports = rule.get("ports")
+            port_ok = not ports or any(p.get("protocol", "TCP") == "TCP" and p.get("port") == port for p in ports)
+            peer_ok = not peers or any(_peer_matches(peer, peer_ns, peer_labels, own_ns) for peer in peers)
+            if port_ok and peer_ok:
+                return True
+    return False
+
+
+def connection_allowed(policies: list[dict], src: tuple[str, dict], dst: tuple[str, dict], port: int) -> bool:
+    """Both ends must allow: source egress AND destination ingress. A
+    source outside the release namespace is not governed by this
+    chart's policies on its egress side."""
+    src_ns, src_labels = src
+    dst_ns, dst_labels = dst
+    egress_ok = True if src_ns != EXPECTED_NAMESPACE else network_path_allowed(policies, "Egress", src_labels, dst_ns, dst_labels, port)
+    ingress_ok = True if dst_ns != EXPECTED_NAMESPACE else network_path_allowed(policies, "Ingress", dst_labels, src_ns, src_labels, port)
+    return egress_ok and ingress_ok
+
+
+def _pod(doc: dict | None) -> tuple[str, dict]:
+    return EXPECTED_NAMESPACE, _template_labels(doc)
+
+
+def gateway_path_matrix(policies: list[dict], gateway: tuple[str, dict], app: tuple[str, dict], state: tuple[str, dict], validation_client: tuple[str, dict] = VALIDATION_CLIENT_POD) -> dict[str, bool]:
+    """The application-port path matrix for one gateway-shaped workload."""
+    VALIDATION_CLIENT_POD = validation_client  # noqa: N806 - shadows the module default for this render
+    return {
+        "istio-ingress -> gateway:8080": connection_allowed(policies, INGRESS_GATEWAY_POD, gateway, BACKEND_PORT),
+        "validation-client -> gateway:8080": connection_allowed(policies, VALIDATION_CLIENT_POD, gateway, BACKEND_PORT),
+        "app -> gateway:8080": connection_allowed(policies, app, gateway, BACKEND_PORT),
+        "state -> gateway:8080": connection_allowed(policies, state, gateway, BACKEND_PORT),
+        "gateway -> app:8080": connection_allowed(policies, gateway, app, BACKEND_PORT),
+        "gateway -> state:8080": connection_allowed(policies, gateway, state, BACKEND_PORT),
+        # One-sided entries: a widening on EITHER side is a defect even
+        # while the other side still blocks the connection end to end.
+        "gateway egress-side permits app:8080": network_path_allowed(policies, "Egress", gateway[1], app[0], app[1], BACKEND_PORT),
+        "gateway egress-side permits state:8080": network_path_allowed(policies, "Egress", gateway[1], state[0], state[1], BACKEND_PORT),
+        "state ingress-side permits gateway:8080": network_path_allowed(policies, "Ingress", state[1], gateway[0], gateway[1], BACKEND_PORT),
+        "app ingress-side permits gateway:8080": network_path_allowed(policies, "Ingress", app[1], gateway[0], gateway[1], BACKEND_PORT),
+        "gateway -> ztunnel HBONE:15008 (egress)": network_path_allowed(policies, "Egress", gateway[1], "istio-system", {}, 15008),
+        "ztunnel HBONE:15008 -> gateway (ingress)": network_path_allowed(policies, "Ingress", gateway[1], "istio-system", {}, 15008),
+    }
+
+
+EXPECTED_GATEWAY_PATH_MATRIX = {
+    "istio-ingress -> gateway:8080": True,
+    "validation-client -> gateway:8080": False,
+    "app -> gateway:8080": False,
+    "state -> gateway:8080": False,
+    "gateway -> app:8080": True,
+    "gateway -> state:8080": False,
+    "gateway egress-side permits app:8080": True,
+    "gateway egress-side permits state:8080": False,
+    "state ingress-side permits gateway:8080": False,
+    "app ingress-side permits gateway:8080": True,
+    "gateway -> ztunnel HBONE:15008 (egress)": True,
+    "ztunnel HBONE:15008 -> gateway (ingress)": True,
+}
+
+
+def _check_network_policy_coverage(c: _Checker) -> None:
+    policies = c.by_kind("NetworkPolicy")
+    app = _pod(c.by_kind_name("Deployment", APP_DEPLOYMENT))
+    state = _pod(c.by_kind_name("StatefulSet", STATE_STATEFULSET))
+    stable = _pod(c.by_kind_name("Deployment", GATEWAY_DEPLOYMENT))
+    client = (c.exp.validation_namespace, VALIDATION_CLIENT_LABELS)
+    stable_matrix = gateway_path_matrix(policies, stable, app, state, client)
+    c.check(stable_matrix == EXPECTED_GATEWAY_PATH_MATRIX, "networkpolicy.coverage.stable_gateway_paths", f"expected stable gateway paths {EXPECTED_GATEWAY_PATH_MATRIX}, found {stable_matrix}")
+    c.check(connection_allowed(policies, app, state, BACKEND_PORT) and not connection_allowed(policies, state, app, BACKEND_PORT) and not connection_allowed(policies, client, app, BACKEND_PORT) and not connection_allowed(policies, client, state, BACKEND_PORT),
+            "networkpolicy.coverage.app_state_paths_unchanged", "expected app -> state allowed and state -> app / validation-client -> app|state denied (no widening)")
+    if not c.exp.candidate_enabled:
+        return
+    cand = _pod(c.by_kind_name("Deployment", CANDIDATE_DEPLOYMENT))
+    cand_matrix = gateway_path_matrix(policies, cand, app, state, client)
+    c.check(cand_matrix == EXPECTED_GATEWAY_PATH_MATRIX, "networkpolicy.coverage.candidate_paths_match_stable", f"expected the candidate to have exactly the stable gateway's paths {EXPECTED_GATEWAY_PATH_MATRIX}, found {cand_matrix}")
+    c.check(not connection_allowed(policies, cand, stable, BACKEND_PORT) and not connection_allowed(policies, stable, cand, BACKEND_PORT), "networkpolicy.coverage.no_stable_candidate_lateral_path", "expected no application-port path between stable and candidate gateways")
+    c.check(not connection_allowed(policies, app, cand, BACKEND_PORT) and not connection_allowed(policies, state, cand, BACKEND_PORT), "networkpolicy.coverage.candidate_not_reachable_from_app_or_state", "expected app/state -> candidate denied")
+    candidate_policies = [p for p in policies if p.get("metadata", {}).get("name") in CANDIDATE_NETWORK_POLICY_NAMES]
+    widened = [
+        p.get("metadata", {}).get("name") for p in candidate_policies
+        if selector_matches((p.get("spec", {}).get("podSelector") or {}).get("matchLabels") or {}, state[1])
+        or selector_matches((p.get("spec", {}).get("podSelector") or {}).get("matchLabels") or {}, stable[1])
+    ]
+    c.check(not widened, "networkpolicy.coverage.candidate_policies_never_select_state_or_stable", f"expected candidate-only policies to select only candidate or app Pods, found {widened}")
+
+
+# --------------------------------------------------------------------------
+# DAY7: AuthorizationPolicy coverage
+# --------------------------------------------------------------------------
+
+
+def _check_authorization_coverage(c: _Checker) -> None:
+    policies = c.by_kind("AuthorizationPolicy")
+
+    def selecting(labels: dict) -> list[str]:
+        return sorted(p.get("metadata", {}).get("name") for p in policies if selector_matches((p.get("spec", {}).get("selector") or {}).get("matchLabels") or {}, labels))
+
+    stable = _template_labels(c.by_kind_name("Deployment", GATEWAY_DEPLOYMENT))
+    c.check(selecting(stable) == [AUTHZ_GATEWAY], "mesh.authz.coverage.stable_gateway", f"expected only {AUTHZ_GATEWAY} to select stable gateway Pods, found {selecting(stable)}")
+    if not c.exp.candidate_enabled:
+        return
+    cand = _template_labels(c.by_kind_name("Deployment", CANDIDATE_DEPLOYMENT))
+    c.check(selecting(cand) == [AUTHZ_CANDIDATE], "mesh.authz.coverage.candidate", f"expected exactly {AUTHZ_CANDIDATE} to select candidate Pods (an unselected ambient workload would accept any mesh identity), found {selecting(cand)}")

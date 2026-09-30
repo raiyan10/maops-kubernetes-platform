@@ -23,8 +23,9 @@ Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
    RELEASED baseline: `0.6.0` for Day 6, released 2026-09-25 as a local
-   kind reference platform; the next target is `1.0.0` for Day 7, not
-   yet started; use whatever
+   kind reference platform; the current target is `0.7.0` for Day 7
+   (release candidate - local Kind gate passed), then `1.0.0` for Day 8;
+   use whatever
    `docs/roadmap.md` names for the day actually under review), with no
    trailing whitespace/newline surprises. Also re-run `make
    version-check` yourself rather than trusting the file alone - as of
@@ -37,8 +38,9 @@ Checklist for a readiness assessment:
    check `git status` and `git log` against the base branch; uncommitted
    changes are the expected, correct state at handoff. Earlier days'
    tags (as of the current released baseline: `v0.1.0` through
-   `v0.6.0`) must still exist unmoved - Day 7 has no tag yet, and none
-   should be created by this work.
+   `v0.6.0`) must still exist unmoved - Day 7 has no `v0.7.0` tag yet,
+   and none should be created by this work (publication follows the
+   PR, merge and merged-`main` validation, never a readiness review).
 3. **`make dayN-check`** for the current day (e.g. `make day6-check`) has
    actually been run and its real output captured - not assumed. Re-run
    it if you can't find fresh evidence it passed. For a Day 6
@@ -79,9 +81,10 @@ Checklist for a readiness assessment:
    waypoint proxy or Cilium L7 policy; any unpinned infrastructure
    version (Cilium/Gateway API CRDs/Istio must be exact, never
    `latest`); a live cluster having actually been contacted when the
-   task scope said not to. What must still be excluded even from Day 6:
-   Day 7 work (Recreate/Blue-Green/Canary deployment-strategy
-   demonstrations, `HorizontalPodAutoscaler`, Argo Rollouts), plus the
+   task scope said not to. What must be excluded from Day 6: Day 7 work
+   (Recreate/Blue-Green/Canary deployment-strategy demonstrations); from
+   Day 7: Day 8 work (`HorizontalPodAutoscaler`, autoscaling/final
+   hardening); from every day: Argo Rollouts, plus the
    evergreen exclusions at any day: observability stack (Hubble, Kiali,
    Prometheus, Grafana, Jaeger/tracing), TLS/cert-manager, a cloud
    LoadBalancer, Terraform/Ansible/Argo CD, and cloud provisioning. A

@@ -113,12 +113,12 @@ def check_kube_proxy_still_enabled() -> None:
     ready_pods = [p for p in pods if _is_ready(p)]
     record(
         bool(pods) and len(ready_pods) == len(pods),
-        f"kube-proxy DaemonSet: {len(ready_pods)}/{len(pods)} Pods Ready (Day 6 does not disable kube-proxy)",
+        f"kube-proxy DaemonSet: {len(ready_pods)}/{len(pods)} Pods Ready (Day {kube.PROFILE_DAY} does not disable kube-proxy)",
     )
 
 
 def main() -> int:
-    print(f"# Day 6 CNI status check: Cilium + kube-proxy (context {kube.CONTEXT}) - READ ONLY, never mutates")
+    print(f"# Day {kube.PROFILE_DAY} CNI status check: Cilium + kube-proxy (context {kube.CONTEXT}) - READ ONLY, never mutates")
     try:
         kube.verify_context()
     except RuntimeError as exc:

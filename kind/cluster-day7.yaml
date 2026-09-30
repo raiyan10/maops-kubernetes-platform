@@ -1,0 +1,35 @@
+# MAOps Kubernetes Platform - Day 7 kind cluster.
+#
+# A NEW, separately named cluster (`maops-k8s-day7`) created alongside -
+# never instead of - the released Day 6 cluster (`maops-k8s-day6`, left
+# running and untouched). Same topology (1 control-plane + 2 workers),
+# same pinned kindest/node digest, and the same `disableDefaultCNI: true`
+# Cilium/Istio-ambient bootstrap contract as kind/cluster-day6.yaml,
+# which is preserved unchanged (earlier configs are never edited in
+# place).
+#
+# The one deliberate difference is the HOST side of the ingress mapping:
+# 127.0.0.1:18081 -> control-plane:30080. Port 18080 belongs to the Day 6
+# cluster, and two kind clusters cannot publish the same host port. The
+# in-cluster NodePort (30080, pinned by k8s/day6/gateway-values-configmap.yaml)
+# is unchanged - it is per-cluster, so it cannot collide. The Day 7 cluster
+# profile in scripts/kube.py (MAOPS_CLUSTER_PROFILE=day7) targets
+# http://127.0.0.1:18081 accordingly; `make day7-preflight` checks the port
+# is free (or already owned by this cluster) before anything is created.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: maops-k8s-day7
+networking:
+  disableDefaultCNI: true
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 18081
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+  - role: worker
+    image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5

@@ -249,3 +249,107 @@ class Day6IdentityDriftTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# DAY7: run_day7_release_checks (the live 0.7.0 contract). The Day 6
+# function above stays as the historical v0.6.0 contract.
+# --------------------------------------------------------------------------
+
+import copy as _copy
+
+from version_check import run_day7_release_checks
+
+_DIGEST = "kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5"
+
+
+def _kind(name: str, host_port: int, digest: str = _DIGEST) -> dict:
+    return {
+        "name": name,
+        "nodes": [
+            {"role": "control-plane", "image": digest, "extraPortMappings": [{"containerPort": 30080, "hostPort": host_port}]},
+            {"role": "worker", "image": digest},
+            {"role": "worker", "image": digest},
+        ],
+    }
+
+
+_DAY7_VALUES = {
+    "images": {w: {"tag": "0.7.0"} for w in ("gateway", "app", "state")},
+    "candidate": {"enabled": False},
+    "routing": {"mode": "stable"},
+}
+_DAY7_MAKEFILE = (
+    _DAY6_MAKEFILE_TEXT
+    + "DAY7_CLUSTER_NAME := maops-k8s-day7\nKIND_CONFIG := kind/cluster-$(CLUSTER_PROFILE).yaml\n"
+    + "HELM_RELEASE := maops-kubernetes-platform-$(CLUSTER_PROFILE)\n"
+)
+
+
+def _day7(**overrides):
+    args = dict(
+        version_file_content="0.7.0",
+        chart_yaml={"version": "0.7.0", "appVersion": "0.7.0"},
+        values_yaml=_copy.deepcopy(_DAY7_VALUES),
+        makefile_text=_DAY7_MAKEFILE,
+        kind_day6=_kind("maops-k8s-day6", 18080),
+        kind_day7=_kind("maops-k8s-day7", 18081),
+    )
+    args.update(overrides)
+    return run_day7_release_checks(**args)
+
+
+class Day7ReleaseChecksTests(unittest.TestCase):
+    def test_all_pass(self):
+        self.assertEqual(_failed_names(_day7()), set())
+
+    def test_real_repository_passes(self):
+        import version_check
+        import k8s_yaml as _y
+        findings = run_day7_release_checks(
+            version_check.read_version(),
+            _y.load_all(version_check.CHART_YAML.read_text())[0],
+            _y.load_all(version_check.VALUES_YAML.read_text())[0],
+            version_check.MAKEFILE.read_text(),
+            _y.load_all(version_check.KIND_DAY6_CONFIG.read_text())[0],
+            _y.load_all(version_check.KIND_DAY7_CONFIG.read_text())[0],
+        )
+        self.assertEqual(_failed_names(findings), set())
+
+    def test_stale_versions_fail(self):
+        self.assertIn("day7.version_file_matches_target", _failed_names(_day7(version_file_content="0.6.0")))
+        self.assertIn("day7.chart_version_matches_target", _failed_names(_day7(chart_yaml={"version": "0.6.0", "appVersion": "0.7.0"})))
+        values = _copy.deepcopy(_DAY7_VALUES)
+        values["images"]["gateway"]["tag"] = "0.6.0"
+        self.assertIn("day7.values.images.gateway.tag_matches_target", _failed_names(_day7(values_yaml=values)))
+
+    def test_candidate_enabled_by_default_fails(self):
+        values = _copy.deepcopy(_DAY7_VALUES)
+        values["candidate"]["enabled"] = True
+        self.assertIn("day7.values.default_is_stable_only", _failed_names(_day7(values_yaml=values)))
+        values = _copy.deepcopy(_DAY7_VALUES)
+        values["routing"]["stableWeight"] = 100
+        self.assertIn("day7.values.default_is_stable_only", _failed_names(_day7(values_yaml=values)))
+
+    def test_shared_host_port_fails(self):
+        failed = _failed_names(_day7(kind_day7=_kind("maops-k8s-day7", 18080)))
+        self.assertIn("day7.kind_config.host_port", failed)
+
+    def test_profile_drift_fails(self):
+        import kube
+        profiles = _copy.deepcopy(kube.PROFILES)
+        profiles["day7"]["host_port"] = 18080
+        failed = _failed_names(_day7(profiles=profiles))
+        self.assertIn("day7.identity[PROFILES['day7'].host_port]", failed)
+        self.assertIn("day7.identity.host_ports_distinct", failed)
+        profiles = _copy.deepcopy(kube.PROFILES)
+        profiles["day6"]["cluster_name"] = "maops-k8s-day7"
+        self.assertIn("day7.identity[PROFILES['day6'].cluster_name]", _failed_names(_day7(profiles=profiles)))
+
+    def test_unpinned_or_different_kind_image_fails(self):
+        self.assertIn("day7.kind_config.pinned_digest_matches_day6", _failed_names(_day7(kind_day7=_kind("maops-k8s-day7", 18081, "kindest/node:latest"))))
+        other = _DIGEST.replace("3489c7", "000000")
+        self.assertIn("day7.kind_config.pinned_digest_matches_day6", _failed_names(_day7(kind_day7=_kind("maops-k8s-day7", 18081, other))))
+
+    def test_makefile_wiring_missing_fails(self):
+        self.assertIn("day7.makefile[DAY7_CLUSTER_NAME := maops-k8s-day7]", _failed_names(_day7(makefile_text=_DAY6_MAKEFILE_TEXT)))

@@ -917,7 +917,7 @@ def check_application_port_networkpolicy_isolated() -> bool:
 
 
 def main() -> int:
-    print(f"# Day 6 NetworkPolicy check: default-deny + explicit allows (context {CONTEXT})")
+    print(f"# Day {kube.PROFILE_DAY} NetworkPolicy check: default-deny + explicit allows (context {CONTEXT})")
     try:
         kube.verify_context()
     except RuntimeError as exc:

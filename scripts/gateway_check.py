@@ -214,7 +214,7 @@ def check_wrong_host_has_no_route() -> None:
 
 
 def main() -> int:
-    print(f"# Day 6 Gateway API check: GatewayClass/Gateway/HTTPRoute + external routing (context {kube.CONTEXT})")
+    print(f"# Day {kube.PROFILE_DAY} Gateway API check: GatewayClass/Gateway/HTTPRoute + external routing (context {kube.CONTEXT})")
     try:
         kube.verify_context()
     except RuntimeError as exc:

@@ -1,9 +1,9 @@
 apiVersion: v2
 name: maops-kubernetes-platform
-description: "Day 6 Helm packaging of the gateway/app/state application (unchanged since Day 4) with Day 5's identity/network boundaries carried forward and adapted for Istio ambient mesh coexistence. This chart is the sole Day 6 application deployment source - k8s/base remains the frozen, unmodified Day 5 Kustomize source and is never applied by any Day 6 target."
+description: "Helm packaging of the gateway/app/state application (unchanged since Day 4), introduced Day 6 with Day 5's identity/network boundaries adapted for Istio ambient mesh. Day 7 adds an OPTIONAL, label-isolated gateway candidate and explicit stable/candidate/weighted HTTPRoute modes for Blue/Green, Canary and candidate-scoped Recreate demonstrations - disabled by default. This chart is the sole application deployment source - k8s/base remains the frozen, unmodified Day 5 Kustomize source."
 type: application
-version: 0.6.0
-appVersion: "0.6.0"
+version: 0.7.0
+appVersion: "0.7.0"
 kubeVersion: ">=1.34.0-0"
 keywords:
   - kubernetes
@@ -12,6 +12,7 @@ keywords:
   - statefulset
   - istio
   - gateway-api
+  - deployment-strategies
 home: https://github.com/raiyan10/maops-kubernetes-platform
 sources:
   - https://github.com/raiyan10/maops-kubernetes-platform
