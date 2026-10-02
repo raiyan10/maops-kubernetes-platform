@@ -131,7 +131,7 @@ ISTIO_NAMESPACE := istio-system
         day7-build-record day7-image-load day7-running-images
 
 help: ## Show this help
-	@echo "MAOps Kubernetes Platform - Day 6 (v0.6.0) and Day 7 (v0.7.0 release candidate) - available targets:"
+	@echo "MAOps Kubernetes Platform - Day 6 (v0.6.0) and Day 7 (v0.7.0, released) - available targets:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-26s %s\n", $$1, $$2}'
 
 tool-check: ## Verify the required local toolchain is present and correctly resolved
@@ -473,7 +473,7 @@ day6-check: ## Authoritative Day 6 validation sequence - explicitly sequential v
 	@echo "PASS: day6-check completed the full authoritative validation sequence"
 
 # ---------------------------------------------------------------------------
-# DAY7: deployment strategies (v0.7.0 release candidate; local Kind gate passed) on a SEPARATE,
+# DAY7: deployment strategies (v0.7.0, released 2026-09-30) on a SEPARATE,
 # isolated kind cluster. Nothing below ever addresses maops-k8s-day6:
 # every live step either re-invokes an existing recipe through DAY7_MAKE
 # (CLUSTER_NAME=maops-k8s-day7 -> day7 profile, day7 lock, day7 kind

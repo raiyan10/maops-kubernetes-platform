@@ -1,4 +1,4 @@
-# Architecture - Day 6 (v0.6.0, released) and Day 7 (v0.7.0, release candidate)
+# Architecture - Day 6 (v0.6.0, released) and Day 7 (v0.7.0, released)
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -48,12 +48,13 @@ below for the exact results, dates, and accepted limitations, and
 `docs/engineering-reviews/day-06-*` for the independent reviews,
 adjudication, and remediation log. This is a validated local kind
 reference platform, not a production-ready platform. Day 7 (`v0.7.0`,
-**release candidate** - local Kind gate PASSED on a freshly created
-cluster, run `6b0029cc63724291a00bba6ed52ea7a9`, 2026-09-30; PR, merge,
-merged-main validation and publication pending; see "DAY7: live
-validation record") demonstrates Recreate, Blue/Green and Canary on this
+**released** 2026-09-30 as a local Kind reference platform, tag on
+`6557c8d`; gated by fresh-cluster run
+`6b0029cc63724291a00bba6ed52ea7a9` and read-only merged-main
+validation; see "DAY7: live validation record" and
+`docs/engineering-reviews/day-07-post-release-verification.md`) demonstrates Recreate, Blue/Green and Canary on this
 platform on a separate `maops-k8s-day7` kind cluster; see "DAY7:
-deployment strategies (v0.7.0, release candidate)" at the end of this
+deployment strategies (v0.7.0, released)" at the end of this
 file. Day 8 (`v1.0.0`) is the later autoscaling and final-hardening
 milestone. See `docs/roadmap.md` for the full plan.
 
@@ -2712,9 +2713,14 @@ waypoint), or HTTP-method-level authorization from the NetworkPolicy/
 AuthorizationPolicy layer; and live-cluster validation in GitHub
 Actions (CI is cluster-free by design).
 
-## DAY7: deployment strategies (v0.7.0, release candidate)
+## DAY7: deployment strategies (v0.7.0, released)
 
-**Status: local Kind gate PASSED - release candidate, not released.**
+**Status: RELEASED 2026-09-30 as `v0.7.0`, a local Kind reference
+platform.** The annotated tag is on PR #10's merge commit
+`6557c8dcdaad7280b5f49e83957f976530a8da53`. Read-only merged-`main`
+validation passed before tagging, after one preflight Docker timeout
+and a passing recheck (`docs/engineering-reviews/day-07-post-release-verification.md`).
+Day 8 (`v1.0.0`) remains planned. The release gate was:
 - **Gating run:** one uninterrupted `make day7-check` that itself
   created `maops-k8s-day7`, run `6b0029cc63724291a00bba6ed52ea7a9`,
   2026-09-30, make exit 0.
@@ -2722,8 +2728,6 @@ Actions (CI is cluster-free by design).
   release started at revision 1; new namespace, PVC and PV.
 - **Results:** all three strategies PRIMARY and RESTORATION PASS under
   one pinned build; final gate PASS.
-- **Still pending:** the PR, merge, merged-`main` validation, and
-  `v0.7.0` publication.
 
 The earlier runs, including the failed attempts and the defects they
 exposed, are listed in "DAY7: live validation record" below. The

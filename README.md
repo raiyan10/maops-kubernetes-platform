@@ -9,32 +9,30 @@ fronted by the Kubernetes Gateway API through an Istio ambient service
 mesh - all proven live against a real multi-node kind cluster, not just
 asserted in YAML.
 
-**Latest RELEASED: `v0.6.0`** (Day 6 - Helm packaging, minimal
-cluster-free GitHub Actions CI, the Kubernetes Gateway API through
-Istio as the sole cluster-external routing approach, and an Istio
-ambient service mesh), released 2026-09-25 as a **local Kind reference
-platform** - [release `v0.6.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0). See [Day 6
-status](#day-6-status-released-v060-local-kind-reference-platform)
-below. `v0.1.0` (Day 1) through `v0.5.0` (Day 5) are also released and
-frozen. **Days 1-6 are complete.**
+**Latest RELEASED: `v0.7.0`** (Day 7 - Recreate, Blue/Green and Canary
+on the Day 6 Helm/Gateway API/Istio ambient platform, on a separate,
+isolated `maops-k8s-day7` kind cluster), released 2026-09-30 as a
+**local Kind reference platform** - [release `v0.7.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.7.0),
+tag `v0.7.0` on merge commit `6557c8d`. It was gated by a fresh-cluster
+`make day7-check` (run `6b0029cc63724291a00bba6ed52ea7a9`) and by
+read-only merged-`main` validation. See [Day 7
+status](#day-7-status-released-v070-local-kind-reference-platform)
+below and the
+[post-release record](docs/engineering-reviews/day-07-post-release-verification.md).
 
-**Release candidate: `v0.7.0`** (Day 7 - Recreate, Blue/Green and
-Canary on the Day 6 Helm/Gateway API/Istio ambient platform, on a
-separate, isolated `maops-k8s-day7` kind cluster). **Local Kind gate
-PASSED** on 2026-09-30: fresh-cluster run
-`6b0029cc63724291a00bba6ed52ea7a9`, one uninterrupted `make day7-check`
-that created the cluster itself. All three strategies passed PRIMARY
-and RESTORATION under one pinned, running-image-verified build, followed
-by the final gate.
+`v0.6.0` (Day 6 - Helm packaging, minimal cluster-free GitHub Actions
+CI, the Kubernetes Gateway API through Istio as the sole
+cluster-external routing approach, and an Istio ambient service mesh),
+released 2026-09-25 - [release
+`v0.6.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0),
+see [Day 6
+status](#day-6-status-released-v060-local-kind-reference-platform).
+`v0.1.0` (Day 1) through `v0.5.0` (Day 5) are also released and frozen.
+**Days 1-7 are complete.**
 
-**Not yet released:** the PR, merge, merged-`main` validation and
-`v0.7.0` publication are still pending. See [Day 7
-status](#day-7-status-release-candidate-v070---local-kind-gate-passed)
-below.
-
-**Later: `v1.0.0`** (Day 8 - autoscaling and final
-production-readiness hardening). Day 7 does not claim production
-readiness.
+**Planned: `v1.0.0`** (Day 8 - autoscaling and final
+production-readiness hardening; not started). Day 7 does not claim
+production readiness.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full eight-day plan and
 [`docs/architecture.md`](docs/architecture.md) for how the pieces fit
@@ -162,12 +160,18 @@ recovery, which varies in this environment) are in
 the independent reviews, final adjudication, and remediation log are
 under [`docs/engineering-reviews/day-06-*`](docs/engineering-reviews/).
 
-## Day 7 status: release candidate (v0.7.0) - local Kind gate passed
+## Day 7 status: released (v0.7.0), local Kind reference platform
 
 Day 7 demonstrates **Recreate, Blue/Green and Canary** with native
 Kubernetes and Gateway API primitives on the Day 6 platform, on the
 separate `maops-k8s-day7` cluster (host port **18081**; Day 6 keeps
 18080).
+
+**Released 2026-09-30** as [`v0.7.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.7.0) (annotated tag on
+`6557c8dcdaad7280b5f49e83957f976530a8da53`, PR #10). Merged-`main`
+read-only validation passed after one preflight Docker timeout and a
+passing recheck: see the
+[post-release record](docs/engineering-reviews/day-07-post-release-verification.md).
 
 **Gating evidence.** Run `6b0029cc63724291a00bba6ed52ea7a9`,
 2026-09-30, make exit 0: one uninterrupted `make day7-check` on a
@@ -195,7 +199,9 @@ The final gate passed: running images 47/47, mesh 45/45, NetworkPolicy
 - the adjudication and accepted limits:
   [`day-07-final-adjudication.md`](docs/engineering-reviews/day-07-final-adjudication.md);
 - the fresh-cluster procedure:
-  [`day-07-fresh-cluster-plan.md`](docs/engineering-reviews/day-07-fresh-cluster-plan.md).
+  [`day-07-fresh-cluster-plan.md`](docs/engineering-reviews/day-07-fresh-cluster-plan.md);
+- the post-release verification and screenshots:
+  [`day-07-post-release-verification.md`](docs/engineering-reviews/day-07-post-release-verification.md).
 
 Private evidence lives outside the repo, under
 `~/.local/state/maops-kubernetes-platform/`, in `day7-logs/<run-id>/`,
@@ -351,7 +357,7 @@ PATH shim:
   without a verified build, and the `k8s/day7/` platform manifests.
 
 The full design, gates, evidence rules and non-claims are in
-[`docs/architecture.md`, "DAY7"](docs/architecture.md#day7-deployment-strategies-v070-release-candidate).
+[`docs/architecture.md`, "DAY7"](docs/architecture.md#day7-deployment-strategies-v070-released).
 
 ## Day 6 topology
 
@@ -823,5 +829,5 @@ docs/                        architecture.md, roadmap.md, engineering-reviews/ (
                               independent reviews, fresh-cluster plan, adjudication), images/
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      0.7.0 (Day 7 release candidate - local Kind gate passed; v0.6.0 is the latest release)
+VERSION                      0.7.0 (Day 7 - released as v0.7.0, the latest release)
 ```

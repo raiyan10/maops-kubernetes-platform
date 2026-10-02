@@ -331,7 +331,7 @@ assertions to force a pass.
   capacity, stop a superseded earlier-day cluster before stopping the
   current one.
 
-## Day 7 (v0.7.0 release candidate - local Kind gate passed, fresh-cluster run `6b0029cc...`) - the isolated `maops-k8s-day7` cluster
+## Day 7 (v0.7.0, released 2026-09-30 - local Kind reference platform, fresh-cluster run `6b0029cc...`) - the isolated `maops-k8s-day7` cluster
 
 - Day 7 live work targets ONLY `maops-k8s-day7` (host `127.0.0.1:18081`)
   through the `day7-*` Makefile targets / `DAY7_MAKE`; scripts run with

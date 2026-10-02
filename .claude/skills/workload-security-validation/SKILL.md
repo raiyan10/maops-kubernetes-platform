@@ -22,7 +22,7 @@ Istio ambient service mesh (strict mTLS, identity-scoped
 request-level/L7 policy, that remains architecturally unavailable
 without a waypoint this project never deploys) are now in scope below,
 not future content. Recreate, Blue-Green, and Canary deployment
-strategy demonstrations belong to Day 7 (`v0.7.0`, release candidate):
+strategy demonstrations belong to Day 7 (`v0.7.0`, released 2026-09-30):
 for a Day 7 review the gateway candidate must share the stable
 gateway's ServiceAccount/security context, carry candidate-only
 NetworkPolicies equal in paths to the stable gateway's and its own

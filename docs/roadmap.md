@@ -16,7 +16,7 @@ demonstrated and reviewed in isolation.
 | 4 | v0.4.0 | StatefulSet, PVC, persistence/recovery |
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
 | 6 | v0.6.0 | Helm, CI, automated kind validation, service mesh |
-| 7 | v0.7.0 | Advanced deployment strategies (Recreate, Blue/Green, Canary) on the Helm/Gateway API/Istio ambient platform, on a separate kind cluster - **release candidate: local Kind gate passed, not yet released** |
+| 7 | v0.7.0 | Advanced deployment strategies (Recreate, Blue/Green, Canary) on the Helm/Gateway API/Istio ambient platform, on a separate kind cluster - **COMPLETE / RELEASED (2026-09-30) - local Kind reference platform** |
 | 8 | v1.0.0 | Autoscaling and final production-readiness hardening, independent reviews, final release |
 
 ## Day 1 / v0.1.0 - Kubernetes foundation
@@ -289,8 +289,10 @@ documentation. The cause of the lost listeners remains unproven.
 
 ## Day 7 / v0.7.0 - Advanced deployment strategies (Recreate, Blue/Green, Canary)
 
-**RELEASE CANDIDATE - local Kind gate PASSED (2026-09-30); not yet
-released.** The gating run was one uninterrupted `make day7-check` on a
+**COMPLETE / RELEASED / FROZEN (2026-09-30)** as `v0.7.0`, a local Kind
+reference platform: annotated tag on PR #10's merge commit
+`6557c8dcdaad7280b5f49e83957f976530a8da53`, [release
+`v0.7.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.7.0). The gate was one uninterrupted `make day7-check` on a
 **freshly created** `maops-k8s-day7`:
 - **Run:** `6b0029cc63724291a00bba6ed52ea7a9`, make exit 0.
 - **Freshness:** `kind create` ran; new node containers; the app
@@ -301,12 +303,13 @@ released.** The gating run was one uninterrupted `make day7-check` on a
 - **Stable checks:** an independent stable check (55/55) after each
   experiment, then the final gate (Day 7 final checks 86/86).
 
-Still pending: the PR, merge, merged-`main` validation, and publication
-of `v0.7.0`. The evidence, including every earlier run and failed
-attempt, is in:
+Read-only merged-`main` validation passed before tagging, after one
+preflight Docker timeout and a passing recheck. The evidence, including
+every earlier run and failed attempt, is in:
 - `docs/engineering-reviews/day-07-live-validation-record.md`;
 - `docs/engineering-reviews/day-07-final-adjudication.md`;
-- `docs/engineering-reviews/day-07-independent-reviews.md`.
+- `docs/engineering-reviews/day-07-independent-reviews.md`;
+- `docs/engineering-reviews/day-07-post-release-verification.md`.
 
 Day 6 `v0.6.0` is released and unchanged. Day 7 does not claim
 production readiness.
@@ -345,7 +348,7 @@ Recreate is demonstrated on the candidate Deployment only, with a
 planned outage for traffic routed to it: about 40 s in the gating run.
 The stable gateway keeps RollingUpdate, and no experiment touches the
 state StatefulSet. See `docs/architecture.md`, "DAY7: deployment
-strategies (v0.7.0, release candidate)", for the full design, evidence
+strategies (v0.7.0, released)", for the full design, evidence
 rules, accepted limits and non-claims.
 
 ## Day 8 / v1.0.0 - Autoscaling and final production-readiness hardening

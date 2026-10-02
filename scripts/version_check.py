@@ -70,7 +70,7 @@ EXPECTED_TARGET_VERSION = "0.5.0"
 # this.
 DAY6_TARGET_VERSION = "0.6.0"
 
-# DAY7: the live release target (v0.7.0 release candidate).
+# DAY7: the live release target (v0.7.0, released 2026-09-30).
 DAY7_TARGET_VERSION = "0.7.0"
 KIND_DAY6_CONFIG = REPO_ROOT / "kind" / "cluster-day6.yaml"
 KIND_DAY7_CONFIG = REPO_ROOT / "kind" / "cluster-day7.yaml"

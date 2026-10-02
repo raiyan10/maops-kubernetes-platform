@@ -22,9 +22,9 @@ asked to perform any of those actions, decline and explain why.
 Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
-   RELEASED baseline: `0.6.0` for Day 6, released 2026-09-25 as a local
-   kind reference platform; the current target is `0.7.0` for Day 7
-   (release candidate - local Kind gate passed), then `1.0.0` for Day 8;
+   RELEASED baseline: `0.7.0` for Day 7, released 2026-09-30 as a local
+   kind reference platform (`0.6.0` for Day 6 before it); the next
+   target is `1.0.0` for Day 8, not started;
    use whatever
    `docs/roadmap.md` names for the day actually under review), with no
    trailing whitespace/newline surprises. Also re-run `make
@@ -38,9 +38,10 @@ Checklist for a readiness assessment:
    check `git status` and `git log` against the base branch; uncommitted
    changes are the expected, correct state at handoff. Earlier days'
    tags (as of the current released baseline: `v0.1.0` through
-   `v0.6.0`) must still exist unmoved - Day 7 has no `v0.7.0` tag yet,
-   and none should be created by this work (publication follows the
-   PR, merge and merged-`main` validation, never a readiness review).
+   `v0.7.0`, fixed on `6557c8dcdaad7280b5f49e83957f976530a8da53`) must
+   still exist unmoved, and no tag should be created by this work
+   (publication follows the PR, merge and merged-`main` validation,
+   never a readiness review).
 3. **`make dayN-check`** for the current day (e.g. `make day6-check`) has
    actually been run and its real output captured - not assumed. Re-run
    it if you can't find fresh evidence it passed. For a Day 6

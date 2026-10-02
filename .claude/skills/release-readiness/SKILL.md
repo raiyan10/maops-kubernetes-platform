@@ -14,9 +14,9 @@ say so directly.
 ## Checklist
 
 1. **VERSION file.** Exact match to the day's target version (current
-   RELEASED baseline: `0.6.0` for Day 6, released 2026-09-25 as a local
-   kind reference platform; the current target is `0.7.0` for Day 7
-   (release candidate), then `1.0.0` for Day 8; use whatever
+   RELEASED baseline: `0.7.0` for Day 7, released 2026-09-30 as a local
+   kind reference platform (`0.6.0` for Day 6 before it); the next
+   target is `1.0.0` for Day 8, not started; use whatever
    `docs/roadmap.md` names for the day actually under review) -
    `cat VERSION` and compare byte-for-byte (no trailing newline
    surprises, no `v` prefix). Also re-run `make version-check` and
@@ -30,8 +30,10 @@ say so directly.
    (`git tag --points-at HEAD`), and no evidence of a push (this is a
    local check, but never assume - report what you actually see). Prior
    days' tags (as of the current released baseline: `v0.1.0` through
-   `v0.6.0`) are expected to already exist and must never be moved or
-   recreated; Day 7 has no tag yet, and this skill never creates one.
+   `v0.7.0`, with `v0.7.0` fixed on
+   `6557c8dcdaad7280b5f49e83957f976530a8da53`) are expected to already
+   exist and must never be moved or recreated; this skill never creates
+   a tag.
 3. **Authoritative validation actually ran.** Re-run
    `make dayN-check` for the current day (e.g. `make day6-check`) yourself
    and capture its real output - don't accept a prior summary's claimed
@@ -85,7 +87,7 @@ say so directly.
    actually deployed; `docs/roadmap.md` still contains the intact
    eight-stage plan (Day 1 v0.1.0 through Day 7 v0.7.0 and Day 8
    v1.0.0), with each day's status accurately marked (released/frozen,
-   release candidate / gate passed, in development, or future) - unless
+   gate passed, in development, or future) - unless
    the user explicitly asked to change it.
 7. **Scope boundaries.** Nothing from a later day leaked in early, and
    nothing required for the current day is missing. As of the frozen
@@ -152,9 +154,10 @@ round up to "ready."
   `6b0029cc63724291a00bba6ed52ea7a9` (kind create ran, new node
   containers, app release from REVISION 1, new namespace/PVC/PV). A run
   that reused a cluster is never evidence of a fresh start.
-- "GATE PASSED" means the local Kind reference platform only; PR,
-  merge, merged-main validation and `v0.7.0` publication are separate,
-  later steps this skill never performs or implies.
+- "GATE PASSED" means the local Kind reference platform only. PR #10,
+  merged-main validation and `v0.7.0` publication (2026-09-30, tag on
+  `6557c8d`) followed as separate steps; this skill never performs
+  them. Day 7 is released and frozen; Day 8 (`v1.0.0`) is planned.
 - Docs must state the candidate is a configuration variant sharing the
   stable ServiceAccount/Istio principal, that Recreate has a planned
   outage, that Canary weights are observed not exact, the accepted

@@ -4,10 +4,10 @@ Project 4 of the DevOps portfolio series. A staged, day-by-day build of a
 Kubernetes platform, starting from a single-node kind cluster (Day 1) and
 progressing toward autoscaling and production-readiness hardening (Day 8 /
 v1.0.0). Day 6 (`v0.6.0`) is released; Day 7 (`v0.7.0`, Recreate/Blue-Green/
-Canary on a separate `maops-k8s-day7` kind cluster) is a release candidate:
-its local Kind gate passed on a fresh cluster (run
-`6b0029cc63724291a00bba6ed52ea7a9`), with PR, merge, merged-main
-validation and publication still pending. See
+Canary on a separate `maops-k8s-day7` kind cluster) is released (2026-09-30,
+tag on `6557c8d`; local Kind reference platform, fresh-cluster run
+`6b0029cc63724291a00bba6ed52ea7a9`) and frozen; Day 8 (`v1.0.0`) is
+planned and not started. See
 `docs/roadmap.md` for the full eight-stage plan and `docs/architecture.md`
 for how the pieces fit together.
 
