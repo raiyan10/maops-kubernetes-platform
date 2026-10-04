@@ -6,8 +6,10 @@ progressing toward autoscaling and production-readiness hardening (Day 8 /
 v1.0.0). Day 6 (`v0.6.0`) is released; Day 7 (`v0.7.0`, Recreate/Blue-Green/
 Canary on a separate `maops-k8s-day7` kind cluster) is released (2026-09-30,
 tag on `6557c8d`; local Kind reference platform, fresh-cluster run
-`6b0029cc63724291a00bba6ed52ea7a9`) and frozen; Day 8 (`v1.0.0`) is
-planned and not started. See
+`6b0029cc63724291a00bba6ed52ea7a9`) and frozen; Day 8 (`v1.0.0`)
+autoscaling is implemented on `feature/day-8-autoscaling-hardening`,
+reviewed and remediated, with `VERSION` prepared at `1.0.0`, and NOT
+released (no tag, no Release). See
 `docs/roadmap.md` for the full eight-stage plan and `docs/architecture.md`
 for how the pieces fit together.
 
@@ -76,6 +78,51 @@ for how the pieces fit together.
   by `make day7-running-images` (Kubernetes imageID mapped through the
   node's containerd record to the build's config digest) - never by a
   node image check alone.
+- **Day 8 runs on `maops-k8s-day7` and never touches the Day 7
+  release.** Day 8 tooling (`scripts/day8_*.py`, `day8-*` targets) uses
+  the day7 profile and the Day 7 lock, refuses outside it on its own
+  (`day8_common.require_cluster_profile()`), and keeps every scaling
+  object in the temporary `maops-day8-scaling` namespace. One scaling
+  controller per target (`day8_objects.scaler_conflicts()`); VPA only
+  `Off`/`Initial` with NO updater, webhook and flags scoped to that
+  namespace; KEDA `watchNamespace` scoped to it (operator role bound only
+  by RoleBindings - never fall back to cluster-wide), so `day8-guards`
+  must run before `day8-addons-install`. KEDA lives only for a run:
+  cleanup (1) releases KEDA objects while KEDA can still remove its
+  finalizers, (2) proves all 6 KEDA CRDs hold zero instances cluster-wide
+  (else keeps KEDA + namespace; never delete/adopt foreign objects), then
+  `helm uninstall`s ONLY the `keda` release, and only if its metadata
+  proves it is Day 8's (chart/version/namespace + the
+  `maops-day8-owner` release label) (+ its runtime cert Secret/lease -
+  read labels only via jsonpath, never Secret data), then deletes the
+  `keda` namespace only if it carries both Day 8 identity labels,
+  (3) deletes the scaling namespace; failures in (1)/(2) keep the
+  namespace. Day 8 creates `keda` itself (`keda-preinstall`, never
+  `--create-namespace`, `kubectl create` never `apply` - a namespace that
+  appears first is refused, never adopted; any refusal stops before any
+  change); cleanup checks `keda`'s Day 8 labels before ANY uninstall or
+  runtime Secret/lease delete; preflight refuses any KEDA release, CRD or
+  `keda` namespace at start. KEDA webhooks stay `failurePolicy: Fail`
+  (assessed: they only match keda.sh/eventing.keda.sh writes) - don't
+  flip to `Ignore` to make something pass. `day8-addons-final-check` expects KEDA ABSENT (CRDs
+  included - the chart does not keep them). Never leave KEDA installed
+  without its namespace; never treat an unreadable list as empty. The ResourceQuota is
+  exactly `day8_objects.budget()` - never pad it to make a run pass. Any
+  replaced/resized application Pod fails `make day8-stable-check`.
+  Evidence: `$HOME/.local/state/maops-kubernetes-platform/day8-runs/<DAY8_RUN_ID>/`.
+  Interrupted run: `make day8-cleanup`, then `DAY8_RUN_ID=<orig> make
+  day8-final-gate` (docs/architecture.md, "Interrupted-run recovery").
+- **Version 1.0.0 prep keeps history intact.** Day 7 build records are
+  schema 2 (version in the build ID - identical image digests across
+  versions would otherwise collide); schema-1 records keep their IDs.
+  The state StatefulSet's `volumeClaimTemplates` labels are frozen at
+  0.7.0 (`maops.claimTemplateLabels`) because the field is immutable;
+  never let chart/version labels flow into it (`make helm-check` asserts
+  the exact frozen set - `claim_template.state.frozen_labels`). `helm --dry-run=server`
+  does not catch that rejection - use `kubectl apply --server-side
+  --dry-run=server` on the rendered StatefulSet.
+  On this host, run live targets with `PATH=/usr/bin:$PATH` (a
+  `~/.local/bin/docker` shim shadows the WSL docker CLI).
 - **`make cluster-delete` must stay scoped.** It deletes only the
   project's own kind cluster by name. Never introduce a target that
   runs `docker system prune`, deletes unrelated clusters, or otherwise

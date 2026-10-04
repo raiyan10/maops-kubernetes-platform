@@ -17,7 +17,7 @@ demonstrated and reviewed in isolation.
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
 | 6 | v0.6.0 | Helm, CI, automated kind validation, service mesh |
 | 7 | v0.7.0 | Advanced deployment strategies (Recreate, Blue/Green, Canary) on the Helm/Gateway API/Istio ambient platform, on a separate kind cluster - **COMPLETE / RELEASED (2026-09-30) - local Kind reference platform** |
-| 8 | v1.0.0 | Autoscaling and final production-readiness hardening, independent reviews, final release |
+| 8 | v1.0.0 | Autoscaling and final production-readiness hardening, independent reviews, final release - **autoscaling implemented on a feature branch, not released** |
 
 ## Day 1 / v0.1.0 - Kubernetes foundation
 
@@ -353,12 +353,38 @@ rules, accepted limits and non-claims.
 
 ## Day 8 / v1.0.0 - Autoscaling and final production-readiness hardening
 
-**FUTURE - not yet implemented.** Autoscaling (the platform has no
-metrics pipeline or HPA today - istiod's own HPA is deliberately
-disabled), final hardening, independent review passes across
-architecture, security, and testing, closing the gaps they find, and
-the final tagged `v1.0.0` release. Argo Rollouts is never introduced in
-this project.
+**IN PROGRESS - autoscaling implemented on branch
+`feature/day-8-autoscaling-hardening`, NOT released.** Independent
+reviews, the gaps they find, and the tagged `v1.0.0` release are still
+open. Argo Rollouts is never introduced in this project.
+
+Day 8 runs on the existing `maops-k8s-day7` cluster (Kubernetes
+v1.36.1) under the Day 7 profile and mutation lock, through `make
+day8-check` (see `docs/architecture.md`, "DAY8: autoscaling"):
+
+- Pinned add-ons, each inside its upstream-supported Kubernetes window:
+  Metrics Server 0.9.0 (chart 3.14.0), VPA 1.8.0 (chart 0.13.0;
+  recommender and admission controller only - no updater, scoped to the
+  scaling namespace), KEDA 2.21.0 (chart 2.21.0, scoped to the scaling
+  namespace; installed after the namespace exists, uninstalled by cleanup).
+- One temporary namespace, `maops-day8-scaling` (Pod Security
+  `restricted`), guarded by a LimitRange and a ResourceQuota equal to
+  the computed worst-case budget, applied before any workload.
+- One scaling controller per disposable target: a CPU HPA (1..4), a VPA
+  (`Off`, then `Initial` on a newly created Pod only), and a KEDA
+  ScaledObject (0..3) on a separate Redis-list worker.
+- Cleanup removes that namespace and uninstalls Day 8's own KEDA
+  (release, CRDs and its Day 8-labelled `keda` namespace, after proving
+  the KEDA CRDs hold no instances); a foreign KEDA release or namespace is
+  refused, never adopted or removed. An independent stable-state check
+  proves the Day 7 release, its Pods, route, storage and state contents
+  are unchanged.
+
+Five independent reviews were adjudicated and their HIGH/MEDIUM findings
+remediated (`docs/engineering-reviews/day-08-final-adjudication.md`). The
+branch prepares `VERSION`/chart/app version `1.0.0`; the Day 7 release
+was rolled once to that build, with storage and state preserved. Still
+open for `v1.0.0`: PR, merge, merged-main validation, tag and release.
 
 ## Explicitly out of scope for this project
 

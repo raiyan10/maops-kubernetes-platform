@@ -96,7 +96,7 @@ spec:
     - metadata:
         name: data
         labels:
-          {{- include "maops.componentLabels" (dict "root" $ "component" "state") | nindent 10 }}
+          {{- include "maops.claimTemplateLabels" (dict "root" $ "component" "state") | nindent 10 }}
       spec:
         accessModes:
           - ReadWriteOnce

@@ -1,0 +1,20 @@
+# DAY8: Metrics Server v0.9.0 (chart metrics-server 3.14.0, from
+# https://kubernetes-sigs.github.io/metrics-server/) on maops-k8s-day7
+# (Kubernetes v1.36.1; upstream compatibility matrix: 0.9.x -> 1.34+).
+# Installed by `make day8-addons-install` with --reset-values -f <this file>;
+# validated statically by `make day8-static-check`.
+#
+# --kubelet-insecure-tls is a deliberate, documented LOCAL KIND limitation:
+# kind's kubelets serve self-signed certificates that are not signed by the
+# cluster CA, so Metrics Server cannot verify them. A production cluster
+# would issue kubelet serving certificates from the cluster CA instead.
+replicas: 1
+args:
+  - "--kubelet-insecure-tls"
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "192Mi"

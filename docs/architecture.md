@@ -3448,3 +3448,458 @@ untagged. Only Pods created during the experiments (the candidates) ran
 the new build. No Day 7 gate compares running Pods' image IDs with the
 loaded images, so this passed unnoticed. Full detail is in the live
 record.
+
+## DAY8: autoscaling (v1.0.0 work - implemented, NOT released)
+
+Day 8 adds autoscaling to the platform without changing the released Day 7
+application. It runs on the **existing** `maops-k8s-day7` cluster
+(Kubernetes v1.36.1) under the Day 7 cluster profile and the Day 7 mutation
+lock, through `make day8-check`. It never touches `maops-k8s-day6`, never
+applies a Day 7 Helm stage, build or baseline, and never re-runs the Day 7
+strategy experiments. While a Day 8 run is in progress, the Day 7 release
+is frozen and any change to it fails the run. The `1.0.0` version
+preparation is a separate, deliberate step outside any Day 8 run; see
+"Version 1.0.0 preparation" below.
+
+### Add-ons (pinned, each inside its upstream-supported window)
+
+| Add-on | App | Chart (repo) | Upstream compatibility | Day 8 configuration (`helm-values/day8/`) |
+|---|---|---|---|---|
+| Metrics Server | 0.9.0 | `metrics-server` 3.14.0 (kubernetes-sigs.github.io/metrics-server) | 0.9.x: Kubernetes 1.34+ | 1 replica, bounded resources, `--kubelet-insecure-tls` (kind kubelets serve self-signed certs - a local-kind limitation) |
+| Vertical Pod Autoscaler | 1.8.0 | `vertical-pod-autoscaler` 0.13.0 (kubernetes.github.io/autoscaler) | 1.8.x: 1.36-1.38 (1.36 is its oldest supported minor) | recommender + admission controller only; **updater disabled**; `--vpa-object-namespace=maops-day8-scaling` on both; mutating webhook `namespaceSelector` = that namespace only, `failurePolicy: Ignore`; recommendation floors lowered to 10m / 32MB |
+| KEDA | 2.21.0 | `keda` 2.21.0 (kedacore.github.io/charts) | v2.21 tested on 1.34-1.36 | `watchNamespace: maops-day8-scaling` (operator role bound only per namespace), 1 replica per component, bounded resources, chart's secure-by-default security contexts, admission webhooks `failurePolicy: Fail` (asserted statically and live) |
+
+There is no VPA 1.7.2 chart; the newest 1.7.x chart ships 1.7.1. Chart
+0.13.0 / VPA 1.8.0 is the official chart for the current default VPA
+release. `make day8-preflight` refuses to install anything if the API
+server's minor version falls outside any add-on's window.
+
+**KEDA is namespace-scoped, and its lifecycle follows the scaling
+namespace.** With `watchNamespace: maops-day8-scaling`, chart keda-2.21.0
+binds the operator's broad `keda-operator` ClusterRole (Secrets list/watch,
+`*/scale` patch/update, `get` on everything, HPA writes) **only** through
+RoleBindings in `keda` and `maops-day8-scaling`, never through a
+ClusterRoleBinding. The cluster-wide grants left are `keda-operator-minimal`
+(ClusterTriggerAuthentications, webhook configurations, APIServices,
+CloudEventSources), `system:auth-delegator` for the metrics adapter, and
+`keda-operator-webhook` (read Deployments/StatefulSets/ScaledObjects/HPAs).
+None of them grants Secrets, scaling or writes to workloads.
+
+- **Order.** The namespace's RoleBinding cannot exist before the
+  namespace, so `day8-guards` runs **before** `day8-addons-install`, and the
+  install refuses to start without the Day 8 namespace. The first Day 8
+  attempt failed exactly here (run `1c59a36c…`). A later cluster-wide
+  workaround was rejected in review and reverted, because a check for
+  "no ScaledObjects elsewhere" does not restrict permissions.
+- **Proof (a measured access matrix).** `day8-addons-check` (mode
+  `active`) evaluates every binding of a KEDA ServiceAccount
+  (`keda_binding_problems()`) and runs SubjectAccessReviews (`kubectl auth
+  can-i --as=system:serviceaccount:<ns>:<sa>`):
+  - **Forbidden in `maops-platform`** (`FORBIDDEN_IN_APP`, 22 actions):
+    get/list/watch Secrets; patch/update `deployments/scale` and
+    `statefulsets/scale`; patch/update/delete Deployments and
+    StatefulSets; create/patch/delete Pods; create `pods/exec` and
+    `pods/eviction`; update/delete ConfigMaps; create HPAs; create
+    RoleBindings.
+  - **Forbidden Secret reads elsewhere** (`FORBIDDEN_SECRETS_ELSEWHERE`):
+    `list secrets --all-namespaces`, and `get secrets` in `kube-system`,
+    `istio-system`, `maops-ingress` and `maops-day7-validation`.
+  - **Subjects:** the three KEDA ServiceAccounts while KEDA is active,
+    and in **both** modes the persistent add-on identities: Metrics Server
+    (`kube-system/metrics-server`) and VPA's recommender and admission
+    controller (`vpa-system`).
+  - **Expected grants** (`EXPECTED_GRANTS`) are measured too and must
+    answer `yes`: KEDA's operator can patch APIServices and
+    ValidatingWebhookConfigurations (cluster-wide), its webhook can list
+    Deployments in all namespaces, and each persistent add-on can list
+    Pods in all namespaces. These are the exposure that is
+    accepted, so it is recorded rather than only described.
+  - **Positive control:** the operator **can** scale and create HPAs in
+    the scaling namespace.
+
+  Any answer other than a clean `yes`/`no`, including any `Warning:` on
+  stderr (such as an unknown resource type), fails the check. The claim
+  is "denied for the probed verbs", not "denied for everything"; a group
+  subject is covered by the probes (they evaluate the effective
+  permission), not by the binding audit, which matches ServiceAccounts by
+  name.
+- **Ownership (after independent review).** Day 8 creates the `keda`
+  namespace itself (`day8_addons.py keda-preinstall`, labels
+  `app.kubernetes.io/instance=maops-kubernetes-platform-day8`,
+  `app.kubernetes.io/component=day8-keda`; no `--create-namespace`), and
+  installs the release with the Helm release label
+  `maops-day8-owner=maops-kubernetes-platform-day8`. Pre-install refuses a
+  `keda` release it does not own, KEDA CRDs with no Day 8 release, and a
+  `keda` namespace without both identity labels. `day8-preflight` refuses
+  to start a run while any KEDA release, KEDA CRD or `keda` namespace is
+  present. If the release is Day 8's, preflight reports an interrupted
+  run and points to `make day8-cleanup`. Pre-install stops before any
+  change once it has refused. It makes the namespace with `kubectl create`
+  (never `apply`) and re-reads it by UID. A namespace that appears between
+  the check and the create therefore fails with `AlreadyExists` and is
+  never adopted or relabelled. Cleanup checks the `keda` namespace's two
+  labels **first**, before any uninstall or runtime Secret/lease delete.
+  If they are missing, nothing in the namespace is touched. Cleanup
+  uninstalls only a release whose chart, version, namespace and owner
+  label are Day 8's, and deletes `keda` only if it carries both labels.
+- **Webhook failure policy (assessed, `Fail`).** KEDA's six admission
+  webhooks match only CREATE/UPDATE of `keda.sh` and `eventing.keda.sh`
+  resources, so a webhook outage cannot block any non-KEDA write in the
+  cluster. `Fail` means an invalid or conflicting ScaledObject (for
+  example, a second scaler on one target) is never admitted unvalidated.
+  `Ignore` would have traded that check for availability that this
+  single-operator, run-scoped install does not need. The cost is that if
+  the webhook is down, cleanup stops at object release and keeps KEDA and
+  the namespace (fail-closed); see "Interrupted-run recovery".
+  `static_problems()` pins the value, and `keda_webhook_problems()`
+  verifies every live webhook's policy and API groups.
+- **Ordered cleanup (found by run `c81534e5…`).** Deleting the namespace
+  directly removed KEDA's RoleBinding before KEDA had released
+  `finalizer.keda.sh` on the ScaledObject. The operator was then forbidden
+  in that namespace, and the namespace hung in `Terminating`. The new
+  fail-closed cleanup reported it. The stuck namespace was recovered by
+  removing that one disposable object's finalizer with a UID-tested JSON
+  patch; no permission was widened. `day8-cleanup` now deletes the
+  namespace's ScaledObjects, ScaledJobs and TriggerAuthentications **first**
+  and waits until they are gone, while the binding still exists. If KEDA
+  objects exist but the binding does not, or the list fails, or the objects
+  remain, it refuses to delete the namespace.
+- **KEDA lives only as long as a run (fixed after independent review).**
+  The previous design left KEDA installed after cleanup. Its scoped
+  RoleBinding disappeared with the namespace, the Helm release drifted (its
+  manifest still listed the binding), and the dormant operator logged
+  "forbidden" errors (856 in one hour before this fix; evidence
+  `day8-runs/307ab4e0…`). Reviewers treated this as a release blocker.
+  Now each `day8-check` installs KEDA after the namespace exists, and
+  `day8-cleanup` uninstalls it again. Metrics Server and VPA stay
+  installed.
+
+### Cleanup order (`scripts/day8_scaling.py`: `phase_cleanup`)
+
+1. **Release KEDA objects.** While the namespace and KEDA's RoleBinding
+   still exist, delete the namespace's ScaledObjects, ScaledJobs and
+   TriggerAuthentications and wait until they are gone **and** KEDA has
+   removed its managed `keda-hpa-*` HPA. A KEDA kind whose CRD is
+   explicitly NotFound holds no objects, which makes cleanup safe when a
+   run failed before KEDA was installed. Objects that exist without the
+   binding, an unreadable list, or objects that remain all **stop cleanup
+   and keep the namespace** for diagnosis.
+2. **Uninstall KEDA, but only if its CRDs are empty.** The uninstall
+   deletes the six KEDA CRDs, and with them every instance stored under
+   them, whoever created it. So immediately before it,
+   `crd_instance_problems()` inspects **all six** CRDs across their full
+   scope: every namespace for the four Namespaced types, and cluster scope
+   for `clustertriggerauthentications` and `clustercloudeventsources`.
+   Only each CRD's `.spec.scope` and the instances' namespace/name reach
+   Python. Day 8's own objects were already released in step 1, so any
+   remaining instance is unexpected, as is an unreadable CRD or instance
+   list or an unknown scope. Any of these fails cleanup and keeps **both
+   KEDA and `maops-day8-scaling`** for investigation; nothing foreign is
+   deleted or adopted.
+
+   Before the guard, the release's metadata (`helm get metadata`) must
+   show chart `keda`, version 2.21.0, namespace `keda` and the Day 8 owner
+   label; otherwise KEDA is NOT uninstalled and cleanup fails.
+
+   Only then: `helm uninstall keda -n keda --cascade foreground
+   --wait --timeout 300s`, for that release only, and only if
+   `helm status` says it exists. If the release is explicitly not found
+   (never installed, or a repeated cleanup), there is nothing to
+   uninstall; an unreadable answer is a failure. Helm deletes everything
+   the chart owns, the scoped RoleBinding included, so there is no drift.
+   Two objects are left, because the operator created them at runtime
+   and Helm does not own them: `secret/kedaorg-certs` (its self-signed
+   webhook/gRPC key pair) and `lease/operator.keda.sh`. Cleanup deletes
+   exactly these by name; the Secret must carry `app=keda-operator`, or
+   cleanup refuses. The lease is matched by name only, in the Day 8-owned
+   `keda` namespace (it has no stable labels). **Secret handling:** existence is checked with
+   `kubectl get … -o name`, and the label with `kubectl get … -o
+   jsonpath={.metadata.labels}`. Python therefore receives the resource
+   name and its labels only, never `.data`, so no key material is printed,
+   captured by Python, or written to evidence. The `kubectl` process itself
+   still receives the object from the API server, as any `kubectl get`
+   does. A static test refuses any Day 8 script that reads a Secret
+   through the JSON helpers or `-o json`/`yaml`. It
+   then waits until no Pod remains in `keda`, and deletes the `keda`
+   namespace if, and only if, it carries both Day 8 identity labels. Any
+   failure here also keeps the scaling namespace.
+3. **Delete the labelled namespace and prove the result.** The usual
+   fail-closed sweep follows (any unreadable list fails). The one proven
+   exception is a KEDA type that is no longer served because its CRD is
+   explicitly NotFound. A built-in type is never "absent".
+   `record_keda_absent()` then requires each of the following to be
+   explicitly gone, and fails on any unreadable answer:
+   - the Helm release;
+   - all 30 chart-owned objects: 6 CRDs, 4 ClusterRoles, 4
+     ClusterRoleBindings, the ValidatingWebhookConfiguration, the
+     APIService, 3 Deployments, 3 Services, 3 ServiceAccounts, the Role,
+     and 4 RoleBindings including the scoped one;
+   - the `keda` namespace;
+   - the 2 runtime objects;
+   - every Pod in `keda`;
+   - every binding anywhere that names a KEDA ServiceAccount.
+
+**CRDs.** Chart keda-2.21.0 ships its six CRDs as Helm-managed templates
+without `helm.sh/resource-policy: keep`, so **`helm uninstall` removes
+them**. Their expected final state is "explicitly NotFound", and that is
+verified rather than assumed. No KEDA CRD is retained.
+
+**What remains.** Nothing of KEDA. Earlier designs kept an empty `keda`
+namespace created by `--create-namespace`. That namespace had no owner
+labels, so the new preflight refuses it. The single legacy instance
+(created by run `1c59a36c…`, holding only Kubernetes defaults, no Helm
+release) was inspected and removed once, with evidence, during the
+remediation in `day8-runs/8749aae3…`. Cleanup never deletes a namespace it
+does not own by label.
+
+Every cleanup exit, success or failure, writes `cleanup-<timestamp>.json`
+to the run directory; a failed evidence write is itself a FAIL.
+
+`day8-addons-final-check` (mode `after-cleanup`) and the final gate expect
+exactly this: Metrics Server and VPA deployed, healthy and scoped; the
+scaling namespace gone; KEDA entirely absent. While KEDA is active,
+`day8-addons-check` keeps its negative access probes in `maops-platform`
+and its positive control in the scaling namespace.
+
+### The scaling namespace and its budget
+
+Every Day 8 object is generated in one place,
+`scripts/day8_objects.py`, and lives in the temporary namespace
+`maops-day8-scaling`: Pod Security `restricted`, Day 8 identity labels, and
+worker-only, non-root, read-only, capability-free, token-less Pods. The
+LimitRange and ResourceQuota are applied **first and alone**.
+
+- **LimitRange (per container):** min 10m / 16Mi, max 250m / 256Mi, default
+  limits 100m / 64Mi, default requests 50m / 32Mi.
+- **ResourceQuota = `budget()`:** the worst case of every Pod kind at its
+  maximum count and size, all at once, with no padding:
+
+| Pod kind | Max | Requests | Limits | Why that maximum |
+|---|---|---|---|---|
+| `day8-hpa-target` | 4 | 100m / 32Mi | 200m / 64Mi | HPA `maxReplicas` |
+| `day8-hpa-load` | 1 | 50m / 32Mi | 200m / 64Mi | load Job, `backoffLimit: 0` |
+| `day8-vpa-target` | 2 | 40m / 96Mi | 200m / 192Mi | 1 Pod + 1 new under `Initial`, at VPA `maxAllowed` with limits scaled proportionally (as VPA does) |
+| `day8-queue` (Redis) | 1 | 50m / 32Mi | 100m / 64Mi | disposable queue |
+| `day8-queue-worker` | 3 | 20m / 32Mi | 100m / 64Mi | ScaledObject `maxReplicaCount` |
+| `day8-queue-producer` | 1 | 20m / 32Mi | 100m / 64Mi | producer Job |
+| `day8-quota-in-budget` | 1 | 50m / 32Mi | 100m / 64Mi | quota proof Pod (LimitRange defaults) |
+| **ResourceQuota hard** | **13 Pods** | **710m / 544Mi** | **2000m / 1088Mi** | |
+
+Any `FailedCreate … exceeded quota` event in a phase fails that phase: a
+scale-out the budget blocks is a design failure, and the quota is never
+widened to make a run pass. `make day8-preflight` also requires the
+workers' unrequested capacity to cover the add-ons plus this whole budget
+at the start of the run (summed across workers, not bin-packed per node;
+on a re-run the installed add-ons are counted twice, which is
+conservative). The quota-proof Pod is a deliberate, tiny allowance that
+never coexists with the other phases.
+
+### One scaling controller per target
+
+| Target | Controller | Bounds | What the phase proves |
+|---|---|---|---|
+| `day8-hpa-target` (stdlib CPU server) | `autoscaling/v2` HPA, CPU 50% | 1..4; scale-up 2 Pods/15s; scale-down window 30s, 1 Pod/15s | metrics read **before** load → bounded load Job (4 connections, 150s) → Ready scale-out → load ends → scale-in to 1 |
+| `day8-vpa-target` (steady small CPU + 24 MiB) | VPA `Off`, then `Initial` | `minAllowed` 10m/32Mi, `maxAllowed` 40m/96Mi | `Off`: a CPU+memory recommendation while the running Pod keeps its declared resources. `Initial`: scale 1→2 creates **one new** Pod that gets the bounded recommendation at admission (VPA annotation, requests == target, ≠ declared); the existing Pod's UID, resources and restarts are unchanged |
+| `day8-queue-worker` (Redis BLPOP worker, drains on SIGTERM) | KEDA ScaledObject (`redis` list, length 5) | 0..3; poll 5s; cooldown 30s | ScaledObject Ready and worker at 0 → KEDA-managed HPA (`keda-hpa-day8-queue-worker`, External metric) → 60 items queued → activation 0→1 → scale-out → **every** item processed (none lost to scale-down) → scale to 0 |
+
+`scaler_conflicts()` refuses two controllers on one target, a controller
+outside the scaling namespace, or a non-Deployment target. `vpa_object()`
+refuses any mode except `Off` and `Initial`, and with no updater installed,
+nothing could evict or resize a running Pod anyway.
+
+The queue is `redis:8.10.2-alpine`, pinned by digest. It runs as the image's
+non-root user, has no persistence (`--save ""`, `--appendonly no`, an
+`emptyDir` limited to 16Mi), and a NetworkPolicy admits only the worker, the
+producer and the `keda` namespace on 6379. Its data never touches
+`maops-state`.
+
+### The disposable image
+
+`scaling/scaling.py` is one Python-stdlib program with five roles (CPU
+server, load generator, VPA target, worker, producer, plus a minimal RESP
+client). It is built from the same digest-pinned distroless base as the
+workloads. `day8-image-record` pins it by content as
+`maops-kubernetes-scaling:day8-cfg-<config digest>` in the run's private
+directory, never in the Day 7 build store. Pods use `imagePullPolicy:
+Never`, and every phase proves each scaling Pod's imageID through the
+node's containerd record, as `day7-running-images` does for the
+application.
+
+### Proving the Day 7 release was not touched
+
+`day8-stable-baseline` captures, once and read-only: Helm revision, values
+and manifest digest; workload UIDs, generations and template digests; every
+application Pod's UID, node, image, imageID, restart count and resources;
+HTTPRoute and Gateway generations; PVC/PV UIDs; the state file's sha256 and
+size (read on the node from the PV host path); external `/` and `/state`;
+and the absence of any HPA, VPA, ScaledObject, LimitRange or ResourceQuota
+in `maops-platform`. `day8-stable-check` runs after the add-ons and after
+each phase, and the final gate compares all of it field by field. A
+replaced or resized application Pod fails the check and is never
+re-baselined.
+
+### Cleanup and the final gate
+
+The demonstrations run as one group. Whatever their result,
+`day8-cleanup` then releases the KEDA objects, uninstalls KEDA, and
+deletes **only** the namespace carrying the Day 8 identity labels, in the
+order described above. It proves that no HPA, VPA, ScaledObject,
+ResourceQuota, LimitRange or KEDA object remains. Metrics Server and VPA
+stay installed as the platform's autoscaling layer. `day8-final-gate`
+re-runs platform health, ambient listeners, rollout, the pinned running
+build, Gateway, `mesh-check`, `networkpolicy-check`,
+`day8-addons-final-check` (KEDA absent) and `day8-stable-check`.
+
+### Live-run findings that changed the design
+
+Every one of these was found by a failing gate and fixed at its root. No
+check was weakened.
+
+- **Graceful worker drain.** In run `7c99936d…`, 59 of 60 items were
+  processed. A KEDA scale-down sent SIGTERM to a worker that had already
+  popped an item. The worker now stops taking items on SIGTERM, always
+  finishes and counts the one in flight, and uses a 1 s BLPOP. A
+  regression test asserts that the drain (1 s + 2 s) fits the 5 s grace
+  period. This is not an at-least-once queue: a hard kill can still lose
+  an in-flight item.
+- **KEDA namespace-scoped, installed after the namespace.** See above.
+  The cluster-wide workaround (after run `1c59a36c…`) was reverted
+  following independent review.
+- **Fail-closed cleanup.** `day8-cleanup` used to read a failed
+  `kubectl get <resource> --all-namespaces` as "nothing left". Each list
+  failure is now its own FAIL, and the cleanup result fails; a regression
+  test simulates the failed list call.
+- **Add-on wait 900 s.** Image pulls from ghcr.io took up to 7m23s
+  (run `d01130f5…`). The Helm `--wait` is still bounded, and
+  `day8-addons-check` verifies the result.
+- **Load settle.** The 1-minute load straight after `make test` is a
+  transient. Preflight now waits up to 180 s for it to fall under the
+  unchanged limit of 3 × CPUs.
+
+### Interrupted-run recovery
+
+`day8-check` always runs `day8-cleanup` after the demonstrations, but only
+while its shell lives. If the run is interrupted (Ctrl-C, SIGTERM, a
+WSL/Docker restart, a killed shell), recover by hand:
+
+1. `PATH=/usr/bin:$PATH make day8-cleanup`. It is idempotent: it releases
+   any KEDA objects, uninstalls Day 8's KEDA (never a foreign release),
+   and deletes the Day 8-owned `keda` and scaling namespaces. Its
+   evidence goes to a new run directory unless `DAY8_RUN_ID` is set.
+2. `DAY8_RUN_ID=<the interrupted run's id> PATH=/usr/bin:$PATH make
+   day8-final-gate` compares the Day 7 release with **that run's**
+   baseline (the ID is the run directory's name under
+   `~/.local/state/maops-kubernetes-platform/day8-runs/`). A host or
+   Docker restart changes Pod restart counts. The stable check then
+   fails, correctly, and the result is recorded, not re-baselined.
+3. A new `make day8-check` starts only after preflight finds no KEDA
+   release, CRD or `keda` namespace.
+
+**Manual escape hatch (broken KEDA operator).** If the operator or its
+webhook is down while ScaledObjects still carry `finalizer.keda.sh`,
+step 1 stops at object release and keeps KEDA and the namespace. This is
+the fail-closed design, and it is deliberately not automated. The owner
+may remove that finalizer from each Day 8 object, after checking its UID
+and the Day 8 namespace, as was done once for run `c81534e5…`:
+`kubectl -n maops-day8-scaling patch scaledobject <name> --type=json -p
+'[{"op":"test","path":"/metadata/uid","value":"<uid>"},{"op":"remove","path":"/metadata/finalizers"}]'`.
+Then re-run `make day8-cleanup`. Never remove finalizers from objects
+outside `maops-day8-scaling`.
+
+### Version 1.0.0 preparation (not a release)
+
+The Day 8 branch sets `VERSION`, chart `version`/`appVersion` and the
+image tags to `1.0.0`. `scripts/version_check.py` checks the release
+against `RELEASE_TARGET_VERSION` `1.0.0` and keeps `DAY7_TARGET_VERSION`
+frozen at `0.7.0`. Two findings came out of testing this before rolling
+the Day 7 release:
+
+- **Build record collision (fixed, schema 2).** The workload images are
+  byte-identical across versions, so schema-1 build IDs (a hash of the
+  config digests only) would give a `1.0.0` build the same ID as the
+  historical 0.7.0 build `fdb68741…` and collide with its private record.
+  Schema 2 (`scripts/day7_build.py`) includes the version in the ID. Schema-1
+  records still load with their original IDs, so the 0.7.0 history is
+  preserved. The 1.0.0 build is `70400e92…`.
+- **StatefulSet claim-template labels are frozen at 0.7.0.**
+  `volumeClaimTemplates` is immutable. Carrying `app.kubernetes.io/version`
+  and `helm.sh/chart` into it would make every chart version bump an
+  upgrade the API server rejects (proven with `kubectl apply
+  --server-side --dry-run=server`: `Forbidden`; `helm upgrade
+  --dry-run=server` does not catch this). The claim template uses
+  `maops.claimTemplateLabels`, frozen at the values the existing claim
+  carries, and was accepted in the same server dry run.
+  `make helm-check` asserts the exact frozen set on every render
+  (`validate_helm_chart._check_claim_template_labels`). One limitation is
+  accepted: the frozen Day 6 release (`maops-k8s-day6`) was created by
+  chart 0.6.0, so its claim template carries 0.6.0 labels. Upgrading that
+  release to this chart would be rejected the same way. Day 6 is released
+  and frozen, and nothing upgrades it.
+  The platform objects in `k8s/day7/` keep their 0.7.0 labels; they are
+  frozen platform manifests and are not reapplied.
+
+The Day 7 release was then rolled once to the 1.0.0 build through the
+normal Day 7 targets (`image-build`, `day7-image-verify-local`,
+`day7-build-record`, both image loads, `day7-image-verify-nodes`,
+`day7-deploy`). Pre- and post-rollout snapshots are in
+`day8-runs/8749aae3…`. Results:
+
+- Helm revision 13 → 14 (chart `1.0.0`).
+- All seven Pods replaced, as the new pinned tags require. No Pod UID
+  was retained.
+- Workload, StatefulSet, route, PVC and PV UIDs unchanged.
+- `state.json` unchanged (15 bytes, sha256 `3ce4f556…`).
+- Running-image, rollout, Gateway and ambient-listener checks passed.
+
+The next `day8-check` takes its baseline from this state.
+
+## DAY8: live validation record
+
+**Authoritative run `11434441f1e745768308bd01ffae86ca`** (2026-10-03
+10:19-10:39Z, `make day8-check` exit 0), after five recorded failed
+attempts and an owner-approved post-restart recovery:
+
+| Gate | Result |
+|---|---|
+| Static gates | unit 1731 OK, `day8-static-check` 5/5, `day8-preflight` 6/6 |
+| Add-ons | 17/17 |
+| Guards / quota proof | 5/5 / 9/9 |
+| HPA | 9/9: 1 → 2 → 4 Ready under load, then 4 → 3 → 2 → 1 |
+| VPA | 17/17: Off target 40m / 49,566,436 B (CPU capped from 49m), applied only to one new Pod |
+| KEDA | 13/13: 0 → 1 → 3 → 0, 60/60 processed |
+| Stable checks | 7/7 at each of 5 points |
+| Cleanup | 3/3 |
+| Final gate | mesh-check 45/45, networkpolicy-check 37/37, rollout 35/35, running images 47/47, Gateway 8/8, listeners 67/67 |
+
+**After independent review**, KEDA was scoped and cleanup was made fail-closed
+and ordered. The authoritative run is **`7c895b460a3747a190d4fb0428838fb4`**
+(exit 0), and **`77e4990964bc475cac2fd6d231d74bf6`** is the consecutive
+second run (exit 0) proving that the namespace and binding are re-created.
+Both show all-deny SubjectAccessReviews for KEDA in `maops-platform`. See
+section 7 of the record.
+
+**After the release-blocker review**, KEDA became per-run: cleanup now
+uninstalls it, including its CRDs, so no KEDA operator, CRD, RBAC or Helm
+drift remains. Two consecutive runs exited 0:
+`a9535fea298944f48a248d13b4bb0f25` and
+`b6bfc6e69c924feab877247c9d1a9c0d` (a fresh install at Helm revision 1).
+See section 8 of the record.
+
+**After the final-patch review**, a KEDA CRD-instance guard was added
+before the uninstall, and the runtime Secret is now read labels-only. Run
+**`140a5016313048f49386813c7a8daace`** exited 0. See section 9 of the record.
+
+**After the five-review adjudication and the 1.0.0 preparation**, run
+**`28ec47a1b5b44db29b7deb2d96df8c64`** (run G) exited 0 on the remediated
+code. It ran after the controlled Day 7 rollout to 1.0.0 and took its
+baseline from that state. Run G superseded run F as the authoritative run.
+See section 10 of the record.
+
+**After the round-2 re-review** (frozen claim-template labels validated;
+cleanup checks the `keda` namespace's labels first; pre-install creates
+and never adopts), run **`0d158cfe2fc8453595d0185e004fcfaf`** (run H)
+exited 0 on the final tree. Run H is now the authoritative run. See
+section 11 of the record.
+
+Full detail, including every failed attempt and the recovery:
+[`docs/engineering-reviews/day-08-live-validation-record.md`](engineering-reviews/day-08-live-validation-record.md).

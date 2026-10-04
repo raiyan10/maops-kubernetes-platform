@@ -313,8 +313,11 @@ class Day7ReleaseChecksTests(unittest.TestCase):
             version_check.MAKEFILE.read_text(),
             _y.load_all(version_check.KIND_DAY6_CONFIG.read_text())[0],
             _y.load_all(version_check.KIND_DAY7_CONFIG.read_text())[0],
+            target=version_check.RELEASE_TARGET_VERSION,
         )
         self.assertEqual(_failed_names(findings), set())
+        self.assertEqual(version_check.RELEASE_TARGET_VERSION, "1.0.0")
+        self.assertEqual(version_check.DAY7_TARGET_VERSION, "0.7.0", "the historical v0.7.0 target stays frozen")
 
     def test_stale_versions_fail(self):
         self.assertIn("day7.version_file_matches_target", _failed_names(_day7(version_file_content="0.6.0")))

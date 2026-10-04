@@ -70,8 +70,14 @@ EXPECTED_TARGET_VERSION = "0.5.0"
 # this.
 DAY6_TARGET_VERSION = "0.6.0"
 
-# DAY7: the live release target (v0.7.0, released 2026-09-30).
+# DAY7: the v0.7.0 release target (released 2026-09-30) - kept as the
+# frozen historical constant (run_day7_release_checks' default; its unit
+# tests still pin it).
 DAY7_TARGET_VERSION = "0.7.0"
+# DAY8: the live release target for v1.0.0 (NOT released). main() runs the
+# same release contract (VERSION, chart version/appVersion, image tags,
+# Day 6/Day 7 identities, kind pins, infra pins) against this value.
+RELEASE_TARGET_VERSION = "1.0.0"
 KIND_DAY6_CONFIG = REPO_ROOT / "kind" / "cluster-day6.yaml"
 KIND_DAY7_CONFIG = REPO_ROOT / "kind" / "cluster-day7.yaml"
 
@@ -289,11 +295,13 @@ def run_day7_release_checks(
     kind_day6: dict,
     kind_day7: dict,
     profiles: dict | None = None,
+    target: str = DAY7_TARGET_VERSION,
 ) -> list[Finding]:
-    """DAY7: pure checking logic (inputs already read/parsed)."""
+    """DAY7: pure checking logic (inputs already read/parsed). DAY8: the
+    target is a parameter - main() passes RELEASE_TARGET_VERSION (1.0.0);
+    the default stays the historical 0.7.0 contract."""
     profiles = kube.PROFILES if profiles is None else profiles
     findings: list[Finding] = []
-    target = DAY7_TARGET_VERSION
     findings.append(Finding(version_file_content == target, "day7.version_file_matches_target", f"expected VERSION == {target!r}, found {version_file_content!r}"))
     findings.append(Finding(chart_yaml.get("version") == target, "day7.chart_version_matches_target", f"expected Chart.yaml version == {target!r}, found {chart_yaml.get('version')!r}"))
     findings.append(Finding(chart_yaml.get("appVersion") == target, "day7.chart_appVersion_matches_target", f"expected Chart.yaml appVersion == {target!r}, found {chart_yaml.get('appVersion')!r}"))
@@ -393,7 +401,8 @@ def main() -> int:
         print(f"FAIL: could not read/parse the kind configs: {exc}", file=sys.stderr)
         return 1
 
-    findings += run_day7_release_checks(version, chart_yaml, values_yaml, makefile_text, kind_day6, kind_day7)
+    findings += run_day7_release_checks(version, chart_yaml, values_yaml, makefile_text, kind_day6, kind_day7, target=RELEASE_TARGET_VERSION)
+    findings.append(Finding(DAY7_TARGET_VERSION == "0.7.0", "day7.historical_target_frozen", f"expected the historical Day 7 target to stay '0.7.0', found {DAY7_TARGET_VERSION!r}"))
     failures = [f for f in findings if not f.ok]
 
     print(f"# Version consistency check (live VERSION file == {version!r}; k8s/base frozen at {EXPECTED_TARGET_VERSION!r})")

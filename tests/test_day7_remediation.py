@@ -191,7 +191,7 @@ class ImageCheckMainTests(unittest.TestCase):
 
     def test_missing_image_on_one_node_fails_before_deploy(self):
         partial = self._all()
-        del partial["maops-k8s-day7-worker2"]["maops-kubernetes-state:0.7.0"]
+        del partial["maops-k8s-day7-worker2"][f"maops-kubernetes-state:{img.VERSION}"]
         rc, _ = self._run(partial)
         self.assertEqual(rc, 1)
 
@@ -225,7 +225,7 @@ class ImageContractWiringTests(unittest.TestCase):
         values = k8s_yaml.load_all((REPO / "charts/maops-kubernetes-platform/values.yaml").read_text())[0]["images"]
         chart_refs = sorted(f"{v['repository']}:{v['tag']}" for v in values.values())
         self.assertEqual(sorted(img.image_refs()), chart_refs)
-        self.assertEqual(img.VERSION, "0.7.0")
+        self.assertEqual(img.VERSION, (REPO / "VERSION").read_text().strip())
         self.assertTrue(all(v["pullPolicy"] == "IfNotPresent" for v in values.values()))
 
     def test_candidate_runs_the_same_gateway_image_as_stable(self):
@@ -252,8 +252,8 @@ class ImageContractWiringTests(unittest.TestCase):
     def test_resolved_load_targets_only_the_day7_cluster(self):
         out = subprocess.run(["make", "-n", "CLUSTER_NAME=maops-k8s-day7", "KUBECONFIG_PATH=/nonexistent", "image-build", "image-load"], cwd=REPO, capture_output=True, text=True, timeout=60, check=True).stdout
         for repo in img.REPOSITORIES:
-            self.assertIn(f"kind load docker-image {repo}:0.7.0 --name maops-k8s-day7", out)
-            self.assertIn(f"-t {repo}:0.7.0", out)
+            self.assertIn(f"kind load docker-image {repo}:{img.VERSION} --name maops-k8s-day7", out)
+            self.assertIn(f"-t {repo}:{img.VERSION}", out)
         self.assertIn("--platform linux/amd64 --provenance=false --sbom=false --load", out)
         self.assertNotIn("maops-k8s-day6", out)
 

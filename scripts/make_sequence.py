@@ -34,7 +34,11 @@ def steps(target: str, text: str) -> list[tuple[str, str]]:
     def profile(mk: str, name: str) -> str:
         if mk == "DAY7_MAKE":
             return "day7 profile via DAY7_MAKE"
-        return "day7 target (sets its own Day 7 env)" if name.startswith("day7-") else "cluster-free/default"
+        if name.startswith("day7-"):
+            return "day7 target (sets its own Day 7 env)"
+        if name.startswith("day8-"):
+            return "day8 target (sets its own maops-k8s-day7 env or is cluster-free)"
+        return "cluster-free/default"
     return [(profile(mk, name), name) for mk, name in _STEP.findall(recipe(target, text))]
 
 
