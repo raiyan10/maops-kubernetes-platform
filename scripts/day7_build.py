@@ -130,11 +130,24 @@ class BuildImage:
         return node_ref(self.ref)
 
 
+# DAY8 (v1.0.0): build-record schema 2. Schema 1 derived the build id from
+# the three config digests ONLY, so rebuilding identical image bytes under a
+# new VERSION produced the SAME id - and store_build() then refused, because
+# the existing directory held the older version's record (verified on
+# 2026-10-03 against an isolated store before the 1.0.0 bump). Schema 2 adds
+# the version to the hash. Schema 1 records - every v0.7.0 build, including
+# the released fdb68741... - stay valid and keep their original ids: they
+# are re-derived with the schema-1 formula and never rewritten.
+CURRENT_SCHEMA = 2
+SUPPORTED_SCHEMAS = (1, 2)
+
+
 @dataclass(frozen=True)
 class Build:
     build_id: str
     version: str
     images: tuple[BuildImage, ...]
+    schema: int = CURRENT_SCHEMA
 
     def image(self, component: str) -> BuildImage:
         """`candidate` runs the gateway image."""
@@ -149,31 +162,40 @@ class Build:
 
     def record(self) -> dict:
         return {
-            "schema": 1,
+            "schema": self.schema,
             "build_id": self.build_id,
             "version": self.version,
             "images": {i.component: {"repository": i.repository, "config_digest": i.config_digest, "tag": i.tag} for i in self.images},
         }
 
 
-def build_id_for(digests: dict[str, str]) -> str:
-    """Pure: sha256 over `component=digest` lines in fixed order."""
+def build_id_for(digests: dict[str, str], version: str | None = None, schema: int = 1) -> str:
+    """Pure. Schema 1 (legacy): sha256 over `component=digest` lines in fixed
+    order. Schema 2: the same lines preceded by `version=<version>`, so the
+    same bytes under a different VERSION are a different build."""
     lines = "".join(f"{c}={digests[c]}\n" for c in COMPONENTS)
+    if schema == 2:
+        if not version:
+            raise BuildError("schema-2 build ids need the version")
+        lines = f"version={version}\n" + lines
+    elif schema != 1:
+        raise BuildError(f"unsupported build schema {schema!r}")
     return hashlib.sha256(lines.encode()).hexdigest()
 
 
-def build_from_digests(digests: dict[str, str], version: str = VERSION) -> Build:
-    """Pure. `digests`: component -> `sha256:<hex>` config digest."""
+def build_from_digests(digests: dict[str, str], version: str = VERSION, schema: int = CURRENT_SCHEMA) -> Build:
+    """Pure. `digests`: component -> `sha256:<hex>` config digest. New builds
+    are schema 2; schema 1 is only for re-deriving legacy records."""
     if set(digests) != set(COMPONENTS):
         raise BuildError(f"expected config digests for exactly {COMPONENTS}, got {sorted(digests)}")
     images = tuple(BuildImage(c, REPOSITORIES[c], digests[c], pinned_tag(digests[c], version)) for c in COMPONENTS)
-    return Build(build_id_for(digests), version, images)
+    return Build(build_id_for(digests, version, schema), version, images, schema)
 
 
 def build_from_record(record: dict, version: str = VERSION) -> Build:
     """Pure. Re-derives everything from the digests and refuses any
     record whose id, tags or repositories disagree with them."""
-    if not isinstance(record, dict) or record.get("schema") != 1:
+    if not isinstance(record, dict) or record.get("schema") not in SUPPORTED_SCHEMAS:
         raise BuildError(f"unsupported build record: {record!r:.200}")
     if record.get("version") != version:
         raise BuildError(f"build record is for version {record.get('version')!r}, this checkout is {version!r}")
@@ -182,7 +204,7 @@ def build_from_record(record: dict, version: str = VERSION) -> Build:
         digests = {c: images[c]["config_digest"] for c in COMPONENTS}
     except (KeyError, TypeError) as exc:
         raise BuildError(f"build record lacks a config digest: {exc}") from exc
-    build = build_from_digests(digests, version)
+    build = build_from_digests(digests, version, record["schema"])
     if record != build.record():
         raise BuildError(f"build record {record.get('build_id')!r} is inconsistent with its own digests (expected {build.record()!r})")
     return build

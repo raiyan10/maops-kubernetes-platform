@@ -88,15 +88,15 @@ build:
 images:
   gateway:
     repository: maops-kubernetes-gateway
-    tag: "0.7.0"
+    tag: "1.0.0"
     pullPolicy: IfNotPresent
   app:
     repository: maops-kubernetes-app
-    tag: "0.7.0"
+    tag: "1.0.0"
     pullPolicy: IfNotPresent
   state:
     repository: maops-kubernetes-state
-    tag: "0.7.0"
+    tag: "1.0.0"
     pullPolicy: IfNotPresent
 
 # Unchanged since Day 1/2: applied identically to every workload

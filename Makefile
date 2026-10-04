@@ -131,7 +131,7 @@ ISTIO_NAMESPACE := istio-system
         day7-build-record day7-image-load day7-running-images
 
 help: ## Show this help
-	@echo "MAOps Kubernetes Platform - Day 6 (v0.6.0) and Day 7 (v0.7.0, released) - available targets:"
+	@echo "MAOps Kubernetes Platform - Day 6 (v0.6.0), Day 7 (v0.7.0, released) and Day 8 (v1.0.0 work, not released) - available targets:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "  %-26s %s\n", $$1, $$2}'
 
 tool-check: ## Verify the required local toolchain is present and correctly resolved
@@ -657,3 +657,175 @@ day7-check: ## Authoritative Day 7 sequence under ONE Day 7 lock - static checks
 	'
 	@echo ""
 	@echo "PASS: day7-check completed - all three strategies ran and the stable state was independently verified"
+
+# ============================================================================
+# DAY8 (v1.0.0 work, NOT released): autoscaling on the EXISTING
+# maops-k8s-day7 cluster - pinned Metrics Server/VPA/KEDA add-ons, a
+# temporary guarded scaling namespace (LimitRange + computed
+# ResourceQuota), one bounded HPA, VPA (Off -> Initial) and KEDA
+# demonstration each on its own disposable target, verified cleanup, and
+# an independent check that the Day 7 release, its Pods, route, storage
+# and state are exactly as baselined. Runs under the Day 7 cluster
+# profile and the Day 7 mutation lock; never touches maops-k8s-day6,
+# never changes a Day 7 Helm stage, build or baseline, and never re-runs
+# the Day 7 strategy experiments.
+# ============================================================================
+METRICS_SERVER_CHART_VERSION := 3.14.0
+METRICS_SERVER_APP_VERSION := 0.9.0
+METRICS_SERVER_HELM_REPO := https://kubernetes-sigs.github.io/metrics-server/
+VPA_CHART_VERSION := 0.13.0
+VPA_APP_VERSION := 1.8.0
+VPA_HELM_REPO := https://kubernetes.github.io/autoscaler
+KEDA_CHART_VERSION := 2.21.0
+KEDA_APP_VERSION := 2.21.0
+KEDA_HELM_REPO := https://kedacore.github.io/charts
+DAY8_STAGE_DIR := helm-values/day8
+DAY8_SCALING_IMAGE := maops-kubernetes-scaling:day8
+DAY8_HELM_SCOPE := --kubeconfig $(DAY7_KUBECONFIG_PATH) --kube-context $(DAY7_KCONTEXT)
+# Helm release label marking the KEDA release as Day 8's own (checked before
+# any upgrade or uninstall - scripts/day8_addons.py keda_release_ownership_problems).
+DAY8_KEDA_OWNER_LABEL := maops-day8-owner=maops-kubernetes-platform-day8
+# One run ID per top-level invocation, inherited by nested makes; all of
+# a run's evidence lives in ONE private 0700 directory outside /tmp and
+# the repository (scripts/day8_common.py). Pass the same DAY8_RUN_ID to
+# re-check a run later.
+DAY8_RUN_ID := $(if $(DAY8_RUN_ID),$(DAY8_RUN_ID),$(shell python3 -c "import uuid; print(uuid.uuid4().hex)"))
+DAY8_RUNS_ROOT ?= $(HOME)/.local/state/maops-kubernetes-platform/day8-runs
+DAY8_RUN_DIR := $(DAY8_RUNS_ROOT)/$(DAY8_RUN_ID)
+export DAY8_RUN_ID
+export DAY8_RUN_DIR
+DAY8_ENV := $(DAY7_ENV)
+
+.PHONY: day8-plan day8-static-check day8-preflight day8-baseline-init day8-stable-baseline \
+        day8-stable-check day8-image-build day8-image-record day8-image-load day8-image-verify-nodes \
+        day8-addons-install day8-addons-check day8-guards day8-quota day8-hpa day8-vpa day8-keda \
+        day8-cleanup day8-final-gate day8-check day8-addons-final-check
+
+day8-plan: ## Read-only: print the day8-check / day8-final-gate step order parsed from this Makefile (runs nothing, takes no lock)
+	python3 scripts/make_sequence.py day8-check day8-final-gate
+
+day8-static-check: ## Cluster-free: add-on values/pins agree and every guard is present (VPA updater off + namespace-scoped webhook/flags, KEDA watchNamespace), scaling design within the LimitRange with one scaler per target, ResourceQuota == computed worst-case budget
+	python3 scripts/day8_addons.py static
+	python3 scripts/day8_objects.py budget
+
+day8-preflight: ## Read-only: Day 7 context + 3 Ready nodes, server version inside every pinned add-on's supported window, host memory/load headroom, worker request headroom >= add-ons + scaling budget, no leftover scaling namespace
+	env $(DAY8_ENV) python3 scripts/day8_preflight.py
+
+day8-baseline-init: ## Create this run's private evidence directory ($(DAY8_RUNS_ROOT)/<DAY8_RUN_ID>, mode 0700) - refuses to reuse an existing one
+	$(DAY7_LOCK) python3 scripts/day8_common.py init
+
+day8-stable-baseline: ## Read-only capture (once) of the Day 7 release Day 8 must not touch: Helm revision/values/manifest, workload + Pod UIDs/restarts/resources, route, PVC/PV UIDs, state file sha256, external responses
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_stable.py capture
+
+day8-stable-check: ## Read-only, independent: everything day8-stable-baseline captured is unchanged (any replaced/resized application Pod fails), and no HPA/VPA/ScaledObject/LimitRange/ResourceQuota exists in maops-platform
+	env $(DAY8_ENV) python3 scripts/day8_stable.py check
+
+day8-image-build: ## Build the disposable scaling image (scaling/, same pinned distroless base, stdlib only)
+	docker build $(IMAGE_BUILD_FLAGS) -t $(DAY8_SCALING_IMAGE) scaling
+
+day8-image-record: ## Cluster-free: pin the scaling image to maops-kubernetes-scaling:day8-cfg-<config digest> and record it in the run directory
+	$(DAY7_LOCK) python3 scripts/day8_image.py record
+
+day8-image-load: ## Load the run's pinned scaling image into maops-k8s-day7 ONLY (digest re-derived first)
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_image.py load-kind
+
+day8-image-verify-nodes: ## Read-only: every maops-k8s-day7 node holds the pinned scaling image with the recorded config digest
+	env $(DAY8_ENV) python3 scripts/day8_image.py verify-nodes
+
+day8-addons-install: ## Install/upgrade Metrics Server $(METRICS_SERVER_APP_VERSION), VPA $(VPA_APP_VERSION) (recommender + admission controller, NO updater) and KEDA $(KEDA_APP_VERSION) (scoped to maops-day8-scaling) on maops-k8s-day7 - REQUIRES the guarded scaling namespace (run day8-guards first: KEDA's scoped RoleBinding lives in it); KEDA only after `day8_addons.py keda-preinstall` proves no foreign KEDA release/CRDs/namespace and creates Day 8's own labelled `keda` namespace; the KEDA release carries Day 8's owner label; pinned chart versions, --reset-values -f helm-values/day8/<addon>.yaml, bounded --wait
+	$(DAY7_LOCK) bash -c '\
+		set -euo pipefail; \
+		labels=$$(kubectl --kubeconfig $(DAY7_KUBECONFIG_PATH) --context $(DAY7_KCONTEXT) get namespace maops-day8-scaling -o jsonpath="{.metadata.labels.app\.kubernetes\.io/instance}/{.metadata.labels.app\.kubernetes\.io/component}" 2>/dev/null || true); \
+		if [ "$$labels" != "maops-kubernetes-platform-day8/day8-scaling" ]; then echo "FAIL: namespace maops-day8-scaling with the Day 8 identity (instance + component) does not exist - run make day8-guards first (KEDA is namespace-scoped and its RoleBinding lives there)" >&2; exit 1; fi; \
+		env $(DAY8_ENV) python3 scripts/day8_addons.py keda-preinstall; \
+		helm upgrade --install metrics-server metrics-server --repo $(METRICS_SERVER_HELM_REPO) \
+			--version $(METRICS_SERVER_CHART_VERSION) --namespace kube-system $(DAY8_HELM_SCOPE) \
+			--reset-values -f $(DAY8_STAGE_DIR)/metrics-server.yaml --wait --timeout 900s; \
+		helm upgrade --install vertical-pod-autoscaler vertical-pod-autoscaler --repo $(VPA_HELM_REPO) \
+			--version $(VPA_CHART_VERSION) --namespace vpa-system --create-namespace $(DAY8_HELM_SCOPE) \
+			--reset-values -f $(DAY8_STAGE_DIR)/vertical-pod-autoscaler.yaml --wait --timeout 900s; \
+		helm upgrade --install keda keda --repo $(KEDA_HELM_REPO) \
+			--version $(KEDA_CHART_VERSION) --namespace keda $(DAY8_HELM_SCOPE) \
+			--labels $(DAY8_KEDA_OWNER_LABEL) \
+			--reset-values -f $(DAY8_STAGE_DIR)/keda.yaml --wait --timeout 900s \
+	'
+
+day8-addons-check: ## Read-only, while the scaling namespace exists: add-ons at their pinned versions and Ready, resource metrics served, no VPA updater, VPA webhook scoped, KEDA's effective RBAC namespace-scoped (SubjectAccessReviews: no KEDA identity can read Secrets, scale/patch workloads or create HPAs in maops-platform; the operator can in the scaling namespace)
+	env $(DAY8_ENV) python3 scripts/day8_addons.py check active
+
+day8-addons-final-check: ## Read-only, after day8-cleanup: Metrics Server and VPA healthy and scoped; scaling namespace gone; KEDA UNINSTALLED - Helm release, every chart-owned object (CRDs, RBAC, webhook, APIService, Deployments, Services, ServiceAccounts, scoped RoleBinding), the operator's runtime cert Secret/lease, Pods and any binding naming a KEDA ServiceAccount all explicitly NotFound
+	env $(DAY8_ENV) python3 scripts/day8_addons.py check after-cleanup
+
+day8-guards: ## Create the temporary maops-day8-scaling namespace (Pod Security restricted) with its LimitRange and the computed ResourceQuota - before any workload
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py guards
+
+day8-quota: ## Prove the guards: an in-budget Pod is admitted with LimitRange defaults; a container above the LimitRange max and a Pod above the whole quota are rejected
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py quota
+
+day8-hpa: ## Bounded CPU HPA (1..4) on day8-hpa-target: metrics first, bounded load Job, observed Ready scale-out, observed scale-in to 1
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py hpa
+
+day8-vpa: ## VPA on day8-vpa-target: Off-mode recommendation (running Pod untouched), then Initial applied to ONE newly created Pod only
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py vpa
+
+day8-keda: ## KEDA on day8-queue-worker: disposable Redis list, managed HPA, activation 0 -> 1, scale-out, queue drained, scale to 0
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py keda
+
+day8-cleanup: ## Ordered, fail-closed: (1) delete the namespace's ScaledObjects/ScaledJobs/TriggerAuthentications while KEDA can still release its finalizers and HPA, (2) helm uninstall ONLY the keda release (bounded wait) + its runtime cert Secret/lease, (3) delete the labelled maops-day8-scaling namespace and prove KEDA and every Day 8 control gone; any failure in (1)/(2) keeps the namespace; safe when KEDA was never installed or cleanup already ran; Metrics Server and VPA stay installed
+	$(DAY7_LOCK) env $(DAY8_ENV) python3 scripts/day8_scaling.py cleanup
+
+day8-final-gate: ## Day 8 restored-state gate (after day8-cleanup) - platform health, listeners, rollout, pinned running build, Gateway, mesh and NetworkPolicy behavior, Metrics Server/VPA healthy with KEDA verified uninstalled, then the independent stable-state check against this run's baseline
+	$(DAY7_LOCK) sh -c '\
+		$(DAY7_MAKE) cni-status && \
+		$(DAY7_MAKE) context-check && \
+		$(DAY7_MAKE) mesh-status && \
+		$(DAY7_MAKE) ambient-workload-check && \
+		$(DAY7_MAKE) rollout-check && \
+		$(MAKE) day7-running-images && \
+		$(DAY7_MAKE) gateway-check && \
+		$(DAY7_MAKE) mesh-check && \
+		$(DAY7_MAKE) networkpolicy-check && \
+		$(MAKE) day8-addons-final-check && \
+		$(MAKE) day8-stable-check \
+	'
+
+day8-check: ## Authoritative Day 8 sequence under ONE Day 7 lock - static checks, read-only preflight and resume health, private run + stable baseline, pinned scaling image (built, digest-pinned, loaded, per-node verified), guards (namespace FIRST), add-ons incl. namespace-scoped KEDA, scoped-RBAC check, quota proof, HPA, VPA, KEDA (stable check after each), cleanup ALWAYS attempted after the demonstrations, then the restored-state gate; never touches maops-k8s-day6 or the Day 7 strategy experiments
+	$(DAY7_LOCK) sh -c '\
+		$(MAKE) tool-check && \
+		$(MAKE) test && \
+		$(MAKE) version-check && \
+		$(MAKE) manifest-check && \
+		$(MAKE) helm-lint && \
+		$(MAKE) helm-template > /dev/null && \
+		$(MAKE) helm-check && \
+		$(MAKE) day8-static-check && \
+		$(MAKE) day8-preflight && \
+		$(MAKE) day7-resume-check && \
+		$(MAKE) day8-baseline-init && \
+		$(MAKE) day8-stable-baseline && \
+		$(MAKE) day8-image-build && \
+		$(MAKE) day8-image-record && \
+		$(MAKE) day8-image-load && \
+		$(MAKE) day8-image-verify-nodes && \
+		{ \
+			$(MAKE) day8-guards && \
+			$(MAKE) day8-addons-install && \
+			$(MAKE) day8-addons-check && \
+			$(MAKE) day8-stable-check && \
+			$(MAKE) day8-quota && \
+			$(MAKE) day8-hpa && \
+			$(MAKE) day8-stable-check && \
+			$(MAKE) day8-vpa && \
+			$(MAKE) day8-stable-check && \
+			$(MAKE) day8-keda && \
+			$(MAKE) day8-stable-check; \
+			demo=$$?; \
+			$(MAKE) day8-cleanup; \
+			cleanup=$$?; \
+			echo "day8-check: demonstrations exit $$demo, cleanup exit $$cleanup"; \
+			[ $$demo -eq 0 ] && [ $$cleanup -eq 0 ]; \
+		} && \
+		$(MAKE) day8-final-gate \
+	'
+	@echo ""
+	@echo "PASS: day8-check completed - HPA, VPA and KEDA demonstrated within the computed budget, the scaling namespace removed, and the Day 7 release independently verified unchanged (v1.0.0 NOT released)"

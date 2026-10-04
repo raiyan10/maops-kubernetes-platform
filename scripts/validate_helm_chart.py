@@ -47,7 +47,7 @@ import re
 from dataclasses import dataclass, field
 
 EXPECTED_NAMESPACE = "maops-platform"
-EXPECTED_VERSION = "0.7.0"
+EXPECTED_VERSION = "1.0.0"
 EXPECTED_INSTANCE = "maops-kubernetes-platform-day6"
 
 VALIDATION_NAMESPACE = "maops-day6-validation"
@@ -73,6 +73,24 @@ STATE_STATEFULSET = "maops-state"
 GATEWAY_IMAGE_REPO = "maops-kubernetes-gateway"
 APP_IMAGE_REPO = "maops-kubernetes-app"
 STATE_IMAGE_REPO = "maops-kubernetes-state"
+
+# DAY8 (v1.0.0): a StatefulSet's volumeClaimTemplates are IMMUTABLE - the
+# API server rejects any change to them on an existing StatefulSet, and
+# `helm upgrade --dry-run=server` does not catch it. The state claim
+# template's labels are therefore frozen at the values the released v0.7.0
+# chart created (`maops.claimTemplateLabels`), never the running version.
+# Only the instance label follows the release name (it is the Helm release
+# name, which never changes for an existing release).
+STATE_CLAIM_TEMPLATE_NAME = "data"
+FROZEN_CLAIM_TEMPLATE_VERSION = "0.7.0"
+FROZEN_CLAIM_TEMPLATE_LABELS = {
+    "app.kubernetes.io/name": "maops-kubernetes-platform",
+    "app.kubernetes.io/version": FROZEN_CLAIM_TEMPLATE_VERSION,
+    "app.kubernetes.io/part-of": "maops-kubernetes-platform",
+    "app.kubernetes.io/managed-by": "Helm",
+    "helm.sh/chart": f"maops-kubernetes-platform-{FROZEN_CLAIM_TEMPLATE_VERSION}",
+    "app.kubernetes.io/component": "state",
+}
 
 # DAY6 (live rollout remediation): every workload that mounts either
 # runtime Secret projects it read-only at mode 0440 (decimal 288,
@@ -282,6 +300,28 @@ def _check_versions(c: _Checker) -> None:
         if instance is not None:
             name = f"{doc.get('kind')}/{doc.get('metadata', {}).get('name')}"
             c.check(instance == c.exp.instance, f"version.instance_matches[{name}]", f"expected app.kubernetes.io/instance == {c.exp.instance!r}, found {instance!r}")
+
+
+def _check_claim_template_labels(c: _Checker) -> None:
+    doc = c.by_kind_name("StatefulSet", STATE_STATEFULSET)
+    templates = ((doc or {}).get("spec") or {}).get("volumeClaimTemplates") or []
+    names = [((t or {}).get("metadata") or {}).get("name") for t in templates]
+    if not c.check(
+        names == [STATE_CLAIM_TEMPLATE_NAME],
+        "claim_template.state.exactly_one",
+        f"expected StatefulSet {STATE_STATEFULSET} to carry exactly one volumeClaimTemplate {STATE_CLAIM_TEMPLATE_NAME!r}, found {names!r}",
+    ):
+        return
+    labels = (templates[0].get("metadata") or {}).get("labels") or {}
+    expected = {**FROZEN_CLAIM_TEMPLATE_LABELS, "app.kubernetes.io/instance": c.exp.instance}
+    drift = sorted(k for k in set(expected) | set(labels) if labels.get(k) != expected.get(k))
+    c.check(
+        not drift,
+        "claim_template.state.frozen_labels",
+        f"expected the IMMUTABLE volumeClaimTemplates labels to stay exactly the frozen {FROZEN_CLAIM_TEMPLATE_VERSION} set "
+        f"{expected!r} (a change is rejected by the API server on upgrade); differing keys: "
+        + (", ".join(f"{k}={labels.get(k)!r} (expected {expected.get(k)!r})" for k in drift) or "none"),
+    )
 
 
 def _check_security_context(c: _Checker) -> None:
@@ -649,6 +689,7 @@ def run_checks(docs: list[dict], expectation: RenderExpectation | None = None) -
     c = _Checker(docs, expectation or DEFAULT_EXPECTATION)
     _check_inventory(c)
     _check_versions(c)
+    _check_claim_template_labels(c)
     _check_security_context(c)
     _check_service_accounts_and_rbac(c)
     _check_network_policy(c)

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from validate_helm_chart import run_checks
 
-VERSION = "0.7.0"
+VERSION = "1.0.0"
 INSTANCE = "maops-kubernetes-platform-day6"
 NAMESPACE = "maops-platform"
 VALIDATION_NAMESPACE = "maops-day6-validation"
@@ -279,6 +279,35 @@ def _httproute() -> dict:
     }
 
 
+# DAY8 (v1.0.0): the state StatefulSet's claim template, exactly as the
+# chart renders it - labels FROZEN at the released 0.7.0 values (the field
+# is immutable), NOT the running VERSION.
+FROZEN_CLAIM_VERSION = "0.7.0"
+
+
+def _claim_template_labels() -> dict:
+    return {
+        "app.kubernetes.io/name": "maops-kubernetes-platform",
+        "app.kubernetes.io/instance": INSTANCE,
+        "app.kubernetes.io/version": FROZEN_CLAIM_VERSION,
+        "app.kubernetes.io/part-of": "maops-kubernetes-platform",
+        "app.kubernetes.io/managed-by": "Helm",
+        "helm.sh/chart": f"maops-kubernetes-platform-{FROZEN_CLAIM_VERSION}",
+        "app.kubernetes.io/component": "state",
+    }
+
+
+def _state_statefulset() -> dict:
+    doc = _workload("StatefulSet", "maops-state", "state", "maops-kubernetes-state", secret_names=("maops-state-auth",))
+    doc["spec"]["volumeClaimTemplates"] = [
+        {
+            "metadata": {"name": "data", "labels": _claim_template_labels()},
+            "spec": {"accessModes": ["ReadWriteOnce"], "volumeMode": "Filesystem", "resources": {"requests": {"storage": "256Mi"}}},
+        }
+    ]
+    return doc
+
+
 def _baseline_docs() -> list[dict]:
     docs = [
         _configmap("maops-gateway-config", "gateway"),
@@ -291,7 +320,7 @@ def _baseline_docs() -> list[dict]:
         _rolebinding(),
         _workload("Deployment", "maops-gateway", "gateway", "maops-kubernetes-gateway", secret_names=("maops-internal-auth",)),
         _workload("Deployment", "maops-app", "app", "maops-kubernetes-app", secret_names=("maops-internal-auth", "maops-state-auth")),
-        _workload("StatefulSet", "maops-state", "state", "maops-kubernetes-state", secret_names=("maops-state-auth",)),
+        _state_statefulset(),
         _service("maops-gateway", "gateway"),
         _service("maops-app", "app"),
         _service("maops-state", "state"),
@@ -369,6 +398,50 @@ class VersionTests(unittest.TestCase):
         _find(docs, "ServiceAccount", "maops-app")["metadata"]["labels"]["app.kubernetes.io/instance"] = "maops-kubernetes-platform-day5"
         failed = _failed_names(run_checks(docs))
         self.assertTrue(any(n.startswith("version.instance_matches[ServiceAccount/maops-app]") for n in failed))
+
+
+class FrozenClaimTemplateLabelTests(unittest.TestCase):
+    """DAY8 (T8): volumeClaimTemplates are immutable, so their labels must
+    stay the frozen 0.7.0 set even though VERSION is 1.0.0. Each negative
+    case changes ONE thing and asserts the dedicated check fails."""
+
+    def _claim_labels(self, docs):
+        return _find(docs, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["metadata"]["labels"]
+
+    def test_baseline_frozen_labels_pass_while_version_moves_on(self):
+        docs = _baseline_docs()
+        self.assertNotEqual(VERSION, FROZEN_CLAIM_VERSION)
+        self.assertEqual(self._claim_labels(docs)["app.kubernetes.io/version"], FROZEN_CLAIM_VERSION)
+        failed = _failed_names(run_checks(docs))
+        self.assertNotIn("claim_template.state.frozen_labels", failed)
+        self.assertNotIn("claim_template.state.exactly_one", failed)
+
+    def test_version_label_following_the_chart_fails(self):
+        docs = copy.deepcopy(_baseline_docs())
+        self._claim_labels(docs)["app.kubernetes.io/version"] = VERSION
+        failed = _failed_names(run_checks(docs))
+        self.assertIn("claim_template.state.frozen_labels", failed)
+
+    def test_chart_label_following_the_chart_fails(self):
+        docs = copy.deepcopy(_baseline_docs())
+        self._claim_labels(docs)["helm.sh/chart"] = f"maops-kubernetes-platform-{VERSION}"
+        self.assertIn("claim_template.state.frozen_labels", _failed_names(run_checks(docs)))
+
+    def test_added_or_removed_label_fails(self):
+        added = copy.deepcopy(_baseline_docs())
+        self._claim_labels(added)["extra"] = "x"
+        self.assertIn("claim_template.state.frozen_labels", _failed_names(run_checks(added)))
+        removed = copy.deepcopy(_baseline_docs())
+        del self._claim_labels(removed)["app.kubernetes.io/component"]
+        self.assertIn("claim_template.state.frozen_labels", _failed_names(run_checks(removed)))
+
+    def test_missing_or_renamed_claim_template_fails(self):
+        missing = copy.deepcopy(_baseline_docs())
+        del _find(missing, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"]
+        self.assertIn("claim_template.state.exactly_one", _failed_names(run_checks(missing)))
+        renamed = copy.deepcopy(_baseline_docs())
+        _find(renamed, "StatefulSet", "maops-state")["spec"]["volumeClaimTemplates"][0]["metadata"]["name"] = "state"
+        self.assertIn("claim_template.state.exactly_one", _failed_names(run_checks(renamed)))
 
 
 class SecurityContextTests(unittest.TestCase):

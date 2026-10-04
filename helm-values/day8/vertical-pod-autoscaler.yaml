@@ -1,0 +1,57 @@
+# DAY8: Vertical Pod Autoscaler 1.8.0 (chart vertical-pod-autoscaler
+# 0.13.0, from https://kubernetes.github.io/autoscaler) on maops-k8s-day7
+# (Kubernetes v1.36.1; upstream compatibility: VPA 1.8.x -> 1.36-1.38).
+# Installed by `make day8-addons-install` with --reset-values -f <this file>;
+# validated statically by `make day8-static-check`.
+#
+# Three independent guards keep VPA away from the stable application:
+#   1. updater.enabled=false - no component exists that could evict or
+#      resize a running Pod. Only `Off` (recommend) and `Initial` (applied
+#      by the admission controller to NEWLY created Pods) can have effect.
+#   2. --vpa-object-namespace=maops-day8-scaling on the recommender and
+#      admission controller - VPA objects anywhere else are ignored.
+#   3. The mutating webhook's namespaceSelector matches ONLY the temporary
+#      scaling namespace, so Pod creation in maops-platform (and every
+#      other namespace) never reaches the VPA webhook at all.
+admissionController:
+  replicas: 1
+  logLevel: 2
+  extraArgs:
+    - "--vpa-object-namespace=maops-day8-scaling"
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "192Mi"
+  podDisruptionBudget:
+    enabled: false
+  mutatingWebhookConfiguration:
+    failurePolicy: "Ignore"
+    timeoutSeconds: 5
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: "maops-day8-scaling"
+recommender:
+  replicas: 1
+  logLevel: 2
+  # Recommendation floors lowered from the 25m/250MB defaults so a
+  # recommendation reflects this tiny target's real usage; the VPA object's
+  # own resourcePolicy (scripts/day8_objects.py) is what bounds it.
+  extraArgs:
+    - "--vpa-object-namespace=maops-day8-scaling"
+    - "--pod-recommendation-min-cpu-millicores=10"
+    - "--pod-recommendation-min-memory-mb=32"
+    - "--memory-saver=true"
+  resources:
+    requests:
+      cpu: "25m"
+      memory: "96Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+  podDisruptionBudget:
+    enabled: false
+updater:
+  enabled: false

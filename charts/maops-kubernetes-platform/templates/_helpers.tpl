@@ -39,6 +39,26 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
+DAY8 (v1.0.0): StatefulSet volumeClaimTemplates labels. volumeClaimTemplates
+are IMMUTABLE once a StatefulSet exists - the API server rejects any change
+- so these labels must NOT follow .Chart.AppVersion / .Chart.Version (as
+maops.componentLabels does). They are frozen at the values the released
+v0.7.0 chart created (version 0.7.0, chart maops-kubernetes-platform-0.7.0),
+so a 1.0.0 upgrade changes only the Pod template (a normal rolling update of
+maops-state-0 onto the SAME PVC) and never the StatefulSet's identity or its
+claim. They describe the claim template's origin, not the running version.
+*/}}
+{{- define "maops.claimTemplateLabels" -}}
+app.kubernetes.io/name: {{ include "maops.name" .root }}
+app.kubernetes.io/instance: {{ .root.Release.Name }}
+app.kubernetes.io/version: "0.7.0"
+app.kubernetes.io/part-of: {{ include "maops.name" .root }}
+app.kubernetes.io/managed-by: {{ .root.Release.Service }}
+helm.sh/chart: maops-kubernetes-platform-0.7.0
+app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+
+{{/*
 Selector labels: the minimal, stable subset every Service/PDB/
 NetworkPolicy/topologySpreadConstraints selector keys on - name,
 instance, component only, never the version/part-of/managed-by labels

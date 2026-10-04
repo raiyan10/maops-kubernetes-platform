@@ -30,9 +30,12 @@ status](#day-6-status-released-v060-local-kind-reference-platform).
 `v0.1.0` (Day 1) through `v0.5.0` (Day 5) are also released and frozen.
 **Days 1-7 are complete.**
 
-**Planned: `v1.0.0`** (Day 8 - autoscaling and final
-production-readiness hardening; not started). Day 7 does not claim
-production readiness.
+**In progress: `v1.0.0`** (Day 8 - autoscaling and final
+production-readiness hardening). Autoscaling is implemented on branch
+`feature/day-8-autoscaling-hardening`, which also prepares `VERSION`
+`1.0.0`; it is **not released** and not tagged; see [Day 8
+status](#day-8-status-autoscaling-implemented-not-released). Neither
+Day 7 nor Day 8 claims production readiness.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full eight-day plan and
 [`docs/architecture.md`](docs/architecture.md) for how the pieces fit
@@ -359,6 +362,57 @@ PATH shim:
 The full design, gates, evidence rules and non-claims are in
 [`docs/architecture.md`, "DAY7"](docs/architecture.md#day7-deployment-strategies-v070-released).
 
+## Day 8 status: autoscaling implemented, NOT released
+
+Day 8 adds an autoscaling layer to the **existing** `maops-k8s-day7`
+cluster and proves, independently, that the Day 7 application was not
+touched by any autoscaling step. The branch prepares `VERSION` `1.0.0`
+(chart `1.0.0`, image tags `1.0.0-cfg-<config digest>`); the Day 7
+release was rolled to that build once, in a controlled, recorded
+rollout (all seven Pods replaced, StatefulSet/PVC/PV and `state.json`
+preserved). It does not re-run the Day 7 strategy experiments, and
+`v1.0.0` is not tagged or released. The full
+design is in [`docs/architecture.md`](docs/architecture.md#day8-autoscaling-v100-work---implemented-not-released),
+and the run-by-run record is in
+[`docs/engineering-reviews/day-08-live-validation-record.md`](docs/engineering-reviews/day-08-live-validation-record.md).
+
+- **Add-ons (pinned):** Metrics Server 0.9.0, VPA 1.8.0 (no updater;
+  recommender and admission webhook scoped to the scaling namespace), and
+  KEDA 2.21.0 (scoped to the scaling namespace; for the probed verbs -
+  22 actions in `maops-platform` plus Secret reads in other namespaces -
+  every KEDA identity is denied, measured with SubjectAccessReviews; its
+  known cluster-wide grants are recorded as an explicit expected
+  allow-list). Day 8 installs KEDA only into a `keda` namespace it
+  creates and labels itself, and refuses to adopt, upgrade or uninstall
+  a `keda` release or namespace it does not own. All three are inside their upstream-supported windows for
+  Kubernetes v1.36.1.
+- **Temporary namespace `maops-day8-scaling`:** Pod Security
+  `restricted`, a LimitRange, and a ResourceQuota equal to the computed
+  worst-case budget (710m / 544Mi requests, 2000m / 1088Mi limits, 13
+  Pods).
+- **One controller per disposable target:** a CPU HPA (1..4), a VPA (`Off`,
+  then `Initial` on one new Pod), and KEDA on a Redis-list worker (0..3).
+- **Cleanup**, ordered and failing closed: release KEDA's objects while
+  KEDA can still remove its finalizers, `helm uninstall` KEDA, then delete
+  the namespace. Metrics Server and VPA stay installed; KEDA (including its
+  CRDs) is verified absent, and each `day8-check` installs it again.
+
+```bash
+make day8-plan                          # print the sequence, run nothing
+make day8-static-check                  # cluster-free
+PATH=/usr/bin:$PATH make day8-check     # authoritative live sequence (maops-k8s-day7 only)
+PATH=/usr/bin:$PATH make day8-cleanup   # remove the scaling namespace and uninstall Day 8's KEDA
+```
+
+**Interrupted run:** run `PATH=/usr/bin:$PATH make day8-cleanup`, then
+`DAY8_RUN_ID=<original run id> PATH=/usr/bin:$PATH make day8-final-gate`
+to compare against that run's own baseline. See
+[`docs/architecture.md`](docs/architecture.md#interrupted-run-recovery).
+
+On this host, `~/.local/bin/docker` (a `docker.exe` shim) shadows the WSL
+Docker CLI. `make tool-check` refuses it, so live targets run with
+`PATH=/usr/bin:$PATH`, as Day 7's did.
+
 ## Day 6 topology
 
 ```
@@ -473,7 +527,7 @@ caller's default kubeconfig/context. Defaults to
 
 ```bash
 make test              # Docker-free unit tests for repository validation logic (incl. the Day 6/Day 7 Helm checks)
-make version-check     # cross-check VERSION/chart version/appVersion/image tags (0.7.0), Day 6 + Day 7 identities, pinned infra/kind digest
+make version-check     # cross-check VERSION/chart version/appVersion/image tags (1.0.0), Day 6 + Day 7 identities, pinned infra/kind digest
 make manifest-check    # render the frozen Day 5 k8s/base and statically validate it (proves it's untouched)
 make helm-lint         # helm lint the chart with default values and with every helm-values/day7/ stage
                         #   file (each with a synthetic build overlay - a Day 7 stage refuses to render without one)
@@ -556,7 +610,10 @@ default unchanged, Day 7 opt-in) must carry their exact identities with
 distinct host ports (18080/18081); and `kind/cluster-day7.yaml` must use
 the same pinned `kindest/node` digest as `kind/cluster-day6.yaml`. The
 Day 6 function is kept, unchanged and unit-tested, as the historical
-`v0.6.0` contract.
+`v0.6.0` contract. **Day 8 prep:** the same Day 7 check set now runs
+against `RELEASE_TARGET_VERSION` `1.0.0` (prepared on the Day 8 branch,
+not released); `DAY7_TARGET_VERSION` stays frozen at `0.7.0` and is
+itself checked (`day7.historical_target_frozen`).
 
 `DAY1-INT-I2` (the hardcoded `/usr/bin/python3.11` interpreter path
 used by exec-based checks) remains **ACCEPTED / OPEN** - Day 6 kept
@@ -829,5 +886,5 @@ docs/                        architecture.md, roadmap.md, engineering-reviews/ (
                               independent reviews, fresh-cluster plan, adjudication), images/
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      0.7.0 (Day 7 - released as v0.7.0, the latest release)
+VERSION                      1.0.0 (prepared on the Day 8 branch, NOT released; v0.7.0 is the latest release)
 ```
