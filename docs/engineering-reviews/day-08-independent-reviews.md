@@ -679,3 +679,81 @@ INTEGRITY (start vs end, identical)
 
 targeted GO FOR PR (test perspective)
 ```
+
+## Round 4: post-merge VPA fix (`fix/day-8-vpa-demonstration`, 2026-10-05)
+
+**Scope.** A targeted independent review by the `kubernetes-test-engineer`
+agent of the VPA correction made after merged-main run `f837802b…`
+failed (remediation log section 12). It covered:
+- the VPA policy invariant;
+- the quota bounds;
+- the cold-start regression tests;
+- documentation accuracy.
+
+**Process.**
+- The reviewer was told to stay read-only on the repo and to mutate only
+  in a `mktemp -d` scratch copy, after verifying `cd`.
+- Before the review, the implementer took a sha256 snapshot of the 7
+  modified files and a copy of the full `git diff`. Both matched after
+  the review, so the reviewer made no repo change.
+
+### R4.1 Original findings (kept as history)
+
+**Verdict: targeted GO for PR, with no HIGH findings.** Summary of the
+original report:
+
+- **Invariant.** `vpa_change_problems` is logically correct. It refuses
+  only when both declared requests lie inside `[minAllowed, maxAllowed]`,
+  with inclusive bounds, and it returns early on min > max. It is
+  consistent with the live `changed` verdict in `evaluate_vpa`.
+  `vpa_ceiling` behaves exactly as before.
+- **Inferred, not observed.** That VPA also caps at admission is stated
+  from VPA's documented behaviour. The cold-start path was not observed
+  live, and the docs say so.
+- **Quota.** Still exactly `budget()`: 710m / 544Mi requests, 2000m /
+  1088Mi limits, 13 Pods. Not padded. The floor (10m/48Mi, limits
+  50m/96Mi) and the ceiling (40m/96Mi, limits 200m/192Mi) are within the
+  LimitRange.
+- **Mutations.**
+  - Caught: M1 (minimum back to 32Mi), M2, M3, M4, M5, M6, M10.
+  - Survived: **M7** (`within_bounds` ignores the memory minimum), **M8**
+    (equality at max made exclusive), and M9 (ceiling always uses max;
+    a gap older than this change).
+- **MEDIUM 1.** No test pins `within_bounds` requiring at least 48Mi; M7
+  survived with all 173 tests passing. The docs' claim is true in the
+  code but was untested.
+- **MEDIUM 2.** Equality at the upper bound (a declared request equal to
+  `maxAllowed`) was untested; M8 survived.
+- **LOW:**
+  - an empty `min_allowed` / `max_allowed` override silently falls back
+    to the defaults;
+  - some tests compare against fixed values (48Mi, 96Mi);
+  - no test covers a declared request above `maxAllowed`;
+  - M9 survived;
+  - one doc sentence said "equals the declared requests" where "both
+    declared requests" is precise.
+- **Documentation.** Every quoted number matches the run f837 and run I
+  evidence JSON. The 12.4 test counts and the 12.5 mutation counts match
+  the reviewer's own results.
+
+The implementer reproduced M7 and M8 surviving in a separate scratch copy
+before any fix.
+
+### R4.2 Closure (tests and documentation only)
+
+| Finding | Closed by | Proof (scratch copy outside the repo) |
+|---|---|---|
+| MEDIUM 1 (M7) | `VpaVerdictTests.test_within_bounds_memory_minimum_is_inclusive_and_enforced`: `within_bounds()` accepts exactly 48Mi (as `48Mi` and in bytes) and rejects 47Mi, 48Mi − 1 B and 32Mi; a below-minimum target and applied request fail both bound verdicts | M7 → this test fails. Also: the minimum made exclusive → this test and the cold-start test fail |
+| MEDIUM 2 (M8) | `VpaChangeInvariantTests.test_declared_exactly_at_max_allowed_is_reachable`: declared requests exactly at `maxAllowed` (both, or memory alone) and `minAllowed == maxAllowed == declared` are all reported | M8 → this test fails |
+| LOW (doc wording) | Remediation log 12.4 now reads "no valid recommendation can equal both declared requests" | - |
+
+**What did not change.**
+- Production scripts and the VPA configuration are byte-identical to
+  run I (`f4e69ac6…`). The static-check message in
+  `scripts/day8_addons.py` still says "equals the declared requests". It
+  was left unchanged so the production code stays identical.
+- The live assertion that admitted requests differ from the declared
+  ones is unchanged.
+- The other LOWs stay open and are accepted.
+
+Tests: 173 → 175 in `tests/test_day8.py`; 1838 overall.

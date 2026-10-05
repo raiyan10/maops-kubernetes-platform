@@ -7,9 +7,13 @@ v1.0.0). Day 6 (`v0.6.0`) is released; Day 7 (`v0.7.0`, Recreate/Blue-Green/
 Canary on a separate `maops-k8s-day7` kind cluster) is released (2026-09-30,
 tag on `6557c8d`; local Kind reference platform, fresh-cluster run
 `6b0029cc63724291a00bba6ed52ea7a9`) and frozen; Day 8 (`v1.0.0`)
-autoscaling is implemented on `feature/day-8-autoscaling-hardening`,
-reviewed and remediated, with `VERSION` prepared at `1.0.0`, and NOT
-released (no tag, no Release). See
+autoscaling was reviewed, remediated and merged to `main` at `78b02a1`
+(PR #11, from `feature/day-8-autoscaling-hardening`), with `VERSION`
+prepared at `1.0.0`. Merged-main run `f837802b…` failed VPA 16/17 (a
+cold-start recommendation equalled the declared requests). The follow-up
+fix (VPA `minAllowed` memory 48Mi and `day8_objects.vpa_change_problems()`)
+is on `fix/day-8-vpa-demonstration`, with run `f4e69ac6…` exit 0. `v1.0.0`
+is still NOT released (no tag, no Release). See
 `docs/roadmap.md` for the full eight-stage plan and `docs/architecture.md`
 for how the pieces fit together.
 
@@ -107,7 +111,10 @@ for how the pieces fit together.
   flip to `Ignore` to make something pass. `day8-addons-final-check` expects KEDA ABSENT (CRDs
   included - the chart does not keep them). Never leave KEDA installed
   without its namespace; never treat an unreadable list as empty. The ResourceQuota is
-  exactly `day8_objects.budget()` - never pad it to make a run pass. Any
+  exactly `day8_objects.budget()` - never pad it to make a run pass. VPA
+  `minAllowed` must keep at least one declared request out of reach
+  (`vpa_change_problems()`), so an admitted Pod always differs from its
+  template; an admission annotation alone is never proof. Any
   replaced/resized application Pod fails `make day8-stable-check`.
   Evidence: `$HOME/.local/state/maops-kubernetes-platform/day8-runs/<DAY8_RUN_ID>/`.
   Interrupted run: `make day8-cleanup`, then `DAY8_RUN_ID=<orig> make

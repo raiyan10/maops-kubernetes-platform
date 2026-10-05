@@ -109,7 +109,14 @@ LIMIT_DEFAULT_REQUEST = {"cpu": "50m", "memory": "32Mi"}
 DEFAULTED = Resources(LIMIT_DEFAULT_REQUEST["cpu"], LIMIT_DEFAULT_REQUEST["memory"], LIMIT_DEFAULT["cpu"], LIMIT_DEFAULT["memory"])
 
 # --- VPA bounds -----------------------------------------------------------
-VPA_MIN_ALLOWED = {"cpu": "10m", "memory": "32Mi"}
+# minAllowed memory sits ABOVE the target's declared 32Mi request, so every
+# valid recommendation (VPA caps it into [minAllowed, maxAllowed] in both
+# the recommender and the admission controller) differs from the template.
+# A cold-start recommendation sits at the recommender floor
+# (--pod-recommendation-min-memory-mb=32, i.e. the declared 32Mi); with
+# minAllowed 32Mi it was admitted unchanged (run f837802b, VPA 16/17).
+# `vpa_change_problems()` keeps this from regressing.
+VPA_MIN_ALLOWED = {"cpu": "10m", "memory": "48Mi"}
 VPA_MAX_ALLOWED = {"cpu": "40m", "memory": "96Mi"}
 
 
@@ -171,20 +178,62 @@ def fmt_memory(num_bytes: int) -> str:
     return f"{int(mib)}Mi"
 
 
-def vpa_ceiling(resources: Resources) -> Resources:
-    """The largest Pod resources VPA (controlledValues RequestsAndLimits)
-    can produce: requests raised to VPA_MAX_ALLOWED, limits scaled by the
-    original limit/request ratio - VPA's proportional limit behaviour."""
+_QUANTITY = (
+    ("cpu", "cpu_request", "cpu_limit", cpu_millis, fmt_cpu),
+    ("memory", "memory_request", "memory_limit", memory_bytes, fmt_memory),
+)
+
+
+def _vpa_scaled(resources: Resources, bound: dict) -> Resources:
+    """Pod resources when VPA (controlledValues RequestsAndLimits) sets each
+    request to `bound` - limits scaled by the original limit/request ratio,
+    VPA's proportional limit behaviour."""
     out = {}
-    for res, req_key, lim_key, parse, fmt in (
-        ("cpu", "cpu_request", "cpu_limit", cpu_millis, fmt_cpu),
-        ("memory", "memory_request", "memory_limit", memory_bytes, fmt_memory),
-    ):
+    for res, req_key, lim_key, parse, fmt in _QUANTITY:
         request, limit = parse(getattr(resources, req_key)), parse(getattr(resources, lim_key))
-        new_request = max(request, parse(VPA_MAX_ALLOWED[res]))
+        new_request = parse(bound[res])
         out[req_key] = fmt(new_request)
         out[lim_key] = fmt(math.ceil(limit * new_request / request))
     return Resources(**out)
+
+
+def vpa_ceiling(resources: Resources) -> Resources:
+    """The largest Pod resources VPA can produce: requests raised to
+    VPA_MAX_ALLOWED (never below the declared request), limits scaled
+    proportionally."""
+    bound = {}
+    for res, req_key, _, parse, _ in _QUANTITY:
+        declared = getattr(resources, req_key)
+        bound[res] = declared if parse(declared) > parse(VPA_MAX_ALLOWED[res]) else VPA_MAX_ALLOWED[res]
+    return _vpa_scaled(resources, bound)
+
+
+def vpa_floor(resources: Resources) -> Resources:
+    """The smallest Pod resources VPA can admit: requests at VPA_MIN_ALLOWED,
+    limits scaled proportionally."""
+    return _vpa_scaled(resources, VPA_MIN_ALLOWED)
+
+
+def vpa_change_problems(workload: PodBudget, min_allowed: dict | None = None, max_allowed: dict | None = None) -> list[str]:
+    """A VPA target must be unable to receive a recommendation equal to BOTH
+    declared requests - otherwise a valid recommendation (e.g. a cold start
+    at minAllowed) is admitted with the template's own resources and the
+    demonstration cannot show VPA changed anything. Sound when, for at least
+    one resource, the declared request lies outside [minAllowed, maxAllowed]."""
+    lo, hi = min_allowed or VPA_MIN_ALLOWED, max_allowed or VPA_MAX_ALLOWED
+    reachable = []
+    for res, req_key, _, parse, _ in _QUANTITY:
+        declared = parse(getattr(workload.resources, req_key))
+        if parse(lo[res]) > parse(hi[res]):
+            return [f"{workload.name}: VPA minAllowed {res} {lo[res]} above maxAllowed {hi[res]}"]
+        if parse(lo[res]) <= declared <= parse(hi[res]):
+            reachable.append(f"{res} {getattr(workload.resources, req_key)}")
+    if len(reachable) == len(_QUANTITY):
+        return [
+            f"{workload.name}: a valid VPA recommendation (minAllowed {lo}, maxAllowed {hi}) can equal both declared requests "
+            f"({', '.join(reachable)}) - an admitted Pod would be indistinguishable from the template"
+        ]
+    return []
 
 
 def worst_case(workload: PodBudget) -> Resources:
@@ -250,7 +299,11 @@ def design_problems(workloads: tuple[PodBudget, ...] = WORKLOADS) -> list[str]:
     """Every reason this design could not run as intended - empty when sound."""
     problems = []
     for w in workloads:
-        for size, label in ((w.resources, "declared"), (worst_case(w), "worst-case")):
+        sizes = [(w.resources, "declared"), (worst_case(w), "worst-case")]
+        if w.vpa:
+            sizes.append((vpa_floor(w.resources), "VPA minimum"))
+            problems += vpa_change_problems(w)
+        for size, label in sizes:
             problems += [f"{w.name} ({label}): {p}" for p in within_limitrange(size)]
         if w.max_pods < 1:
             problems.append(f"{w.name}: max_pods must be >= 1")

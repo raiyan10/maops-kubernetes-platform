@@ -138,6 +138,68 @@ class DesignTests(unittest.TestCase):
         bad = tuple(o.PodBudget(w.name, w.max_pods, o.Resources("10m", "32Mi", "100m", "64Mi") if w.vpa else w.resources, w.scaler, w.vpa) for w in o.WORKLOADS)
         self.assertTrue(any(o.VPA_TARGET in p and "worst-case" in p for p in o.design_problems(bad)))
 
+
+class VpaChangeInvariantTests(unittest.TestCase):
+    """Run f837802b: the cold-start recommendation sat at the recommender
+    floor 10m/32Mi == minAllowed == the declared requests, so the admitted
+    Pod was annotated but unchanged. No valid recommendation may equal both
+    declared requests."""
+
+    def vpa_workload(self):
+        return next(w for w in o.WORKLOADS if w.vpa)
+
+    def test_no_valid_recommendation_equals_the_declared_requests(self):
+        w = self.vpa_workload()
+        self.assertEqual(o.vpa_change_problems(w), [])
+        floor = o.vpa_floor(w.resources)
+        self.assertGreater(o.memory_bytes(floor.memory_request), o.memory_bytes(w.resources.memory_request))
+        self.assertEqual((floor.memory_request, floor.memory_limit), ("48Mi", "96Mi"))
+        self.assertLessEqual(o.memory_bytes(o.vpa_ceiling(w.resources).memory_limit), o.memory_bytes(o.LIMIT_MAX["memory"]))
+
+    def test_rendered_objects_carry_the_invariant(self):
+        vpa = o.vpa_object("Initial")["spec"]["resourcePolicy"]["containerPolicies"][0]
+        declared = o.vpa_target_objects(IMAGE)[0]["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]
+        self.assertEqual((vpa["minAllowed"], vpa["maxAllowed"]), ({"cpu": "10m", "memory": "48Mi"}, {"cpu": "40m", "memory": "96Mi"}))
+        self.assertEqual(vpa["controlledValues"], "RequestsAndLimits")
+        self.assertEqual(declared, {"cpu": "10m", "memory": "32Mi"})
+        self.assertGreater(o.memory_bytes(vpa["minAllowed"]["memory"]), o.memory_bytes(declared["memory"]))
+
+    def test_run_f837_minimum_equal_to_declared_is_refused(self):
+        w = self.vpa_workload()
+        old_min = {"cpu": "10m", "memory": "32Mi"}
+        problems = o.vpa_change_problems(w, min_allowed=old_min)
+        self.assertTrue(problems and "can equal both declared requests" in problems[0], problems)
+        with mock.patch.dict(o.VPA_MIN_ALLOWED, old_min):
+            self.assertTrue(any(o.VPA_TARGET in p and "can equal both declared requests" in p for p in o.design_problems()))
+
+    def test_declared_inside_both_ranges_is_refused_even_above_the_minimum(self):
+        w = self.vpa_workload()
+        self.assertTrue(o.vpa_change_problems(w, min_allowed={"cpu": "5m", "memory": "16Mi"}))
+
+    def test_declared_exactly_at_max_allowed_is_reachable(self):
+        # Both bounds are inclusive: a recommendation capped DOWN to
+        # maxAllowed equals a declared request sitting exactly there.
+        w = self.vpa_workload()
+        at_max = {"cpu": w.resources.cpu_request, "memory": w.resources.memory_request}
+        below = {"cpu": "5m", "memory": "16Mi"}
+        problems = o.vpa_change_problems(w, min_allowed=below, max_allowed=at_max)
+        self.assertTrue(problems and "can equal both declared requests" in problems[0], problems)
+        # Memory alone at its maximum (CPU strictly inside) is still reachable.
+        self.assertTrue(o.vpa_change_problems(w, min_allowed=below, max_allowed={"cpu": "40m", "memory": w.resources.memory_request}))
+        # Degenerate range: minAllowed == maxAllowed == declared.
+        self.assertTrue(o.vpa_change_problems(w, min_allowed=at_max, max_allowed=at_max))
+
+    def test_one_resource_outside_its_range_is_enough(self):
+        w = self.vpa_workload()
+        self.assertEqual(o.vpa_change_problems(w, min_allowed={"cpu": "20m", "memory": "32Mi"}), [])
+
+    def test_minimum_above_maximum_is_refused(self):
+        self.assertTrue(o.vpa_change_problems(self.vpa_workload(), min_allowed={"cpu": "50m", "memory": "48Mi"}))
+
+    def test_minimum_beyond_limitrange_is_reported(self):
+        with mock.patch.dict(o.VPA_MIN_ALLOWED, {"memory": "160Mi"}), mock.patch.dict(o.VPA_MAX_ALLOWED, {"memory": "160Mi"}):
+            self.assertTrue(any("VPA minimum" in p and "LimitRange max" in p for p in o.design_problems()))
+
     def test_one_scaler_per_target(self):
         objs = o.scaling_objects(IMAGE)
         self.assertEqual(o.scaler_conflicts(objs), [])
@@ -1423,6 +1485,42 @@ class VpaVerdictTests(unittest.TestCase):
     def test_out_of_bounds_recommendation_fails(self):
         self.assertFalse(all(ok for ok, _ in self.verdicts(recommendation_off={"target": {"cpu": "500m", "memory": "32Mi"}})))
         self.assertFalse(all(ok for ok, _ in self.verdicts(recommendation_off=None)))
+
+    def test_run_f837_cold_start_annotation_without_change_fails(self):
+        # Verbatim shape of run f837802b: recommender floor 10m/32Mi, admitted
+        # with the VPA annotation, resources identical to the template.
+        floor = {"cpu": "10m", "memory": "32Mi"}
+        annotated_unchanged = {
+            "uid": "0114fbfa", "resources": DECLARED, "restarts": 0,
+            "annotations": {"vpaObservedContainers": "scaling", "vpaUpdates": "Pod resources updated by day8-vpa-target: container 0: cpu request, memory request, cpu limit, memory limit"},
+        }
+        verdicts = self.verdicts(recommendation_off={"containerName": "scaling", "target": floor, "uncappedTarget": floor}, targets_at_admission=[floor, floor], new_pod=annotated_unchanged)
+        by_text = {m: ok for ok, m in verdicts}
+        self.assertTrue(next(ok for m, ok in by_text.items() if "mutated by the VPA admission controller" in m), "the annotation is present")
+        self.assertFalse(next(ok for m, ok in by_text.items() if "differs from the declared" in m), "an annotation alone must not pass")
+        self.assertFalse(all(by_text.values()))
+
+    def test_cold_start_capped_to_raised_minimum_passes(self):
+        # Same cold start under the corrected policy: VPA caps the floor
+        # recommendation up to minAllowed 10m/48Mi; limits scale 2x.
+        capped = {"cpu": "10m", "memory": "48Mi"}
+        new_pod = {"uid": "b", "resources": {"requests": capped, "limits": {"cpu": "50m", "memory": "96Mi"}}, "restarts": 0, "annotations": {"vpaUpdates": "Pod resources updated"}}
+        verdicts = self.verdicts(recommendation_off={"containerName": "scaling", "target": capped, "uncappedTarget": {"cpu": "10m", "memory": "32Mi"}}, targets_at_admission=[capped, capped], new_pod=new_pod)
+        self.assertTrue(all(ok for ok, _ in verdicts), verdicts)
+
+    def test_within_bounds_memory_minimum_is_inclusive_and_enforced(self):
+        self.assertEqual(o.VPA_MIN_ALLOWED["memory"], "48Mi")
+        self.assertTrue(day8_scaling.within_bounds({"cpu": "10m", "memory": "48Mi"}))
+        self.assertTrue(day8_scaling.within_bounds({"cpu": "10m", "memory": str(48 * 1024**2)}))
+        for below in ("47Mi", str(48 * 1024**2 - 1), "32Mi"):
+            self.assertFalse(day8_scaling.within_bounds({"cpu": "10m", "memory": below}), below)
+        # Through the verdicts: a below-minimum target and applied request
+        # fail both bound verdicts even with CPU inside its range.
+        low = {"cpu": "20m", "memory": "40Mi"}
+        new_pod = {"uid": "b", "resources": {"requests": low, "limits": {"cpu": "100m", "memory": "80Mi"}}, "restarts": 0, "annotations": {"vpaUpdates": "Pod resources updated"}}
+        failed = [m for ok, m in self.verdicts(recommendation_off={"target": low}, targets_at_admission=[low], new_pod=new_pod) if not ok]
+        self.assertTrue(any(m.startswith("recommendation target") for m in failed), failed)
+        self.assertTrue(any(m.startswith("applied requests") for m in failed), failed)
 
     def test_requests_not_matching_admission_target_fail(self):
         self.assertFalse(all(ok for ok, _ in self.verdicts(targets_at_admission=[{"cpu": "20m", "memory": "40Mi"}])))
