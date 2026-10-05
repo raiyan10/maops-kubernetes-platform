@@ -1,21 +1,34 @@
 # maops-kubernetes-platform
 
 Project 4 of the DevOps portfolio series. A staged, day-by-day build of a
-Kubernetes platform, starting from a single-node kind cluster (Day 1) and
-progressing toward autoscaling and production-readiness hardening (Day 8 /
-v1.0.0). Day 6 (`v0.6.0`) is released; Day 7 (`v0.7.0`, Recreate/Blue-Green/
-Canary on a separate `maops-k8s-day7` kind cluster) is released (2026-09-30,
-tag on `6557c8d`; local Kind reference platform, fresh-cluster run
-`6b0029cc63724291a00bba6ed52ea7a9`) and frozen; Day 8 (`v1.0.0`)
-autoscaling was reviewed, remediated and merged to `main` at `78b02a1`
-(PR #11, from `feature/day-8-autoscaling-hardening`), with `VERSION`
-prepared at `1.0.0`. Merged-main run `f837802b…` failed VPA 16/17 (a
-cold-start recommendation equalled the declared requests). The follow-up
-fix (VPA `minAllowed` memory 48Mi and `day8_objects.vpa_change_problems()`)
-is on `fix/day-8-vpa-demonstration`, with run `f4e69ac6…` exit 0. `v1.0.0`
-is still NOT released (no tag, no Release). See
-`docs/roadmap.md` for the full eight-stage plan and `docs/architecture.md`
-for how the pieces fit together.
+Kubernetes platform, from a single-node kind cluster (Day 1) to isolated
+autoscaling and final hardening (Day 8 / v1.0.0). **Days 1-8 are
+released** as a local Kind reference platform (not production-ready).
+Day 7 (`v0.7.0`, Recreate/Blue-Green/Canary on a separate `maops-k8s-day7`
+kind cluster) was released 2026-09-30 (tag on `6557c8d`, fresh-cluster
+run `6b0029cc63724291a00bba6ed52ea7a9`) and is frozen. Day 8 (`v1.0.0`)
+was published 2026-10-05: PR #11 merged the autoscaling work at
+`78b02a1`; merged-main run `f837802b…` then failed VPA 16/17 (a
+cold-start recommendation equalled the declared requests); PR #12
+merged the correction (VPA `minAllowed` memory 48Mi and
+`day8_objects.vpa_change_problems()`) at
+`4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`. The annotated `v1.0.0` tag
+object `b1c0f00a25f2348fd10cef525a7d1be7f014dd25` targets that commit -
+never move or recreate it. Corrected run I
+(`f4e69ac6356545efb4bf040995ca4863`) exited 0 (HPA 9/9, VPA 17/17, KEDA
+13/13 with 60/60 items, cleanup 16/16); the final cluster-free suite
+passed 1,838 unit tests (175 Day 8). Run I was not a cold start - the
+exact floor case is covered by regression tests only. The owner reported
+the merged-main final gate exiting 0; only its stable 7/7 and KEDA-absent
+results have saved files. Keep those evidence boundaries in every
+document; never claim production readiness, application autoscaling,
+state HA or cluster-loss recovery. Post-release status is in
+`docs/engineering-reviews/day-08-post-release-verification.md`; see
+`docs/roadmap.md` for the eight-stage plan and `docs/architecture.md`
+for how the pieces fit together. The user performs staging, commits,
+pushes, PRs, merges, tags and releases. The next portfolio project (P5,
+GitHub Actions CI/CD) is separate and adds nothing to this repository's
+scope.
 
 ## Ground rules for this repository
 
@@ -183,12 +196,15 @@ for how the pieces fit together.
   tooling used by the Makefile.
 - `tests/` - Docker-free unit tests for the validation and cluster
   tooling, including negative cases.
-- `docs/` - architecture explanation, the multi-day roadmap, and the
-  per-day engineering reviews (Day 1-6 records are historical and
-  immutable).
+- `docs/` - architecture explanation, the multi-day roadmap, the
+  portfolio case study (`docs/portfolio-case-study.md`), and the
+  per-day engineering reviews (Day 1-7 records are historical and
+  immutable; the released Day 8 records only receive dated addenda,
+  never rewritten findings or runs).
 - Day 7 evidence lives OUTSIDE the repo and /tmp, in the private run
   directory `$HOME/.local/state/maops-kubernetes-platform/day7-runs/<DAY7_RUN_ID>/`
   (0700, files 0600, never reused or recaptured).
+  Day 8 evidence follows the same rule under `day8-runs/<DAY8_RUN_ID>/`.
 
 ## Agents and skills
 

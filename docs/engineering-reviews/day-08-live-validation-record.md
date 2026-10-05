@@ -975,3 +975,22 @@ equal to both declared requests:
   corrected tree.
 
 `v1.0.0` is not tagged or released.
+
+## Release disposition (2026-10-05)
+
+The runs above, including historical run H and failed run f837
+(`f837802b…`, VPA 16/17), are kept as recorded, as are the statements
+that `v1.0.0` was not tagged or released at the time. Run I remains the
+authoritative live run for the released code.
+
+Day 8 was subsequently released as
+[`v1.0.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v1.0.0)
+on 2026-10-05. PR #11 merged at `78b02a1`; PR #12 merged the VPA
+correction at `4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`, the fixed
+target of the annotated tag (tag object `b1c0f00a…`). Corrected run I
+(`f4e69ac6356545efb4bf040995ca4863`) passed. Run I was not a cold start;
+the exact VPA floor case is covered by regression tests. The owner
+reported the merged-`main` final gate exiting 0; only its stable 7/7 and
+KEDA-absent results have saved files. The
+[post-release verification record](day-08-post-release-verification.md)
+is the current reference for release identity and evidence boundaries.

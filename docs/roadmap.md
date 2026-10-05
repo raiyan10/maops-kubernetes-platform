@@ -17,7 +17,7 @@ demonstrated and reviewed in isolation.
 | 5 | v0.5.0 | Security context hardening, ServiceAccount, RBAC, NetworkPolicy |
 | 6 | v0.6.0 | Helm, CI, automated kind validation, service mesh |
 | 7 | v0.7.0 | Advanced deployment strategies (Recreate, Blue/Green, Canary) on the Helm/Gateway API/Istio ambient platform, on a separate kind cluster - **COMPLETE / RELEASED (2026-09-30) - local Kind reference platform** |
-| 8 | v1.0.0 | Autoscaling and final production-readiness hardening, independent reviews, final release - **autoscaling implemented on a feature branch, not released** |
+| 8 | v1.0.0 | Isolated autoscaling (HPA, VPA, KEDA), final hardening, independent reviews, final release - **COMPLETE / RELEASED (2026-10-05) - local Kind reference platform** |
 
 ## Day 1 / v0.1.0 - Kubernetes foundation
 
@@ -351,12 +351,15 @@ state StatefulSet. See `docs/architecture.md`, "DAY7: deployment
 strategies (v0.7.0, released)", for the full design, evidence
 rules, accepted limits and non-claims.
 
-## Day 8 / v1.0.0 - Autoscaling and final production-readiness hardening
+## Day 8 / v1.0.0 - Autoscaling and final hardening
 
-**IN PROGRESS - autoscaling implemented on branch
-`feature/day-8-autoscaling-hardening`, NOT released.** Independent
-reviews, the gaps they find, and the tagged `v1.0.0` release are still
-open. Argo Rollouts is never introduced in this project.
+**COMPLETE / RELEASED 2026-10-05 - local Kind reference platform, not a
+production-ready one.** PR #11 merged the implementation at `78b02a1`;
+after the first merged-`main` run failed its VPA resource-change
+assertion, PR #12 merged the deterministic VPA correction at
+`4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`, the fixed target of the
+annotated `v1.0.0` tag. Independent reviews and targeted remediation
+preceded the release. Argo Rollouts is never introduced in this project.
 
 Day 8 runs on the existing `maops-k8s-day7` cluster (Kubernetes
 v1.36.1) under the Day 7 profile and mutation lock, through `make
@@ -382,9 +385,26 @@ day8-check` (see `docs/architecture.md`, "DAY8: autoscaling"):
 
 Five independent reviews were adjudicated and their HIGH/MEDIUM findings
 remediated (`docs/engineering-reviews/day-08-final-adjudication.md`). The
-branch prepares `VERSION`/chart/app version `1.0.0`; the Day 7 release
-was rolled once to that build, with storage and state preserved. Still
-open for `v1.0.0`: PR, merge, merged-main validation, tag and release.
+released `VERSION`/chart/app version is `1.0.0`; before the release, the
+Day 7 release was rolled once to that build, with storage and state
+preserved. Corrected run I (`f4e69ac6356545efb4bf040995ca4863`) passed
+the full live sequence: HPA 9/9, VPA 17/17, KEDA 13/13 (60/60 items
+processed), cleanup 16/16. Run I was not a cold start; the exact VPA
+floor case is covered by regression tests. The final cluster-free suite
+passed 1,838 unit tests, merged-`main` CI passed, and the owner reported
+the merged-`main` final gate exiting 0 (saved files cover its stable 7/7
+and KEDA-absent results only). See the
+[post-release record](engineering-reviews/day-08-post-release-verification.md)
+for the saved evidence, the reported results and the limitations.
+Post-release documentation never moves the `v1.0.0` tag.
+
+The application itself is not autoscaled (only disposable targets are),
+and the release does not provide state high availability or
+cluster-loss recovery.
+
+The next portfolio project is **P5 - GitHub Actions CI/CD Platform**,
+architecture first. This Kubernetes release is a preserved input to it,
+not a P5 milestone.
 
 ## Explicitly out of scope for this project
 

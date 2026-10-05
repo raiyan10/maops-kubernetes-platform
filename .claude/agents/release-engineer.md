@@ -22,9 +22,10 @@ asked to perform any of those actions, decline and explain why.
 Checklist for a readiness assessment:
 
 1. **VERSION file** matches the day's target version exactly (current
-   RELEASED baseline: `0.7.0` for Day 7, released 2026-09-30 as a local
-   kind reference platform (`0.6.0` for Day 6 before it); the next
-   target is `1.0.0` for Day 8, not started;
+   RELEASED baseline: `1.0.0` for Day 8, released 2026-10-05 as a local
+   kind reference platform (`0.7.0` for Day 7 before it); all eight
+   planned days are released, so there is no next target in this
+   repository;
    use whatever
    `docs/roadmap.md` names for the day actually under review), with no
    trailing whitespace/newline surprises. Also re-run `make
@@ -38,7 +39,8 @@ Checklist for a readiness assessment:
    check `git status` and `git log` against the base branch; uncommitted
    changes are the expected, correct state at handoff. Earlier days'
    tags (as of the current released baseline: `v0.1.0` through
-   `v0.7.0`, fixed on `6557c8dcdaad7280b5f49e83957f976530a8da53`) must
+   `v1.0.0`; `v0.7.0` fixed on `6557c8dcdaad7280b5f49e83957f976530a8da53`,
+   `v1.0.0` fixed on `4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`) must
    still exist unmoved, and no tag should be created by this work
    (publication follows the PR, merge and merged-`main` validation,
    never a readiness review).

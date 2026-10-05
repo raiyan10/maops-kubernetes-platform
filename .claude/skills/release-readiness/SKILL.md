@@ -14,9 +14,10 @@ say so directly.
 ## Checklist
 
 1. **VERSION file.** Exact match to the day's target version (current
-   RELEASED baseline: `0.7.0` for Day 7, released 2026-09-30 as a local
-   kind reference platform (`0.6.0` for Day 6 before it); the next
-   target is `1.0.0` for Day 8, not started; use whatever
+   RELEASED baseline: `1.0.0` for Day 8, released 2026-10-05 as a local
+   kind reference platform (`0.7.0` for Day 7 before it); all eight
+   planned days are released, so there is no next target in this
+   repository; use whatever
    `docs/roadmap.md` names for the day actually under review) -
    `cat VERSION` and compare byte-for-byte (no trailing newline
    surprises, no `v` prefix). Also re-run `make version-check` and
@@ -30,8 +31,9 @@ say so directly.
    (`git tag --points-at HEAD`), and no evidence of a push (this is a
    local check, but never assume - report what you actually see). Prior
    days' tags (as of the current released baseline: `v0.1.0` through
-   `v0.7.0`, with `v0.7.0` fixed on
-   `6557c8dcdaad7280b5f49e83957f976530a8da53`) are expected to already
+   `v1.0.0`, with `v0.7.0` fixed on
+   `6557c8dcdaad7280b5f49e83957f976530a8da53` and `v1.0.0` fixed on
+   `4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`) are expected to already
    exist and must never be moved or recreated; this skill never creates
    a tag.
 3. **Authoritative validation actually ran.** Re-run
@@ -157,7 +159,8 @@ round up to "ready."
 - "GATE PASSED" means the local Kind reference platform only. PR #10,
   merged-main validation and `v0.7.0` publication (2026-09-30, tag on
   `6557c8d`) followed as separate steps; this skill never performs
-  them. Day 7 is released and frozen; Day 8 (`v1.0.0`) is planned.
+  them. Day 7 is released and frozen; Day 8 (`v1.0.0`) was released
+  2026-10-05 (`docs/engineering-reviews/day-08-post-release-verification.md`).
 - Docs must state the candidate is a configuration variant sharing the
   stable ServiceAccount/Istio principal, that Recreate has a planned
   outage, that Canary weights are observed not exact, the accepted

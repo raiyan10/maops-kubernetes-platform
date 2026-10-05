@@ -1,4 +1,13 @@
-# Architecture - Day 6 (v0.6.0, released) and Day 7 (v0.7.0, released)
+# Architecture - Kubernetes platform through Day 8 (v1.0.0, released)
+
+**Current release:** `v1.0.0`, published 2026-10-05, annotated tag on
+PR #12's merge commit `4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`. The
+stage-specific sections below keep their original design context; "DAY8:
+autoscaling (v1.0.0, released)" describes the released autoscaling
+additions. The [post-release record](engineering-reviews/day-08-post-release-verification.md)
+and the [portfolio case study](portfolio-case-study.md) give the current
+status and the boundaries of the evidence. This is a local Kind
+reference platform, not a production-ready one.
 
 Day 1 (`v0.1.0`) established a single-workload Kubernetes foundation,
 Day 2 (`v0.2.0`) added a second workload, real service discovery, and a
@@ -55,8 +64,10 @@ validation; see "DAY7: live validation record" and
 `docs/engineering-reviews/day-07-post-release-verification.md`) demonstrates Recreate, Blue/Green and Canary on this
 platform on a separate `maops-k8s-day7` kind cluster; see "DAY7:
 deployment strategies (v0.7.0, released)" at the end of this
-file. Day 8 (`v1.0.0`) is the later autoscaling and final-hardening
-milestone. See `docs/roadmap.md` for the full plan.
+file. Day 8 (`v1.0.0`, **released** 2026-10-05, local Kind reference
+platform) adds isolated autoscaling demonstrations and final hardening on
+the same `maops-k8s-day7` cluster; see "DAY8: autoscaling (v1.0.0,
+released)". See `docs/roadmap.md` for the complete eight-stage history.
 
 ## Control flow
 
@@ -2720,7 +2731,8 @@ platform.** The annotated tag is on PR #10's merge commit
 `6557c8dcdaad7280b5f49e83957f976530a8da53`. Read-only merged-`main`
 validation passed before tagging, after one preflight Docker timeout
 and a passing recheck (`docs/engineering-reviews/day-07-post-release-verification.md`).
-Day 8 (`v1.0.0`) remains planned. The release gate was:
+Day 8 (`v1.0.0`) was released later, on 2026-10-05. The Day 7 release
+gate was:
 - **Gating run:** one uninterrupted `make day7-check` that itself
   created `maops-k8s-day7`, run `6b0029cc63724291a00bba6ed52ea7a9`,
   2026-09-30, make exit 0.
@@ -2734,8 +2746,8 @@ exposed, are listed in "DAY7: live validation record" below. The
 adjudication is `docs/engineering-reviews/day-07-final-adjudication.md`.
 The design sections below describe the code; live results are only in
 the record. Day 6
-(`v0.6.0`) is released and unchanged; Day 8 (`v1.0.0`) is the later
-autoscaling and final-hardening milestone. Day 7 does not claim
+(`v0.6.0`) is released and unchanged; the later Day 8 (`v1.0.0`)
+release adds isolated autoscaling and final hardening. Day 7 does not claim
 production readiness.
 
 Day 7 demonstrates **Recreate, Blue/Green and Canary** on the existing
@@ -3449,7 +3461,22 @@ the new build. No Day 7 gate compares running Pods' image IDs with the
 loaded images, so this passed unnoticed. Full detail is in the live
 record.
 
-## DAY8: autoscaling (v1.0.0 work - implemented, NOT released)
+## DAY8: autoscaling (v1.0.0, released)
+
+**Status: RELEASED 2026-10-05 as `v1.0.0`, a local Kind reference
+platform.** PR #11 merged the implementation at `78b02a1`. Its first
+merged-`main` run, `f837802b…`, failed VPA 16/17, and PR #12 merged the
+VPA correction at `4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`, the fixed
+target of the annotated `v1.0.0` tag (tag object `b1c0f00a…`). Run I
+(`f4e69ac6356545efb4bf040995ca4863`, exit 0) ran the same non-test code
+as the release, and merged-`main` CI passed on the tagged commit. The
+owner reported the merged-`main` final gate exiting 0; only its stable
+7/7 and KEDA-absent results have saved files, and its other results
+have no retained console log. Run I was not a cold start: the corrected
+VPA floor case is covered by regression tests, not by a live cold-start
+run. Historical run H and failed run f837 stay in "DAY8: live
+validation record" below. See
+`docs/engineering-reviews/day-08-post-release-verification.md`.
 
 Day 8 adds autoscaling to the platform without changing the released Day 7
 application. It runs on the **existing** `maops-k8s-day7` cluster
@@ -3458,7 +3485,7 @@ lock, through `make day8-check`. It never touches `maops-k8s-day6`, never
 applies a Day 7 Helm stage, build or baseline, and never re-runs the Day 7
 strategy experiments. While a Day 8 run is in progress, the Day 7 release
 is frozen and any change to it fails the run. The `1.0.0` version
-preparation is a separate, deliberate step outside any Day 8 run; see
+preparation was a separate, deliberate step outside any Day 8 run; see
 "Version 1.0.0 preparation" below.
 
 ### Add-ons (pinned, each inside its upstream-supported window)
@@ -3826,11 +3853,11 @@ and the Day 8 namespace, as was done once for run `c81534e5…`:
 Then re-run `make day8-cleanup`. Never remove finalizers from objects
 outside `maops-day8-scaling`.
 
-### Version 1.0.0 preparation (not a release)
+### Version 1.0.0 preparation
 
-The Day 8 branch sets `VERSION`, chart `version`/`appVersion` and the
-image tags to `1.0.0`. `scripts/version_check.py` checks the release
-against `RELEASE_TARGET_VERSION` `1.0.0` and keeps `DAY7_TARGET_VERSION`
+The Day 8 branch set `VERSION`, chart `version`/`appVersion` and the
+image tags to `1.0.0`; they were released unchanged as `v1.0.0`.
+`scripts/version_check.py` checks the release against `RELEASE_TARGET_VERSION` `1.0.0` and keeps `DAY7_TARGET_VERSION`
 frozen at `0.7.0`. Two findings came out of testing this before rolling
 the Day 7 release:
 
@@ -3930,6 +3957,15 @@ raised to 48Mi under a new cluster-free invariant (see "Why `minAllowed`
 memory is 48Mi" above). Run **`f4e69ac6356545efb4bf040995ca4863`** (run I)
 then exited 0 with VPA 17/17 and is the authoritative run for this
 correction. Run H stays historical evidence. See section 12 of the record.
+
+**Release (2026-10-05).** PR #12 merged the correction as `4d74cfb`.
+Merged-`main` CI passed, and the owner ran `DAY8_RUN_ID=f4e69ac6… make
+day8-final-gate` on `4d74cfb`, reporting exit 0. Two files from that
+invocation are saved: KEDA absent after cleanup, and Day 7 stable check
+7/7 (Pod UIDs equal to run I's baseline). Its other steps are as
+reported by the owner and in the release notes, not re-verified from a
+saved log. `v1.0.0` was then tagged on `4d74cfb` and published. See
+[`docs/engineering-reviews/day-08-post-release-verification.md`](engineering-reviews/day-08-post-release-verification.md).
 
 Full detail, including every failed attempt and the recovery:
 [`docs/engineering-reviews/day-08-live-validation-record.md`](engineering-reviews/day-08-live-validation-record.md).

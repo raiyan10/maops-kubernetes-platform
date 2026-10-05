@@ -9,7 +9,22 @@ fronted by the Kubernetes Gateway API through an Istio ambient service
 mesh - all proven live against a real multi-node kind cluster, not just
 asserted in YAML.
 
-**Latest RELEASED: `v0.7.0`** (Day 7 - Recreate, Blue/Green and Canary
+**Latest RELEASED: `v1.0.0`** (Day 8 - isolated HPA, VPA and KEDA
+autoscaling demonstrations and final hardening on the existing
+`maops-k8s-day7` cluster), released 2026-10-05 as a **local Kind
+reference platform** - [release
+`v1.0.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v1.0.0),
+tag `v1.0.0` on PR #12's merge commit `4d74cfb`. It was gated by the
+corrected `make day8-check` run I
+(`f4e69ac6356545efb4bf040995ca4863`, exit 0), merged-`main` CI and the
+owner-reported merged-`main` final gate. See [Day 8
+status](#day-8-status-released-v100-local-kind-reference-platform)
+below, the
+[post-release record](docs/engineering-reviews/day-08-post-release-verification.md)
+and the [portfolio case study](docs/portfolio-case-study.md). No day
+claims production readiness.
+
+**Previously released: `v0.7.0`** (Day 7 - Recreate, Blue/Green and Canary
 on the Day 6 Helm/Gateway API/Istio ambient platform, on a separate,
 isolated `maops-k8s-day7` kind cluster), released 2026-09-30 as a
 **local Kind reference platform** - [release `v0.7.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.7.0),
@@ -28,18 +43,13 @@ released 2026-09-25 - [release
 see [Day 6
 status](#day-6-status-released-v060-local-kind-reference-platform).
 `v0.1.0` (Day 1) through `v0.5.0` (Day 5) are also released and frozen.
-**Days 1-7 are complete.**
-
-**In progress: `v1.0.0`** (Day 8 - autoscaling and final
-production-readiness hardening). Autoscaling is implemented on branch
-`feature/day-8-autoscaling-hardening`, which also prepares `VERSION`
-`1.0.0`; it is **not released** and not tagged; see [Day 8
-status](#day-8-status-autoscaling-implemented-not-released). Neither
-Day 7 nor Day 8 claims production readiness.
+**Days 1-8 are complete and released.** Day 8 scales disposable
+targets only; the application itself is not autoscaled. The release is
+a bounded local platform, with the limitations recorded below.
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full eight-day plan and
 [`docs/architecture.md`](docs/architecture.md) for how the pieces fit
-together, including the full Day 6 design.
+together, including the full Day 6, Day 7 and Day 8 designs.
 
 ## What this platform currently demonstrates
 
@@ -76,6 +86,17 @@ together, including the full Day 6 design.
     NetworkPolicy enforcer, reconfigured for ambient coexistence.
   - A minimal, cluster-free GitHub Actions workflow
     (`.github/workflows/ci.yml`) runs `make ci-check` on every push/PR.
+- **Day 7's deployment strategies** (released as `v0.7.0`): Recreate,
+  Blue/Green and Canary on a separate `maops-k8s-day7` cluster, each
+  experiment followed by a verified restoration, with every running
+  container proven to be on one pinned build - see
+  [Day 7 status](#day-7-status-released-v070-local-kind-reference-platform).
+- **Day 8's isolated autoscaling** (released as `v1.0.0`): HPA, VPA
+  (`Off`/`Initial`, no updater) and KEDA, one controller per disposable
+  target in a quota-bounded temporary namespace, with KEDA installed and
+  removed per run and an independent check that the Day 7 application
+  was untouched - see
+  [Day 8 status](#day-8-status-released-v100-local-kind-reference-platform).
 
 Engineering reviews (architecture, security, cluster-integration, test,
 and release-readiness) and post-release evidence for every day live
@@ -85,7 +106,7 @@ for the full Day 5 release record
 ([PR #5](https://github.com/raiyan10/maops-kubernetes-platform/pull/5),
 [release `v0.5.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.5.0)).
 Only a few purposeful screenshots are kept, under `docs/images/day-05/`
-and `docs/images/day-06/` - deliberately not a full evidence dump. The
+through `docs/images/day-08/` - deliberately not a full evidence dump. The
 Day 6 release record is
 [`docs/engineering-reviews/day-06-post-release-verification.md`](docs/engineering-reviews/day-06-post-release-verification.md)
 ([PR #6](https://github.com/raiyan10/maops-kubernetes-platform/pull/6),
@@ -93,9 +114,15 @@ Day 6 release record is
 [PR #8](https://github.com/raiyan10/maops-kubernetes-platform/pull/8),
 [release `v0.6.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v0.6.0)), alongside its independent reviews,
 adjudication, and remediation log under `docs/engineering-reviews/day-06-*`.
+The Day 7 and Day 8 release records are
+[`day-07-post-release-verification.md`](docs/engineering-reviews/day-07-post-release-verification.md)
+and
+[`day-08-post-release-verification.md`](docs/engineering-reviews/day-08-post-release-verification.md).
 
-**Not claimed at this stage:** production cluster high availability,
-node-loss recovery, a production-grade service mesh rollout, TLS/
+**Not claimed, including at `v1.0.0`:** production readiness, production
+cluster high availability, node-loss or cluster-loss recovery, state
+high availability, autoscaling of the application itself, a
+production-grade service mesh rollout, TLS/
 cert-manager, a cloud LoadBalancer, an observability stack, or
 operation on a cloud-managed Kubernetes offering - this remains a
 local, single-tenant kind cluster built for staged engineering
@@ -362,17 +389,35 @@ PATH shim:
 The full design, gates, evidence rules and non-claims are in
 [`docs/architecture.md`, "DAY7"](docs/architecture.md#day7-deployment-strategies-v070-released).
 
-## Day 8 status: autoscaling implemented, NOT released
+## Day 8 status: released (v1.0.0), local Kind reference platform
+
+**Released 2026-10-05** as [`v1.0.0`](https://github.com/raiyan10/maops-kubernetes-platform/releases/tag/v1.0.0) (annotated tag on
+`4d74cfbdeca4bdc56ddc4a207508393f7d4ed438`, PR #12), after passing run
+`f4e69ac6356545efb4bf040995ca4863`, merged-`main` CI and the
+owner-reported merged-`main` final gate: see
+the
+[post-release record](docs/engineering-reviews/day-08-post-release-verification.md).
 
 Day 8 adds an autoscaling layer to the **existing** `maops-k8s-day7`
 cluster and proves, independently, that the Day 7 application was not
-touched by any autoscaling step. The branch prepares `VERSION` `1.0.0`
-(chart `1.0.0`, image tags `1.0.0-cfg-<config digest>`); the Day 7
-release was rolled to that build once, in a controlled, recorded
-rollout (all seven Pods replaced, StatefulSet/PVC/PV and `state.json`
-preserved). It does not re-run the Day 7 strategy experiments, and
-`v1.0.0` is not tagged or released. The full
-design is in [`docs/architecture.md`](docs/architecture.md#day8-autoscaling-v100-work---implemented-not-released),
+touched during each autoscaling run. The released `VERSION` is `1.0.0`
+(chart `1.0.0`, image tags `1.0.0-cfg-<config digest>`); before the
+release, the Day 7 release was rolled to that build once, in a
+controlled, recorded rollout (all seven Pods replaced,
+StatefulSet/PVC/PV and `state.json` preserved). It does not re-run the
+Day 7 strategy experiments.
+
+PR #11 delivered the Day 8 implementation. The first merged-`main` run
+(`f837802b…`) then failed VPA 16/17: a cold-start recommendation equalled
+the declared requests, so the admitted Pod was unchanged. PR #12 raised
+the VPA `minAllowed` memory to 48Mi and added a cluster-free invariant.
+Corrected run I passed HPA 9/9, VPA 17/17, KEDA 13/13 (60/60 items
+processed) and cleanup 16/16, and the final cluster-free suite passed
+1,838 unit tests (175 Day 8). Run I was not a cold start; the exact
+floor case is covered by regression tests. Of the merged-`main` final
+gate, only the stable 7/7 and KEDA-absent results have saved files; its
+other results are as reported by the owner and in the release notes.
+The full design is in [`docs/architecture.md`](docs/architecture.md#day8-autoscaling-v100-released),
 and the run-by-run record is in
 [`docs/engineering-reviews/day-08-live-validation-record.md`](docs/engineering-reviews/day-08-live-validation-record.md).
 
@@ -589,7 +634,7 @@ so it stays correctly ordered even under `make -j`):
 make day6-check
 ```
 
-## Version consistency (closes DAY1-REL-I1, extended for Day 6 and Day 7)
+## Version consistency (closes DAY1-REL-I1, extended for Days 6-8)
 
 The Makefile derives `VERSION := $(shell cat VERSION)` once, and
 `GATEWAY_IMAGE`/`APP_IMAGE`/`STATE_IMAGE` all derive from that; `make
@@ -610,10 +655,10 @@ default unchanged, Day 7 opt-in) must carry their exact identities with
 distinct host ports (18080/18081); and `kind/cluster-day7.yaml` must use
 the same pinned `kindest/node` digest as `kind/cluster-day6.yaml`. The
 Day 6 function is kept, unchanged and unit-tested, as the historical
-`v0.6.0` contract. **Day 8 prep:** the same Day 7 check set now runs
-against `RELEASE_TARGET_VERSION` `1.0.0` (prepared on the Day 8 branch,
-not released); `DAY7_TARGET_VERSION` stays frozen at `0.7.0` and is
-itself checked (`day7.historical_target_frozen`).
+`v0.6.0` contract. **Day 8 (`v1.0.0`, released):** the same Day 7 check
+set runs against `RELEASE_TARGET_VERSION` `1.0.0`;
+`DAY7_TARGET_VERSION` stays frozen at `0.7.0` and is itself checked
+(`day7.historical_target_frozen`).
 
 `DAY1-INT-I2` (the hardcoded `/usr/bin/python3.11` interpreter path
 used by exec-based checks) remains **ACCEPTED / OPEN** - Day 6 kept
@@ -871,6 +916,7 @@ kind/cluster-day6.yaml       Day 6's pinned kind config - adds the 18080->30080 
 kind/cluster-day7.yaml       Day 7's pinned kind config - separate maops-k8s-day7 cluster, host 18081->30080
 helm-values/day7/            Day 7 explicit Helm stage files (stable, green-prepared, blue-green-cutover,
                               canary-90-10, candidate-unready, recreate-prepared/-serving/-changed)
+helm-values/day8/            Day 8 pinned add-on values (metrics-server, vertical-pod-autoscaler, keda)
 scripts/                     dependency-free Python validation + cluster tooling; new for Day 6: helm_check.py,
                               validate_helm_chart.py, validate_gateway_values_configmap.py,
                               validate_cilium_probe_policy.py, gateway_check.py, mesh_check.py, mesh_status.py,
@@ -879,12 +925,15 @@ scripts/                     dependency-free Python validation + cluster tooling
                               day7_baseline.py, day7_final_check.py, day7_stable_check.py, day7_preflight.py,
                               day7_lock.py, day7_nodes_ready.py, day7_image_check.py, day7_build.py,
                               day7_running_images.py, day7_validation_client_probe.py, day7_history_audit.py,
-                              make_sequence.py, private_run_dir.py
+                              make_sequence.py, private_run_dir.py; new for Day 8: day8_common.py,
+                              day8_preflight.py, day8_addons.py, day8_image.py, day8_objects.py,
+                              day8_scaling.py, day8_stable.py
 tests/                       Docker-free unit tests (incl. negative cases and the Helm values-schema tests)
 .github/workflows/ci.yml     minimal, cluster-free GitHub Actions CI (new, Day 6)
-docs/                        architecture.md, roadmap.md, engineering-reviews/ (Days 1-6 frozen; Day 7 live record,
-                              independent reviews, fresh-cluster plan, adjudication), images/
+docs/                        architecture.md, roadmap.md, portfolio-case-study.md, engineering-reviews/ (Days 1-7
+                              frozen; Day 8 live record, independent reviews, remediation, adjudication,
+                              post-release record), images/ (purposeful release screenshots)
 .claude/                     CLAUDE.md, 5 agents, 4 skills scoped to this project
 Makefile                     authoritative local engineering interface
-VERSION                      1.0.0 (prepared on the Day 8 branch, NOT released; v0.7.0 is the latest release)
+VERSION                      1.0.0 (released as v1.0.0 on 2026-10-05; the tag stays on 4d74cfb)
 ```
