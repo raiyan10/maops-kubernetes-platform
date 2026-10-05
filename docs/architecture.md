@@ -3699,8 +3699,28 @@ never coexists with the other phases.
 | Target | Controller | Bounds | What the phase proves |
 |---|---|---|---|
 | `day8-hpa-target` (stdlib CPU server) | `autoscaling/v2` HPA, CPU 50% | 1..4; scale-up 2 Pods/15s; scale-down window 30s, 1 Pod/15s | metrics read **before** load → bounded load Job (4 connections, 150s) → Ready scale-out → load ends → scale-in to 1 |
-| `day8-vpa-target` (steady small CPU + 24 MiB) | VPA `Off`, then `Initial` | `minAllowed` 10m/32Mi, `maxAllowed` 40m/96Mi | `Off`: a CPU+memory recommendation while the running Pod keeps its declared resources. `Initial`: scale 1→2 creates **one new** Pod that gets the bounded recommendation at admission (VPA annotation, requests == target, ≠ declared); the existing Pod's UID, resources and restarts are unchanged |
+| `day8-vpa-target` (steady small CPU + 24 MiB) | VPA `Off`, then `Initial` | `minAllowed` 10m/**48Mi** (above the declared 32Mi request), `maxAllowed` 40m/96Mi | `Off`: a CPU+memory recommendation while the running Pod keeps its declared resources. `Initial`: scale 1→2 creates **one new** Pod that gets the bounded recommendation at admission (VPA annotation, requests == target, ≠ declared); the existing Pod's UID, resources and restarts are unchanged |
 | `day8-queue-worker` (Redis BLPOP worker, drains on SIGTERM) | KEDA ScaledObject (`redis` list, length 5) | 0..3; poll 5s; cooldown 30s | ScaledObject Ready and worker at 0 → KEDA-managed HPA (`keda-hpa-day8-queue-worker`, External metric) → 60 items queued → activation 0→1 → scale-out → **every** item processed (none lost to scale-down) → scale to 0 |
+
+**Why `minAllowed` memory is 48Mi.** The VPA target declares 10m/32Mi
+requests (limits 50m/64Mi). The recommender's floor
+(`--pod-recommendation-min-cpu-millicores=10`,
+`--pod-recommendation-min-memory-mb=32`) equals those requests. With
+`minAllowed` also at 10m/32Mi, a cold-start recommendation sitting at the
+floor was admitted unchanged: run `f837802b…` failed VPA 16/17 with the
+annotation present and the resources identical to the template. VPA caps
+every recommendation into `[minAllowed, maxAllowed]`, in the recommender
+and again at admission. With memory `minAllowed` at 48Mi, no valid
+recommendation can equal the declared memory request, so an admitted Pod
+always differs from the template. The live check still requires the
+admitted requests to differ from the declared ones; an annotation alone
+never passes. `RequestsAndLimits` keeps the 2× memory ratio, so limits
+range from 96Mi to 192Mi, under the LimitRange maximum of 256Mi. The
+quota's worst case uses `maxAllowed` and is unchanged.
+`vpa_change_problems()` (in `design_problems()`, run by `make
+day8-static-check`) refuses any VPA target whose declared requests both
+lie inside `[minAllowed, maxAllowed]`. `vpa_floor()` holds the smallest
+admissible Pod to the LimitRange.
 
 `scaler_conflicts()` refuses two controllers on one target, a controller
 outside the scaling namespace, or a non-Deployment target. `vpa_object()`
@@ -3898,8 +3918,18 @@ See section 10 of the record.
 **After the round-2 re-review** (frozen claim-template labels validated;
 cleanup checks the `keda` namespace's labels first; pre-install creates
 and never adopts), run **`0d158cfe2fc8453595d0185e004fcfaf`** (run H)
-exited 0 on the final tree. Run H is now the authoritative run. See
-section 11 of the record.
+exited 0 on the final tree. Run H was the authoritative run for the
+merged code. See section 11 of the record.
+
+**After merge**, `make day8-check` on merged `main` (`78b02a1`), run
+`f837802b23ba4bd39cbf36cf28cd2cb3`, **failed** VPA 16/17. A cold-start
+recommendation at the floor (10m/32Mi) equalled the declared requests, so
+the admitted Pod was annotated but unchanged. Its cleanup passed 16/16, and
+a separate `day8-final-gate` for it exited 0. VPA `minAllowed` memory was
+raised to 48Mi under a new cluster-free invariant (see "Why `minAllowed`
+memory is 48Mi" above). Run **`f4e69ac6356545efb4bf040995ca4863`** (run I)
+then exited 0 with VPA 17/17 and is the authoritative run for this
+correction. Run H stays historical evidence. See section 12 of the record.
 
 Full detail, including every failed attempt and the recovery:
 [`docs/engineering-reviews/day-08-live-validation-record.md`](engineering-reviews/day-08-live-validation-record.md).

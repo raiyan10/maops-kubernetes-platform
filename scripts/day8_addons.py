@@ -146,7 +146,7 @@ def static() -> int:
     problems = static_problems(values, makefile_vars(makefile_text)) + makefile_keda_problems(makefile_text)
     checks.record(not problems, "add-on values/pins: " + ("; ".join(problems) if problems else "pinned versions agree, every guard present"))
     design = day8_objects.design_problems()
-    checks.record(not design, "scaling design: " + ("; ".join(design) if design else "within the LimitRange at declared and worst-case sizes, one scaler per target"))
+    checks.record(not design, "scaling design: " + ("; ".join(design) if design else "within the LimitRange at declared, VPA-minimum and worst-case sizes, no valid VPA recommendation equals the declared requests, one scaler per target"))
     b = day8_objects.budget()
     checks.record(b.hard() == day8_objects.quota_object()["spec"]["hard"], f"ResourceQuota hard == computed worst-case budget {b.hard()}")
     over = day8_objects.over_quota_pod(day8_objects.placeholder_image(), b)

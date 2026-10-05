@@ -702,3 +702,276 @@ for the final tree. Run G (`28ec47a1…`) remains valid evidence for the
 pre-round-2 code and for the post-rollout baseline. The scratch copy of
 run G's log was lost when the session restarted; its archived copy in
 `day8-runs/28ec47a1…/make-day8-check.log` is intact.
+
+## 12. Merged-main run failed at VPA; correction and next run (2026-10-04)
+
+Day 8 was merged to `main` at `78b02a1b91fdd5dacee7dd1b5b819865e4cee70e`
+(PR #11). The owner then ran `make day8-check` on merged `main`. It
+failed at VPA. This section keeps that failed attempt and records the
+correction (`day-08-remediation-log.md`, section 12) and the next run.
+`v1.0.0` is not tagged or released.
+
+### 12.0 Chronology (2026-10-04, UTC)
+
+| Time | Event | Result |
+|---|---|---|
+| 05:28:54 → 05:48:34 | Run H `0d158cfe…` on the pre-merge tree | exit 0 (VPA 17/17); historical |
+| 10:08:42 / 10:24:22 | Commit `375b71f`; PR #11 merged as `78b02a1` | - |
+| 10:44 → 11:05 | Owner-approved recovery of three Day 7 Pods that lacked ztunnel listeners (`merged-main-mesh-72U9xD5v`) | ambient 64/67 → 67/67; Day 7 resume checks pass |
+| 11:08:59 | First merged-main `day8-check` invocation | never started (`env` failed on a `PATH` entry containing spaces) |
+| after 11:08:59 (run dir 11:11:51) → 11:21:09 | Run f837 `f837802b…` on `78b02a1` | **FAILED: VPA 16/17**; cleanup 16/16 |
+| → 11:40:24 | Separate `DAY8_RUN_ID=f837802b… make day8-final-gate` | exit 0 (stable 7/7) |
+| after 11:40 | VPA `minAllowed` memory 48Mi and invariant, unstaged on `fix/day-8-vpa-demonstration` | cluster-free gates pass |
+| 11:59:48 → 12:18:36 | Run I `f4e69ac6…` on the corrected tree | **exit 0 (VPA 17/17)**; authoritative |
+
+### 12.1 Run `f837802b23ba4bd39cbf36cf28cd2cb3`: FAILED (VPA 16/17)
+
+- **Command:** `PATH=/usr/bin:$PATH make day8-check` on merged `main`
+  (`78b02a1`), run by the owner.
+- **Time:** 2026-10-04. The run directory was created at 11:11:51Z and
+  the log was last written at 11:21:09Z. The log has no start timestamp;
+  the unit tests ran before the directory existed. Exit non-zero:
+  `day8-check: demonstrations exit 2, cleanup exit 0`.
+- **Earlier attempt:** `merged-main-validation/make-day8-check.log` (113
+  bytes, 11:08Z). It is the first invocation, which never started: `env`
+  failed on a host `PATH` entry containing spaces
+  (`env: 'Files/WSL/:/mnt/c/Users/Raiyan': No such file or directory`).
+  The retry is the run recorded here.
+- **Logs (kept, not copied into the repo):**
+  - `day8-runs/merged-main-validation/make-day8-check-retry.log`;
+  - `day8-runs/merged-main-validation/failed-run-final-gate.log`;
+  - run evidence in `day8-runs/f837802b23ba4bd39cbf36cf28cd2cb3/`.
+- **Before VPA, everything passed:**
+  - unit tests 1827 OK, Helm 2364/2364, `day8-static-check` 5/5,
+    preflight 7/7;
+  - stable baseline 2/2, scaling image 4/4, guards 5/5;
+  - KEDA pre-install ownership 3/3, add-ons active 35/35;
+  - stable 7/7, quota 9/9;
+  - HPA 9/9 (1 → 4 Ready under load → 1);
+  - stable 7/7.
+- **VPA: 16/17 (`vpa-2026-10-04T112025Z.json`).**
+
+  | | CPU request | Memory request | CPU limit | Memory limit |
+  |---|---|---|---|---|
+  | Declared (Deployment template) | 10m | 32Mi | 50m | 64Mi |
+  | Off-mode recommendation `target` (also `lowerBound`, `upperBound`, `uncappedTarget`) | 10m | 32Mi | - | - |
+  | Target at admission (both reads) | 10m | 32Mi | - | - |
+  | New Pod `0114fbfa…` (admitted under `Initial`) | 10m | 32Mi | 50m | 64Mi |
+  | Existing Pod `dd2e0fd2…` (before and after) | 10m | 32Mi | 50m | 64Mi |
+
+  The new Pod carried the admission annotation (`vpaUpdates: Pod
+  resources updated by day8-vpa-target: container 0: cpu request, memory
+  request, cpu limit, memory limit`). Its resources were identical to the
+  template. The single failed check is the one that requires a real
+  change: "the applied recommendation differs from the declared
+  requests". The annotation alone was correctly not accepted as proof.
+  The existing Pod was untouched (same UID, resources and restarts, no
+  annotation). The updater is not installed, and no Pod was blocked by
+  the quota.
+- **KEDA:** not run. `day8-check` stops the demonstrations at the first
+  failure, then always runs cleanup.
+- **Cleanup: 16/16.**
+  - `keda`'s Day 8 labels were verified before any KEDA change.
+  - Release ownership was confirmed, and all 6 KEDA CRDs held zero
+    instances; then `helm uninstall`.
+  - The runtime Secret (labels only) and the lease were deleted, then
+    Day 8's `keda` namespace and the scaling namespace.
+  - All 33 KEDA objects are NotFound, and no Pods or bindings remain.
+- **Separate final gate:** `DAY8_RUN_ID=f837802b23ba4bd39cbf36cf28cd2cb3
+  make day8-final-gate`, run by the owner, exit 0.
+  - CNI 4/4, context 6/6, mesh status 4/4, listeners 67/67;
+  - rollout 35/35, running images 47/47 (build `70400e92…`), Gateway
+    8/8;
+  - mesh-check 45/45, networkpolicy-check 37/37;
+  - add-ons after cleanup 23/23;
+  - stable 7/7 against run f837's own baseline.
+- **Day 7 identity at the end of run f837** (`stable-check-2026-10-04T114024Z.json`):
+  - Helm revision 14, deployed, manifest sha256 `abfd77b3…`;
+  - PVC `2be6628b…` Bound, PV `a9c74497…` on `maops-k8s-day7-worker`;
+  - `state.json`: 15 B, sha256 `3ce4f556…`. This is the same storage and
+    state identity as runs G and H.
+- **Pods replaced between runs H and f837: a deliberate, owner-approved
+  recovery.** Three Day 7 Pods differ between run H's last stable check
+  (05:48Z) and run f837's baseline.
+
+  | Order | Deleted (on `maops-k8s-day7-worker2`) | Replacement | Created |
+  |---|---|---|---|
+  | 1 | `maops-app-…-8rrmm` (`4baab98b…`) | `maops-app-…-ns9xw` (`fd78d697…`) | 10:51:24Z |
+  | 2 | `maops-gateway-…-568ws` (`53004ff5…`) | `maops-gateway-…-g4mdl` (`96c87ba5…`) | 10:57:58Z |
+  | 3 | `maops-gateway-…-8xhvd` (`dbbbcfec…`) | `maops-gateway-…-b7tjx` (`8a9b03dc…`) | 11:02:45Z |
+
+  - **Why.** After a host restart (every Day 7 Pod showed 2 restarts),
+    these three were the only Day 7 Pods that were unready (0/1). They
+    also lacked their ztunnel in-Pod listeners on 15001/15006/15008: the
+    ambient check was 64/67, with exactly these three Pods failing.
+  - **How.** The owner approved replacing them. Each was deleted
+    deliberately, one at a time, non-forced and UID-checked: the app
+    first, then the two gateways. The Deployments' ReplicaSets recreated
+    them.
+  - **Corroborated by the evidence.** The ambient check after each step
+    shows the order and the recovery: 64/67, then 65/67 after the app,
+    66/67 after the first gateway, 67/67 after the second. Each
+    replacement had its listeners on 15001/15006/15008.
+  - **After the recovery.** The Day 7 resume checks passed: context 6/6,
+    mesh status 4/4, listeners 67/67, rollout 35/35 with every Pod Ready,
+    running images 47/47 (build `70400e92…`), Gateway 8/8.
+  - **Not touched.** `maops-state-0` (`2cd7be95…`) was never deleted. It
+    and the other three Pods (`tft8d`, `vlp6q`, `zgrvt`) kept their UIDs.
+  - **Not in the evidence.** The UID check, the non-forced deletes and
+    the approval are the owner's account. The evidence directory holds
+    the before and after states, not the delete commands themselves.
+  - **Cause still an inference.** Why these Pods failed to enroll after
+    the restart is not proven. One possibility is that they restarted
+    before istio-cni and ztunnel on `worker2` were ready to set up the
+    in-Pod redirection. The captured events show only readiness-probe
+    `Unhealthy` warnings.
+  - **Evidence.** Private, outside Git:
+    `day8-runs/merged-main-mesh-72U9xD5v/`. It holds:
+    - Pod lists and UIDs before the first delete;
+    - the ambient checks before and after each replacement;
+    - the worker2 istio-cni and ztunnel logs;
+    - the resumed Day 7 checks.
+
+    No logs or Secret data are copied into the repository. Three of its
+    files (`ambient-before-first-gateway.log`,
+    `ambient-after-first-gateway.log`, `ambient-before-last-gateway.log`)
+    were created mode 0644, not the usual 0600. On 2026-10-05 only their
+    modes were changed to 0600. Their sizes, mtimes and sha256 are
+    unchanged:
+    - `ambient-after-first-gateway.log`: `763a6f648d0022c9…`;
+    - `ambient-before-first-gateway.log`: `be187e4c7890d46f…`;
+    - `ambient-before-last-gateway.log`: `763a6f648d0022c9…`. Its content
+      is identical to the previous file, as nothing changed between the
+      two captures.
+
+    All 14 files in the directory are now 0600, and the directory is
+    0700.
+  - **Timing.** All of this happened before run f837 took its baseline
+    (11:11:51Z) and while no Day 8 run held the lock. Day 8's stable
+    checks compare against each run's own baseline. No Day 8 phase
+    replaced or resized a Day 7 Pod.
+
+**Cause.** The cluster-free design allowed a valid VPA recommendation
+equal to both declared requests:
+
+- The recommender floor (`--pod-recommendation-min-cpu-millicores=10`,
+  `--pod-recommendation-min-memory-mb=32`), `minAllowed` (10m/32Mi) and
+  the declared requests (10m/32Mi) were all equal.
+- On a cold start, with little usage history and actual usage below the
+  floor, the recommendation is the floor itself.
+- So the admission controller annotated the Pod but set the same values.
+- Run H's recommendation (35m / 63,544,758 B) was above the floor, so it
+  passed. Whether the run passed depended on usage at the time, not on
+  the design.
+
+### 12.2 Run `f4e69ac6356545efb4bf040995ca4863` (run I): exit 0
+
+- **Command:** `PATH=/usr/bin:$PATH DAY8_RUN_ID=f4e69ac6356545efb4bf040995ca4863
+  make day8-check`. The run ID was generated fresh and confirmed unused
+  before the run.
+- **Tree:** branch `fix/day-8-vpa-demonstration` on `78b02a1`, with the
+  section-12 correction unstaged.
+  - The sha256 of every `scripts/*.py` file and of `tests/test_day8.py`
+    was taken before the run and verified unchanged after it.
+  - Only docs were edited afterwards.
+- **Time:** 2026-10-04 11:59:48Z → 12:18:36Z, **exit 0**
+  (`day8-check: demonstrations exit 0, cleanup exit 0`; no `make ***`
+  error).
+- **Static:**
+  - unit tests 1836 OK (173 of them Day 8);
+  - version 65/65, manifests 267/267, Helm 2364/2364;
+  - `day8-static-check` 5/5, including the new VPA change invariant;
+  - preflight 7/7.
+- **Before the demonstrations:**
+  - CNI 4/4, context 6/6, mesh status 4/4, listeners 67/67;
+  - rollout 35/35, running images 47/47, Gateway 8/8.
+- **Setup:**
+  - stable baseline 2/2, scaling image 4/4;
+  - guards 5/5 (quota still `budget()`: 710m / 544Mi requests, 2000m /
+    1088Mi limits, 13 Pods);
+  - KEDA pre-install ownership 3/3, add-ons active 35/35;
+  - stable 7/7, quota proof 9/9.
+- **HPA 9/9:** 1 → 3 → 4 Ready under load, then 4 → 3 → 2 → 1. Stable
+  7/7 afterwards.
+- **VPA 17/17 (`vpa-2026-10-04T121016Z.json`).** Stable 7/7 afterwards.
+
+  | | CPU request | Memory request | CPU limit | Memory limit |
+  |---|---|---|---|---|
+  | Declared (Deployment template) | 10m | 32Mi | 50m | 64Mi |
+  | Off-mode `target` (= `uncappedTarget`) | 35m | 63,544,758 B (≈60.6Mi) | - | - |
+  | Off-mode `lowerBound` / `upperBound` | 10m / 40m | **48Mi** / 96Mi | - | - |
+  | Target at admission (both reads) | 35m | 63,544,758 B | - | - |
+  | New Pod `bc19c1d5…` (admitted under `Initial`) | **35m** | **63,544,758 B** | **175m** | **127,089,516 B** |
+  | Existing Pod `119514b2…` (before and after) | 10m | 32Mi | 50m | 64Mi |
+
+  - **The new Pod.** It carries the admission annotation, and its
+    requests equal the target at admission. Its requests differ from the
+    declared ones in both CPU and memory, and its limits are scaled 5×
+    for CPU and 2× for memory. All are within `maxAllowed` and the
+    LimitRange.
+  - **The existing Pod.** Its UID, resources and restarts (0 → 0) are
+    unchanged, and it carries no annotation.
+  - **Other checks.** The updater is not installed, and no Pod was
+    blocked by the quota.
+  - **Not a cold start.** This recommendation was above both floors and
+    equal to run H's. `lowerBound` was capped up to the new 48Mi minimum,
+    which shows the new `minAllowed` in force on the live object. The
+    path where a cold-start target is capped up to 48Mi did not occur in
+    this run. It is covered by the cluster-free invariant and by the
+    tests from remediation log section 12, not by a live run.
+- **KEDA 13/13.** ScaledObject Ready with the worker at 0, then 60 items
+  queued and 60/60 processed. Workers went 0 → 1 → 3 → 2 → 1 → 0. Stable
+  7/7 afterwards.
+- **Cleanup 16/16.**
+  - `keda`'s Day 8 labels were verified first.
+  - Release ownership was confirmed and the empty-CRD guard passed; then
+    the uninstall.
+  - The runtime Secret (labels only) and the lease were deleted, then
+    the `keda` namespace and the scaling namespace.
+  - All 33 KEDA objects are NotFound.
+- **Final gate:**
+  - CNI 4/4, context 6/6, mesh status 4/4, listeners 67/67;
+  - rollout 35/35, running images 47/47 (build `70400e92…`), Gateway
+    8/8;
+  - mesh-check 45/45, networkpolicy-check 37/37;
+  - add-ons after cleanup 23/23;
+  - stable 7/7.
+- **Day 7 storage and state identity** (last stable check,
+  `stable-check-2026-10-04T121836Z.json`):
+  - Helm `maops-kubernetes-platform-day7` revision 14, deployed, chart
+    1.0.0, manifest sha256 `abfd77b3…`;
+  - PVC `2be6628b-7df3-421f-9f98-77f03d9a611d` Bound, PV
+    `a9c74497-b133-40a1-aa8d-869b5cad4eab` on `maops-k8s-day7-worker`;
+  - `state.json`: 15 B, sha256 `3ce4f556…`, served with status 200.
+  - All 7 Pod UIDs, including `maops-state-0` `2cd7be95…`, equal run I's
+    baseline and run f837's last stable check. No Day 7 Pod was replaced
+    or resized during or between these two runs.
+- **Log:** `make-day8-check.log` in the run directory (sha256 prefix
+  `083433dda308a333`, mode 0600).
+  - Every `FAIL` before `Ran 1836 tests … OK` comes from a negative unit
+    test.
+  - The five `FAIL` lines just after it are the mocked
+    `tests/test_workload_refresh.py` output. They are byte-identical to
+    the same lines in a cluster-free `make test`.
+  - Every cluster step reports 0 failures.
+- **Final state:**
+  - **Releases:** Day 7 at Helm revision 14. Metrics Server and VPA at
+    revision 14; the idempotent per-run add-on install bumps them each
+    run, and they were at 12 at run H. No `keda` release.
+  - **Namespaces:** `keda` and `maops-day8-scaling` are NotFound.
+  - **Port-forwards:** none.
+  - **Containers:** only the three `maops-k8s-day7` nodes are running.
+  - **Evidence:** no evidence file contains a Secret `data` key or key
+    material; directory 0700, files 0600.
+
+### 12.3 Which run is authoritative
+
+- **Run H** (`0d158cfe…`, exit 0): historical evidence for the code as
+  merged in `78b02a1`. Its VPA pass depended on usage at the time
+  (section 12.1, "Cause").
+- **Run f837** (`f837802b…`): the failed merged-main attempt, kept intact
+  together with its cleanup and its separate final gate exit 0.
+- **Run I** (`f4e69ac6…`, exit 0): the authoritative run for the
+  corrected tree.
+
+`v1.0.0` is not tagged or released.

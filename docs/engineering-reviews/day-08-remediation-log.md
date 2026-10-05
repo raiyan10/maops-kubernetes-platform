@@ -409,3 +409,172 @@ Every command first verified that the scratch directory existed and that
   Helm validator), version 65/65, manifests 267/267, Helm 2364/2364,
   Day 8 static 5/5.
 - **Live run.** Run H is recorded in the live record, section 11.
+
+## 12. Merged-main VPA failure (run `f837802b…`) (2026-10-04)
+
+Branch `fix/day-8-vpa-demonstration`, cut from merged `main`
+`78b02a1b91fdd5dacee7dd1b5b819865e4cee70e`; the working tree was clean
+when the branch was cut. The failed run, its cleanup and its separate
+final gate are recorded in the live record, section 12.1.
+
+### 12.1 Finding
+
+The VPA demonstration failed 16/17. The Off-mode recommendation, the
+target at admission and the new Pod's requests were all 10m/32Mi, the
+same as the Deployment's declared requests. The admission annotation was
+present, but nothing had changed. The live assertion that the admitted
+requests differ from the declared ones correctly failed.
+
+The design allowed this. The recommender floor (10 millicores / 32 MiB),
+`minAllowed` (10m/32Mi) and the declared requests (10m/32Mi) were all
+equal. A cold-start recommendation at the floor is valid, and it is
+admitted unchanged. Run H passed only because usage at the time put its
+recommendation above the floor (35m / 63,544,758 B).
+
+### 12.2 Correction (`scripts/day8_objects.py`)
+
+- **`VPA_MIN_ALLOWED["memory"]`: `32Mi` → `48Mi`.** Unchanged:
+  - the declared requests 10m/32Mi and limits 50m/64Mi;
+  - `VPA_MAX_ALLOWED` 40m/96Mi;
+  - CPU `minAllowed` 10m;
+  - the recommender flags (the persistent VPA add-on is not reinstalled).
+- **Why it is deterministic.**
+  - VPA caps every recommendation into `[minAllowed, maxAllowed]`. The
+    recommender does it in `status.recommendation.target`, and the
+    admission controller does it again when it applies the
+    recommendation.
+  - A recommendation's memory is therefore always at least 48Mi, which is
+    never the declared 32Mi.
+  - A cold start at the floor becomes 10m/48Mi.
+- **Verified against the rendered objects.**
+  - `vpa_object()` renders `controlledValues: RequestsAndLimits` with
+    `minAllowed {cpu: 10m, memory: 48Mi}` and `maxAllowed {cpu: 40m,
+    memory: 96Mi}`.
+  - The rendered Deployment declares requests 10m/32Mi and limits
+    50m/64Mi.
+  - VPA scales limits by the declared limit/request ratio (2× for
+    memory). This gives 96Mi at the minimum (`vpa_floor`: 10m/48Mi with
+    limits 50m/96Mi) and 192Mi at the maximum (`vpa_ceiling`: 40m/96Mi
+    with limits 200m/192Mi).
+  - Both are within the LimitRange maximum of 250m/256Mi.
+- **Quota unchanged.** `budget()` uses `maxAllowed` for the VPA worst
+  case, so the ResourceQuota is still exactly 710m / 544Mi requests,
+  2000m / 1088Mi limits and 13 Pods. Nothing was padded.
+- **Unchanged guards.**
+  - Modes: `Off` then `Initial` only.
+  - No updater.
+  - Two Pods at most (`VPA_REPLICAS_AFTER_INITIAL`).
+  - Webhook and flags scoped to `maops-day8-scaling`.
+  - Nothing in `maops-platform` touched.
+- **The live assertion is unchanged.**
+  - `evaluate_vpa` still requires all of these: the annotation, requests
+    equal to the target at admission, requests different from the
+    declared ones, and requests within bounds.
+  - `within_bounds` reads `VPA_MIN_ALLOWED`, so it now also requires a
+    recommendation of at least 48Mi.
+
+### 12.3 Cluster-free invariant
+
+- **`vpa_change_problems(workload, min_allowed, max_allowed)`.** It
+  refuses a VPA target when both declared requests lie inside
+  `[minAllowed, maxAllowed]`, because a valid recommendation could then
+  equal the template. It also refuses `minAllowed` above `maxAllowed`.
+- **`vpa_floor()`.** It gives the smallest admissible Pod: requests at
+  `minAllowed`, limits scaled proportionally. `design_problems()` now
+  checks it against the LimitRange too.
+- **Shared helper.** `vpa_floor()` and `vpa_ceiling()` share
+  `_vpa_scaled()`. The ceiling's results are unchanged.
+- **Where it runs.** `design_problems()` calls both, and `make
+  day8-static-check` runs it through `day8_addons.py static`.
+
+### 12.4 Tests (`tests/test_day8.py`, 164 → 173)
+
+New class `VpaChangeInvariantTests` (7 tests):
+- the current design: no valid recommendation can equal both declared
+  requests; the floor is 48Mi/96Mi; the ceiling limit is within the
+  LimitRange;
+- the rendered VPA object and Deployment carry the invariant;
+- **regression for run f837:** `minAllowed` 10m/32Mi is refused, both
+  directly and through `design_problems()`;
+- declared requests inside both ranges are refused, even with
+  `minAllowed` below them;
+- one resource outside its range is enough;
+- `minAllowed` above `maxAllowed` is refused;
+- a minimum whose proportional limit exceeds the LimitRange is reported
+  as "VPA minimum".
+
+Added to `VpaVerdictTests` (2 tests):
+- **`test_run_f837_cold_start_annotation_without_change_fails`.** It
+  uses run f837's data: the floor 10m/32Mi as the target, and the
+  annotated new Pod with the template's resources. It asserts that the
+  annotation verdict passes and the "differs from the declared" verdict
+  fails. An annotation alone is not proof.
+- **`test_cold_start_capped_to_raised_minimum_passes`.** It covers the
+  same cold start under the corrected policy: a target capped to
+  10m/48Mi, and a new Pod at 10m/48Mi with limits 50m/96Mi.
+
+### 12.5 Mutation proof
+
+Run in a full scratch copy outside the repo. The copy and `cd` are
+verified before anything is mutated. No `.bak` file was left in the
+repo.
+
+| Mutant | Result |
+|---|---|
+| `minAllowed` memory back to 32Mi | 3 failures |
+| invariant disabled (`if False`) | 2 failures |
+| invariant not called by `design_problems()` | 1 failure |
+| VPA-minimum LimitRange check dropped | 1 failure |
+| live "differs from declared" verdict forced true | 2 failures |
+| off-by-one (`<` instead of `<=` at the minimum) | 1 failure |
+| `minAllowed > maxAllowed` guard dropped | 1 failure |
+
+All 7 mutants were caught. The unmutated baseline and the restored copy
+both pass.
+
+### 12.6 Docs
+
+- **`docs/architecture.md`:**
+  - the VPA bounds row now reads 10m/48Mi;
+  - a "Why `minAllowed` memory is 48Mi" paragraph;
+  - a pointer to the merged-main failure and the next run.
+- **Live record section 12:** the failed run, its cleanup, the separate
+  final gate and the next run.
+- **Kept unchanged:** Day 1–7 sources and records; run H's record and
+  every earlier run's evidence.
+
+### 12.7 Gates and live run
+
+- **Cluster-free gates.** `PATH=/usr/bin:$PATH make tool-check test
+  version-check manifest-check helm-lint helm-check day8-static-check
+  day8-plan` all exited 0.
+  - Unit tests: 1836 OK, 173 of them Day 8.
+  - Version 65/65, manifests 267/267, Helm 2364/2364, Day 8 static 5/5.
+  - The static check's design line now names the VPA-minimum size and
+    the change invariant.
+- **Live run.** Run I, `f4e69ac6356545efb4bf040995ca4863`, exit 0, VPA
+  17/17. See live record section 12.2.
+  - The recommendation was 35m / 63,544,758 B, so this run did not
+    repeat run f837's cold start. The clamp to 48Mi is proven by the
+    cluster-free tests.
+  - `lowerBound` 48Mi shows the new minimum on the live object.
+
+### 12.8 Review MEDIUMs closed with tests (2026-10-05)
+
+The targeted round-4 review (`day-08-independent-reviews.md`, Round 4)
+gave targeted GO, with two MEDIUM test gaps. Both are now closed by tests
+only (`tests/test_day8.py`, 173 → 175):
+
+- **`test_within_bounds_memory_minimum_is_inclusive_and_enforced`.**
+  `within_bounds()` accepts exactly 48Mi and rejects anything below it.
+  The test fails if the memory lower-bound check is removed or made
+  exclusive.
+- **`test_declared_exactly_at_max_allowed_is_reachable`.** Declared
+  requests at `maxAllowed` are reported, because the bounds are
+  inclusive. The test fails if the upper-bound comparison becomes
+  exclusive.
+
+Production scripts and the VPA configuration are unchanged and
+byte-identical to run I, so run I remains the live validation. The
+private recovery evidence's three 0644 files were set to 0600, with
+modes only changed (live record section 12.1).
